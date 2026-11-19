@@ -1086,7 +1086,7 @@ Which packages, for which platform and defaults profiles, with which flavours an
 
 Where the work directory and the recipes are, and which local checkouts are built:
 
-Point `--config-dir` and `BITS_PATH` entries at repository roots. When `recipes/` contains package recipes, versioned recipes, or package generators, Bits uses it instead of the root for package lookup. A `recipes/` directory with only support files, or with `latest` or `packages.py` directly inside it (a legacy versioned recipe or generator), does not switch the checkout to the new layout. Defaults profiles, `patches/`, `checksums/`, `cvmfs.yaml`, and repository-relative file sources and hooks stay at the root.
+Point `--config-dir` and `BITS_PATH` entries at repository roots. When `recipes/` contains `.sh` package recipes, versioned recipes, or package generators, Bits uses it instead of the root for package lookup. Keep shell helpers outside `recipes/` so they are not treated as recipes. A `recipes/` directory with the legacy marker file `latest` or `packages.py` directly inside it does not switch the checkout to the new layout. Defaults profiles, `patches/`, `checksums/`, `cvmfs.yaml`, and repository-relative file sources and hooks stay at the root.
 
 | Option | Description |
 |--------|-------------|

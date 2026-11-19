@@ -7,7 +7,7 @@ utilities.py as a leaf (depends only on the logger and checksum.parse_entry), so
 layers above it can share these without an import cycle."""
 
 import os
-from os.path import exists, isdir, isfile, join, lexists
+from os.path import exists, isfile, islink, join
 
 from bits_helpers.log import dieOnError, error
 
@@ -20,11 +20,13 @@ def is_package_recipe(filename):
   return filename.endswith(".sh") and not filename.startswith("defaults-")
 
 
-def package_recipe_dir(repo):
+def package_recipe_dir(repo, strict=False):
   """Return the recipe directory, or the checkout root for a flat repository."""
   recipes = join(repo, RECIPE_SUBDIR)
-  if not isdir(recipes) or any(lexists(join(recipes, f)) for f in LEGACY_RECIPE_DIR_ENTRIES):
-    return repo
+  for name in LEGACY_RECIPE_DIR_ENTRIES:
+    path = join(recipes, name)
+    if isfile(path) or islink(path):
+      return repo
   try:
     with os.scandir(recipes) as entries:
       for entry in entries:
@@ -32,8 +34,11 @@ def package_recipe_dir(repo):
           return recipes
         if entry.is_dir() and any(isfile(join(entry.path, f)) for f in LEGACY_RECIPE_DIR_ENTRIES):
           return recipes
-  except OSError:
+  except (FileNotFoundError, NotADirectoryError):
     pass
+  except OSError:
+    if strict:
+      raise
   return repo
 
 
@@ -49,7 +54,7 @@ def recipe_files(repo, include_defaults=False, strict=False):
         raise
       return []
 
-  files = scan(package_recipe_dir(repo), defaults=False)
+  files = scan(package_recipe_dir(repo, strict=strict), defaults=False)
   if include_defaults:
     files.extend(scan(repo, defaults=True))
   return sorted(files)

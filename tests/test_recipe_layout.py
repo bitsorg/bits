@@ -47,12 +47,12 @@ class TestRecipeLayout(unittest.TestCase):
         (provider / 'packages').mkdir()
         (provider / 'packages' / 'latest').write_text(recipe('Packages'))
         (repo / 'extra.tar').touch()
-        (recipes / 'versioned').mkdir()
-        (recipes / 'versioned' / 'latest').write_text(recipe('Versioned'))
+        (recipes / 'latest').mkdir()
+        (recipes / 'latest' / 'latest').write_text(recipe('Latest'))
         root = str(repo)
         for name, path, checkout in (
             ('foo', recipes / 'foo.sh', repo),
-            ('versioned', recipes / 'versioned' / 'latest', repo),
+            ('latest', recipes / 'latest' / 'latest', repo),
             ('bar', provider / 'bar.sh', provider),
             ('packages', provider / 'packages' / 'latest', provider),
             ('defaults-release', repo / 'defaults-release.sh', repo),
@@ -146,6 +146,16 @@ class TestRecipeLayout(unittest.TestCase):
         self.assertEqual(checks['Foo']['patches']['foo.patch'], (None, str(self.directory / 'patches')))
         with self.assertRaises(FileNotFoundError):
             plan(root, [str(self.directory / 'missing.bits')], 'all', [], 'x86_64-el9')
+        scandir = os.scandir
+
+        def deny_recipes(path):
+            if Path(path) == self.directory / 'recipes':
+                raise PermissionError(path)
+            return scandir(path)
+
+        with patch('bits_helpers.paths.os.scandir', side_effect=deny_recipes):
+            with self.assertRaises(PermissionError):
+                recipes_in(root)
 
     def test_upgrade_copies_recipe_under_recipes_and_patches_at_root(self):
         provider = self.directory / 'provider'
