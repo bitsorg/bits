@@ -50,7 +50,6 @@ sourced from it.
 """
 
 import fcntl
-import glob
 import os
 import re
 import shutil
@@ -64,7 +63,7 @@ from bits_helpers.git import Git
 from bits_helpers.workarea import updateReferenceRepoSpec, logged_scm
 from bits_helpers.utilities import resolve_spec_data, symlink
 from bits_helpers.recipe import getGeneratedPackages, getRecipeReader, parseRecipe
-from bits_helpers.paths import checkForFilename, getConfigPaths
+from bits_helpers.paths import checkForFilename, getConfigPaths, recipe_file_name, recipe_files
 from bits_helpers.matchers import _parse_req_matcher
 
 # Maximum provider-discovery iterations (guards against run-away recursion)
@@ -117,8 +116,7 @@ def _check_for_shadows(
         return  # nothing on BITS_PATH yet — no shadowing possible
 
     incoming_recipes = {
-        os.path.splitext(os.path.basename(f))[0].lower()
-        for f in glob.glob(os.path.join(incoming_dir, "*.sh"))
+        recipe_file_name(f) for f in recipe_files(incoming_dir, include_defaults=True)
     }
     if not incoming_recipes:
         return  # empty provider directory — nothing to shadow
@@ -130,8 +128,7 @@ def _check_for_shadows(
     )
     for existing_dir in existing_dirs:
         existing_recipes = {
-            os.path.splitext(os.path.basename(f))[0].lower()
-            for f in glob.glob(os.path.join(existing_dir, "*.sh"))
+            recipe_file_name(f) for f in recipe_files(existing_dir, include_defaults=True)
         }
         shadowed = incoming_recipes & existing_recipes
         if shadowed:
@@ -268,7 +265,7 @@ def _try_read_spec(pkg_lower: str, config_dir: str, taps: dict):
                 continue
             gen_pkgs = {}
 
-        err, spec, _ = parseRecipe(getRecipeReader(filename, config_dir, gen_pkgs))
+        err, spec, _ = parseRecipe(getRecipeReader(filename, config_dir, gen_pkgs, repo_dir=pkg_dir))
         if err or spec is None:
             continue
         return spec
@@ -555,9 +552,9 @@ def load_always_on_providers(
       )
 
   # ── 2. ``always_load: true`` recipes in the primary config dir ──────────
-  for sh_path in sorted(glob.glob(os.path.join(abspath(config_dir), "*.sh"))):
+  for sh_path in recipe_files(abspath(config_dir), include_defaults=True):
     try:
-      err, spec, _ = parseRecipe(getRecipeReader(sh_path))
+      err, spec, _ = parseRecipe(getRecipeReader(sh_path, repo_dir=config_dir))
     except Exception:
       continue
     if err or spec is None:
@@ -667,7 +664,7 @@ def _local_provider_dir(config_dir, package):
   unchanged (the local dir simply takes the clone's place on ``BITS_PATH``).
   """
   d = join(abspath(config_dir), package)
-  if os.path.isdir(d) and glob.glob(join(d, "*.sh")):
+  if recipe_files(d, include_defaults=True):
     return d
   return None
 
@@ -741,13 +738,13 @@ def bootstrap_default_config(args, work_dir: str) -> Optional[str]:
   organisation = (getattr(args, "organisation", None) or "").lower()
   candidates = []
   if organisation:
-    candidates.append(("%s.bits.sh" % organisation, organisation))
-  candidates.append(("default.bits.sh", "default"))
+    candidates.append(("%s.bits" % organisation, organisation))
+  candidates.append(("default.bits", "default"))
 
   chosen_sh = None
   chosen_label = None
-  for filename, label in candidates:
-    path = join(providers_checkout, filename)
+  for name, label in candidates:
+    path = checkForFilename({}, name, providers_checkout)
     if exists(path):
       chosen_sh = path
       chosen_label = label
@@ -765,7 +762,7 @@ def bootstrap_default_config(args, work_dir: str) -> Optional[str]:
     return None
 
   try:
-    err, default_spec, _ = parseRecipe(getRecipeReader(chosen_sh))
+    err, default_spec, _ = parseRecipe(getRecipeReader(chosen_sh, repo_dir=providers_checkout))
   except Exception as exc:
     warning("Bootstrap: could not parse %s.bits.sh: %s", chosen_label, exc)
     return None
@@ -842,12 +839,12 @@ def resolve_registry_repo(args, name: str, work_dir: str, quiet: bool = False):
     _warn("Could not fetch the provider registry from %s.", url)
     return None
 
-  sh = join(providers_checkout, name + ".sh")
+  sh = checkForFilename({}, name, providers_checkout)
   if not exists(sh):
     _warn("No '%s.sh' in the provider registry %s.", name, url)
     return None
   try:
-    err, reg_spec, _ = parseRecipe(getRecipeReader(sh))
+    err, reg_spec, _ = parseRecipe(getRecipeReader(sh, repo_dir=providers_checkout))
   except Exception as exc:  # pylint: disable=broad-except
     _warn("Could not parse %s.sh from the registry: %s", name, exc)
     return None

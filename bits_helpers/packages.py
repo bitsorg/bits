@@ -256,7 +256,8 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                 "is the intended one.", p, recipeSourceLabel(pkgdir, provider_dirs),
                 recipeSourceLabel(_later, provider_dirs), ", ".join(_defaults_dirs[_later]))
 
-    err, spec, recipe = parseRecipe(getRecipeReader(filename, configDir, generatedPackages[pkgdir]), generatedPackages)
+    reader = getRecipeReader(filename, configDir, generatedPackages[pkgdir], repo_dir=pkgdir)
+    err, spec, recipe = parseRecipe(reader, generatedPackages)
     dieOnError(err, err)
     # Unless there was an error, both spec and recipe should be valid.
     # otherwise the error should have been caught above.

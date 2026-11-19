@@ -7,18 +7,57 @@ utilities.py as a leaf (depends only on the logger and checksum.parse_entry), so
 layers above it can share these without an import cycle."""
 
 import os
-from os.path import exists, join
+from os.path import basename, dirname, exists, isdir, isfile, join
 
 from bits_helpers.log import dieOnError, error
 
-def checkForFilename(taps, pkg, d, ext=".sh"):
-  filename = taps.get(pkg, "{}/{}{}".format(d, pkg, ext))
-  if not exists(filename):
-    if "/" in pkg:
-      filename = taps.get(pkg, "{}/{}".format(d, pkg))
-    else:
-      filename = taps.get(pkg, "{}/{}/latest".format(d, pkg))
-  return filename
+RECIPE_SUBDIR = "recipes"
+
+
+def recipe_file_name(path):
+  """Package lookup name of a listed .sh file or versioned latest recipe."""
+  name = basename(path)
+  return (basename(dirname(path)) if name == "latest" else name[:-3]).lower()
+
+
+def recipe_files(repo, include_defaults=False, strict=False):
+  """List .sh recipes from both locations, with root copies taking precedence."""
+  def scan(directory, defaults=False, optional=False):
+    try:
+      with os.scandir(directory) as entries:
+        return sorted(e.path for e in entries if e.name.endswith(".sh")
+                      and (defaults or not e.name.startswith("defaults-")) and e.is_file())
+    except OSError as exc:
+      if strict and not (optional and isinstance(exc, (FileNotFoundError, NotADirectoryError))):
+        raise
+      return []
+
+  root = scan(repo, defaults=include_defaults)
+  names = {recipe_file_name(path) for path in root}
+  for path in scan(join(repo, RECIPE_SUBDIR), optional=True):
+    name = recipe_file_name(path)
+    if name not in names:
+      latest = join(repo, name, "latest")
+      root.append(latest if isfile(latest) else path)
+  return root
+
+
+def checkForFilename(taps, pkg, d, ext=".sh", *, nested=True):
+  if pkg in taps:
+    return taps[pkg]
+
+  def candidates(directory):
+    yield "{}/{}{}".format(directory, pkg, ext)
+    yield "{}/{}".format(directory, pkg) if "/" in pkg else "{}/{}/latest".format(directory, pkg)
+
+  root, fallback = candidates(d)
+  if exists(root) and (ext != ".sh" or not isdir(root)):
+    return root
+  if nested and ext == ".sh" and not pkg.startswith("defaults-") and not isfile(fallback):
+    for recipe in candidates(join(d, RECIPE_SUBDIR)):
+      if isfile(recipe):
+        return recipe
+  return fallback
 
 def resolveLocalPath(configDir, s):
   """

@@ -399,12 +399,13 @@ def main(argv=None):
         ap.error("--docker requires --docker-image IMAGE")
 
     def recipe_reader(pkg):
+        from bits_helpers.paths import checkForFilename
         from bits_helpers.recipe import parseRecipe, FileReader
-        path = os.path.join(a.config_dir, pkg + ".sh")
+        path = checkForFilename({}, pkg, a.config_dir)
         if not os.path.isfile(path):
             return None
         try:
-            _err, spec, _body = parseRecipe(FileReader(path))
+            _err, spec, _body = parseRecipe(FileReader(path, repo_dir=a.config_dir))
             return spec
         except Exception:
             return None

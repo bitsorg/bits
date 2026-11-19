@@ -27,6 +27,7 @@ import re
 import urllib.request
 
 from bits_helpers.log import banner, debug, error, info, warning
+from bits_helpers.paths import recipe_files
 from bits_helpers import site
 
 # Front-matter keys read from each recipe. Values may be quoted (the header
@@ -71,10 +72,9 @@ def scan_recipes(recipes_dir):
     out = {"total": 0, "missing_license": [], "licenseref": [],
            "noassertion": [], "restricted": [], "restricted_sources": [],
            "by_package": {}}
-    for name in sorted(os.listdir(recipes_dir)):
-        if not name.endswith(".sh"):
-            continue
-        meta = _recipe_meta(os.path.join(recipes_dir, name))
+    for path in recipe_files(recipes_dir, include_defaults=True, strict=True):
+        name = os.path.relpath(path, recipes_dir)
+        meta = _recipe_meta(path)
         pkg = meta.get("package")
         if not pkg:
             continue                      # not a recipe (helper script)
@@ -642,7 +642,7 @@ def doCompliance(args, parser):
                  "distributed)", len(system_pkgs))
     else:
         recipes_dir = os.path.abspath(getattr(args, "recipesDir", None) or ".")
-        if not any(f.endswith(".sh") for f in os.listdir(recipes_dir)):
+        if not recipe_files(recipes_dir, include_defaults=True):
             parser.error("no recipes (*.sh) found in %s — point --recipes at a "
                          "recipe repository (e.g. a lcg.bits checkout), or give "
                          "PACKAGE roots for a group-wide audit" % recipes_dir)

@@ -54,6 +54,7 @@ from bits_helpers.utilities import ver_rev
 from bits_helpers.defaults import (parseDefaults, readDefaults, validateDefaults,
                                    incompatibleFlavorDefaults)
 from bits_helpers.packages import getPackageList
+from bits_helpers.paths import checkForFilename
 from bits_helpers.arch import effective_arch
 
 # ── Status constants ───────────────────────────────────────────────────────────
@@ -839,7 +840,7 @@ def doDoctor(args, parser):
 
         packages = []
         for p in args.packages:
-            recipe_path = "%s/%s.sh" % (args.configDir, p.lower())
+            recipe_path = checkForFilename({}, p.lower(), args.configDir)
             if not exists(recipe_path):
                 error("Cannot find recipe %s for package %s.", recipe_path, p)
                 exitcode = 1
