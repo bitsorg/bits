@@ -149,6 +149,12 @@ class RpmTest(unittest.TestCase):
     with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
       rpm.doRpm(self.args(rpmView=".."), argparse.ArgumentParser())
 
+  def test_two_builds_of_one_version_in_a_view(self):
+    other = dict(self.hello, revision="2", hash="x" * 40)
+    packages = [(self.root, self.meta), (None, {"package": other})]
+    with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+      rpm.stage_view("v", packages, "/opt/bits", os.path.join(self.work_dir, "stage"))
+
   def test_a_dependency_not_installed_here(self):
     shutil.rmtree(os.path.join(self.work_dir, ARCH, "zlib"))
     with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()), \

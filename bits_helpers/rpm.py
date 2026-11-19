@@ -102,7 +102,11 @@ def stage_view(view, packages, prefix, top):
   base = join(top, "root" + prefix)
   for _, m in packages:
     link = join(base, release_path(view, m["package"]))
-    os.makedirs(dirname(link))
+    if os.path.lexists(link):
+      error("two builds of %s %s in the %s view", m["package"]["name"], m["package"]["version"],
+            view)
+      sys.exit(1)
+    os.makedirs(dirname(link), exist_ok=True)
     os.symlink(relpath(join(base, rpm_path(m["package"])), dirname(link)), link)
 
 
