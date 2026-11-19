@@ -7,7 +7,7 @@ from pathlib import Path
 from bits_helpers import __version__
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
-from bits_helpers import pypi_index, site
+from bits_helpers import pip_pins, pypi_index, site
 from bits_helpers.manifest import pip_recipe
 from bits_helpers.repo_provider import (fetch_repo_providers_iteratively, load_always_on_providers,
                                         announce_providers, MAX_PROVIDER_ITERATIONS,
@@ -1970,6 +1970,13 @@ def doFinalSync(spec, specs, args, syncHelper):
       from bits_helpers.store_integrity import record_tarball_checksum
       record_tarball_checksum(spec, args.workDir, args.architecture)
 
+  # A pip package built here: what pip installed recorded, and pinned when unpinned
+  if pip_recipe(spec.get("recipe")) and not spec.get("cachedTarball") and \
+     not spec["revision"].startswith("local"):
+    _arch = effective_arch(spec, args.architecture)
+    pip_pins.after_build(spec, syncHelper, pip_pins.key(spec, specs, _arch),
+                         _pkg_install_path(args.workDir, _arch, spec))
+
   # --aggressive-cleanup + a write store: the build script kept the tarball (it
   # would otherwise have skipped it) only so it could be uploaded above. Now that
   # the upload is done, reclaim the space — mirroring the in-build CAN_DELETE
@@ -3162,6 +3169,11 @@ def build_one_package(p, ctx):
   buildEnvironment += pypi_index.build_environment(bool(getattr(args, "docker", False)))
   if spec.get("pip_build"):
     buildEnvironment.append(("BITS_PIP_BUILD", spec["pip_build"]))   # PythonPipRecipe reads it
+  if pip_recipe(spec.get("recipe")) and not cachedTarball:   # the file the first build installed (pip_pins)
+    _pin_key = pip_pins.key(spec, specs, effective_arch(spec, args.architecture))
+    spec["pip_pin"] = pip_pins.read(syncHelper, _pin_key)
+    if spec["pip_pin"]:
+      buildEnvironment.append(("BITS_PIP_PIN", "%(file)s %(sha256)s" % spec["pip_pin"]))
 
   # Add the extra environment as passed from the command line.
   buildEnvironment += [e.partition('=')[::2] for e in args.environment]
