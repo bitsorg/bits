@@ -149,6 +149,16 @@ class RpmTest(unittest.TestCase):
     with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
       rpm.doRpm(self.args(rpmView=".."), argparse.ArgumentParser())
 
+  def test_incomplete_meta(self):
+    self.assertEqual(rpm.dependencies({"package": self.hello}, "recursive"), [])
+    for text in ("{not json", "[]", '{"package": {"name": "hello"}}'):
+      with open(os.path.join(self.root, ".meta.json"), "w") as f:
+        f.write(text)
+      self.assertIsNone(rpm.read_meta(self.root))
+      with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()), \
+           mock.patch("shutil.which", return_value="/usr/bin/rpmbuild"):
+        rpm.doRpm(self.args(), argparse.ArgumentParser())
+
   def test_two_builds_of_one_version_in_a_view(self):
     other = dict(self.hello, revision="2", hash="x" * 40)
     packages = [(self.root, self.meta), (None, {"package": other})]

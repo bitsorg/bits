@@ -53,13 +53,17 @@ def rpm_name(pkg):
 def read_meta(root):
   try:
     with open(join(root, ".meta.json")) as f:
-      return json.load(f)
-  except OSError:
+      meta = json.load(f)
+  except (OSError, ValueError):
     return None
+  pkg = meta.get("package") if isinstance(meta, dict) else None
+  needed = ("name", "version", "hash", "effective_architecture")
+  return meta if isinstance(pkg, dict) and all(pkg.get(k) for k in needed) else None
 
 
 def dependencies(meta, kind):
-  return list({d["hash"]: d for d in meta["dependencies"][kind]["runtime"]}.values())
+  deps = ((meta.get("dependencies") or {}).get(kind) or {}).get("runtime") or []
+  return list({d["hash"]: d for d in deps if d.get("name") and d.get("hash")}.values())
 
 
 def stage(root, meta, prefix, top):
@@ -283,7 +287,7 @@ def doRpm(args, parser):
   root = _find_installroot(work_dir, arch, args.package, args.version)
   meta = read_meta(root)
   if not meta:
-    error("%s has no .meta.json", root)
+    error("%s has no usable .meta.json", root)
     sys.exit(1)
   for p in [meta["package"]] + dependencies(meta, "recursive"):
     check_safe(p)
