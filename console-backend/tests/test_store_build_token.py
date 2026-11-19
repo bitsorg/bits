@@ -97,7 +97,7 @@ class StoreBuildTokenTest(_DB):
             ("GET", "/store/share/**"), ("PUT", "/store/share/**"),
             ("GET", "/restricted/share/**"), ("PUT", "/restricted/share/**"),
             ("GET", "/MANIFESTS/rev-index/share/**"), ("PUT", "/MANIFESTS/rev-index/share/**"),
-            ("GET", "/sources/**")])
+            ("GET", "/sources/**"), ("GET", "/pypi/**")])
         for bad in ("", "../x", "x/y", "*", None):
             with self.assertRaises(ValueError):
                 build_capabilities(bad)

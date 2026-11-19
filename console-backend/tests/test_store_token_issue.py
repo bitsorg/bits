@@ -101,7 +101,7 @@ class StoreTokenIssueTest(unittest.TestCase):
             ("GET", "/store/**"), ("PUT", "/store/**"),
             ("GET", "/restricted/**"), ("PUT", "/restricted/**"),           # kept per group by bits-store
             ("GET", "/MANIFESTS/rev-index/**"), ("PUT", "/MANIFESTS/rev-index/**"),
-            ("GET", "/manifests/lcg/**"), ("PUT", "/manifests/lcg/**"), ("GET", "/sources/**")])
+            ("GET", "/manifests/lcg/**"), ("PUT", "/manifests/lcg/**"), ("GET", "/sources/**"), ("GET", "/pypi/**")])
         for g in ("", "LCG", "a/b", "..", "-x", "x" * 65):
             with self.assertRaises(ValueError, msg=g):
                 admin_capabilities(g)

@@ -118,11 +118,12 @@ _PLATFORM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 def admin_capabilities(group):
     """What a group's admin may do in the store (ADR 0004 B): read and write the site's
     packages (first writer per hash), the group's restricted ones (/restricted, as its
-    CI) and revision markers, and the group's manifests; read the sources."""
+    CI) and revision markers, and the group's manifests; read the sources and the
+    Python package index (pip)."""
     if not isinstance(group, str) or not _GROUP.fullmatch(group):
         raise ValueError("group %r: a lower-case community name" % (group,))
     return [(m, p) for p in ("/store/**", "/restricted/**", "/MANIFESTS/rev-index/**", "/manifests/%s/**" % group)
-            for m in METHODS] + [("GET", "/sources/**")]
+            for m in METHODS] + [("GET", "/sources/**"), ("GET", "/pypi/**")]
 
 
 def build_capabilities(platform, pipeline=None, arch=None):
@@ -130,8 +131,9 @@ def build_capabilities(platform, pipeline=None, arch=None):
     its packages (also of its build types, <platform>-opt, and shared ones; those
     not redistributable under /restricted, kept per community) and their revision
     markers, and those of its *arch* when another (ALICE's x86_64-el9 builds
-    slc9_x86-64); have the sources store fetch. In *pipeline* also (9a): create its
-    files beside a build's BOMs (named p<pipeline>-) and its records."""
+    slc9_x86-64); have the sources store fetch; read the Python package index. In
+    *pipeline* also (9a): create its files beside a build's BOMs (named p<pipeline>-)
+    and its records."""
     for name in (platform, arch or platform):
         if not isinstance(name, str) or not _PLATFORM.fullmatch(name):
             raise ValueError("platform %r: not an architecture name" % (name,))
@@ -140,7 +142,8 @@ def build_capabilities(platform, pipeline=None, arch=None):
             for cap in (("GET", "/store/%s/**" % arch), ("PUT", "/store/%s/**" % arch),
                         ("GET", "/restricted/%s/**" % arch), ("PUT", "/restricted/%s/**" % arch),
                         ("GET", "/MANIFESTS/rev-index/%s/**" % arch),
-                        ("PUT", "/MANIFESTS/rev-index/%s/**" % arch))] + [("GET", "/sources/**")]
+                        ("PUT", "/MANIFESTS/rev-index/%s/**" % arch))] + [
+        ("GET", "/sources/**"), ("GET", "/pypi/**")]
     if pipeline is not None:
         if type(pipeline) is not int or pipeline <= 0:              # not a bool, str or float
             raise ValueError("pipeline %r: not a pipeline id" % (pipeline,))
