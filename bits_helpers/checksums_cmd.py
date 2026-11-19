@@ -45,7 +45,7 @@ from bits_helpers.checksum_store import (find_checksum_file, parse_checksum_file
 from bits_helpers.defaults import asDict, merge_dicts
 from bits_helpers.log import error, info, warning
 from bits_helpers.matchers import _parse_patch_entry, resolve_variables
-from bits_helpers.paths import recipe_files
+from bits_helpers.paths import recipe_file_name, recipe_files
 from bits_helpers.recipe import getRecipeReader, parseRecipe
 from bits_helpers.utilities import apply_version_from, resolve_spec_data
 from bits_helpers.workarea import _resolve_source_entry, _split_arch_prefix
@@ -69,7 +69,7 @@ def _read(path, repo_dir=None):
 
 def recipes_in(repo):
   """``{lowercase package name: recipe path}`` for the recipes of *repo*."""
-  return {os.path.basename(path)[:-3].lower(): path for path in recipe_files(repo, strict=True)}
+  return {recipe_file_name(path): path for path in recipe_files(repo, strict=True)}
 
 
 def profiles_in(repo, want):

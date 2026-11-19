@@ -448,7 +448,7 @@ Bits resolves the full transitive dependency graph of each requested package, co
 
 ### How a build proceeds
 
-1. **Recipe discovery** — Bits searches the main checkout, then each `BITS_PATH` entry (`--search-path`; a relative NAME means `<config-dir>/NAME.bits`, an absolute path is used as is). In each checkout it looks for `<package>.sh` under `recipes/` if that directory holds package recipes, or at the root for a flat checkout. Defaults profiles stay at the root. Repository-provider packages (see [§13](REFERENCE.md#13-repository-provider-feature)) are cloned first to extend the search path before the main resolution pass.
+1. **Recipe discovery** — Bits searches the main checkout, then each `BITS_PATH` entry (`--search-path`; a relative NAME means `<config-dir>/NAME.bits`, an absolute path is used as is). In each checkout it looks at the root first, then in `recipes/` if the recipe is not at the root. Defaults profiles stay at the root. Repository-provider packages (see [§13](REFERENCE.md#13-repository-provider-feature)) are cloned first to extend the search path before the main resolution pass.
 2. **Dependency resolution** — `requires`, `build_requires`, and `runtime_requires` fields are read recursively, forming a DAG. Cycles are reported as errors.
 3. **Hash computation** — A hash is computed for each package from its recipe text, source commit, dependency hashes, and environment. Packages with a matching hash in a store are downloaded instead of rebuilt.
 4. **Source fetching** — Source repositories are cloned into a local mirror and then checked out into a build area. Up to 8 repositories are fetched in parallel.

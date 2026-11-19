@@ -696,7 +696,7 @@ repository_position: append
 # commit: 1a2b3c4d
 ```
 
-The `source` URL must point to a git repository with `*.sh` package recipes in `recipes/`, or at the root for a legacy flat checkout. `tag` selects the branch, tag or commit to check out (default: `version`). A provider repository is loaded once per build; a `requires` entry that asks for a different version of an already-loaded provider is ignored, with a warning.
+The `source` URL must point to a git repository with `*.sh` package recipes at the root, in `recipes/`, or both. `tag` selects the branch, tag or commit to check out (default: `version`). A provider repository is loaded once per build; a `requires` entry that asks for a different version of an already-loaded provider is ignored, with a warning.
 
 ### Always-on providers (`always_load: true`)
 
@@ -1086,7 +1086,7 @@ Which packages, for which platform and defaults profiles, with which flavours an
 
 Where the work directory and the recipes are, and which local checkouts are built:
 
-Point `--config-dir` and `BITS_PATH` entries at repository roots. When `recipes/` contains `.sh` package recipes, versioned recipes, or package generators, Bits uses it instead of the root for package lookup. Keep shell helpers outside `recipes/` so they are not treated as recipes. A `recipes/` directory with the legacy marker file `latest` or `packages.py` directly inside it does not switch the checkout to the new layout. Defaults profiles, `patches/`, `checksums/`, `cvmfs.yaml`, and repository-relative file sources and hooks stay at the root.
+Point `--config-dir` and `BITS_PATH` entries at repository roots. Bits looks for packages at each checkout root first, then in `recipes/` before trying the next checkout. A root recipe or generator still takes precedence over any copy in `recipes/`. When moving a recipe, the root copy stays active until removed. Keep shell helpers outside the recipe search locations. Defaults profiles, `patches/`, `checksums/`, `cvmfs.yaml`, and repository-relative file sources and hooks stay at the root.
 
 | Option | Description |
 |--------|-------------|

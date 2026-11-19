@@ -22,10 +22,7 @@ import yaml
 from bits_helpers.cmd import getoutput
 from bits_helpers.git import git
 from bits_helpers.log import dieOnError
-from bits_helpers.paths import (
-  LEGACY_RECIPE_DIR_ENTRIES, RECIPE_SUBDIR, getConfigPaths, is_package_recipe,
-  package_recipe_dir, resolveFilename,
-)
+from bits_helpers.paths import RECIPE_SUBDIR, checkForFilename, getConfigPaths, resolveFilename
 
 class SpecError(Exception):
   pass
@@ -71,7 +68,12 @@ class GeneratedPackage:
 class FileReader:
   def __init__(self, url, repo_dir=None) -> None:
     self.url = url
-    self.repo_dir = repo_dir if repo_dir and package_recipe_dir(repo_dir) != repo_dir else None
+    self.repo_dir = None
+    if repo_dir:
+      nested = join(os.path.abspath(repo_dir), RECIPE_SUBDIR)
+      path = os.path.abspath(url)
+      if path.startswith(nested + os.sep) and path != join(nested, "latest"):
+        self.repo_dir = repo_dir
   def __call__(self):
     with open(self.url) as f:
       return f.read()
@@ -84,19 +86,9 @@ class GitReader:
     m = re.search(r'^dist:(.*)@([^@]+)$', self.url)
     fn, gh = m.groups()
     fn = fn.lower()
-    if not fn.startswith("defaults-"):
-      prefix = RECIPE_SUBDIR + "/"
-      err, entries = git(("ls-tree", "-r", "--full-tree", "-z", "--name-only", gh, "--", prefix),
-                         directory=self.configDir, check=False)
-      paths = {p[len(prefix):] for p in entries.split("\0") if p.startswith(prefix)}
-      if not err and not paths.intersection(LEGACY_RECIPE_DIR_ENTRIES):
-        for path in paths:
-          parts = path.split("/")
-          if ((len(parts) == 1 and is_package_recipe(parts[0])) or
-              (len(parts) == 2 and parts[1] in LEGACY_RECIPE_DIR_ENTRIES)):
-            fn = prefix + fn
-            break
     err, d = git(("show", f"{gh}:{fn}.sh"), directory=self.configDir, check=False)
+    if err and not fn.startswith("defaults-"):
+      err, d = git(("show", f"{gh}:{RECIPE_SUBDIR}/{fn}.sh"), directory=self.configDir, check=False)
     if err:
       raise RuntimeError("Cannot read recipe {fn} from reference {gh}.\n"
                          "Make sure you run first (this will not alter your recipes):\n"
@@ -319,9 +311,9 @@ def parseRecipe(reader, generatePackages=None, visited=None):
 def getGeneratedPackages(configDir):
   all_pkgs = {}
   pkgDirs = getConfigPaths(configDir)
-  for pkgdir in pkgDirs:
+  def generated_in(directory, pkgdir):
     dir_pkgs = {}
-    for packages_py in glob(join(escape(package_recipe_dir(pkgdir)), "*", "packages.py")):
+    for packages_py in glob(join(escape(directory), "*", "packages.py")):
       sys.path.insert(0, os.path.dirname(packages_py))
       try:
         pkg = __import__("packages")
@@ -335,6 +327,14 @@ def getGeneratedPackages(configDir):
         dieOnError(True, "Error running getPackages() in %r: %s" % (packages_py, e))
       sys.modules.pop("packages")
       sys.path.pop(0)
+    return dir_pkgs
+
+  for pkgdir in pkgDirs:
+    dir_pkgs = generated_in(pkgdir, pkgdir)
+    nested_pkgs = generated_in(join(pkgdir, RECIPE_SUBDIR), pkgdir)
+    for name, meta in nested_pkgs.items():
+      if name not in dir_pkgs and not os.path.exists(checkForFilename({}, name, pkgdir, nested=False)):
+        dir_pkgs[name] = meta
     all_pkgs[pkgdir] = dir_pkgs
   return all_pkgs
 

@@ -41,8 +41,14 @@ class TestRecipeLayout(unittest.TestCase):
         provider.mkdir()
         os.environ['BITS_PATH'] = 'base'
         (repo / 'defaults-release.sh').write_text(recipe('defaults-release'))
-        (repo / 'foo.sh').write_text(recipe('NotARecipeInThisLayout'))
-        (recipes / 'foo.sh').write_text(recipe('Foo'))
+        (repo / 'foo.sh').write_text(recipe('Foo'))
+        (repo / 'root-only.sh').write_text(recipe('Root-Only'))
+        (recipes / 'foo.sh').write_text(recipe('Shadowed'))
+        (recipes / 'nested-only.sh').write_text(recipe('Nested-Only'))
+        (repo / 'nested-only.sh').mkdir()
+        (recipes / 'pinned.sh').write_text(recipe('Shadowed'))
+        (repo / 'pinned').mkdir()
+        (repo / 'pinned' / 'latest').write_text(recipe('Pinned'))
         (provider / 'bar.sh').write_text(recipe('Bar'))
         (provider / 'packages').mkdir()
         (provider / 'packages' / 'latest').write_text(recipe('Packages'))
@@ -51,7 +57,10 @@ class TestRecipeLayout(unittest.TestCase):
         (recipes / 'latest' / 'latest').write_text(recipe('Latest'))
         root = str(repo)
         for name, path, checkout in (
-            ('foo', recipes / 'foo.sh', repo),
+            ('foo', repo / 'foo.sh', repo),
+            ('root-only', repo / 'root-only.sh', repo),
+            ('nested-only', recipes / 'nested-only.sh', repo),
+            ('pinned', repo / 'pinned' / 'latest', repo),
             ('latest', recipes / 'latest' / 'latest', repo),
             ('bar', provider / 'bar.sh', provider),
             ('packages', provider / 'packages' / 'latest', provider),
@@ -61,8 +70,14 @@ class TestRecipeLayout(unittest.TestCase):
                 self.assertEqual(resolveFilename({}, name, root, {}), (str(path), str(checkout)))
         self.assertEqual(resolveDefaultsFilename('release', root), str(repo / 'defaults-release.sh'))
         self.assertEqual(resolveLocalPath(root, 'file://extra.tar'), 'file:/' + str(repo / 'extra.tar'))
-        self.assertEqual(recipes_in(root), {'foo': str(recipes / 'foo.sh')})
-        self.assertEqual(set(scan_recipes(root)['by_package']), {'foo', 'defaults-release'})
+        self.assertEqual(recipes_in(root), {
+            'foo': str(repo / 'foo.sh'), 'root-only': str(repo / 'root-only.sh'),
+            'nested-only': str(recipes / 'nested-only.sh'), 'pinned': str(repo / 'pinned' / 'latest'),
+        })
+        self.assertEqual(set(scan_recipes(root)['by_package']),
+                         {'foo', 'root-only', 'nested-only', 'pinned', 'defaults-release'})
+        (repo / 'foo.sh').unlink()
+        self.assertEqual(resolveFilename({}, 'foo', root, {}), (str(recipes / 'foo.sh'), root))
 
     def test_provider_discovery_uses_recipes_but_keeps_checkout_root(self):
         recipes = self.directory / 'recipes'
@@ -107,13 +122,15 @@ class TestRecipeLayout(unittest.TestCase):
         legacy = git('rev-parse', 'HEAD')
         self.assertEqual(resolveFilename({}, 'foo', root, {}), (str(self.directory / 'foo.sh'), root))
         self.assertEqual(resolveFilename({}, 'recipes', root, {}), (str(recipes / 'latest'), root))
-        git('rm', 'recipes/latest')
-        recipes.mkdir(exist_ok=True)
-        git('mv', 'foo.sh', 'recipes/foo.sh')
-        git('commit', '-qm', 'New layout')
-        for ref in (old, assets, legacy, 'HEAD'):
+        (recipes / 'foo.sh').write_text(recipe('FromNested'))
+        git('add', 'recipes/foo.sh')
+        git('commit', '-qm', 'Mixed layout')
+        mixed = git('rev-parse', 'HEAD')
+        git('rm', 'foo.sh')
+        git('commit', '-qm', 'Remove the shadowing root copy')
+        for ref, name in ((old, 'Foo'), (assets, 'Foo'), (legacy, 'Foo'), (mixed, 'Foo'), ('HEAD', 'FromNested')):
             with self.subTest(ref=ref):
-                self.assertEqual(GitReader(f'dist:Foo@{ref}', root)().strip(), recipe('Foo').strip())
+                self.assertEqual(GitReader(f'dist:Foo@{ref}', root)().strip(), recipe(name).strip())
 
     def test_generated_packages_and_includes_use_repo_root(self):
         primary = self.directory / 'primary'
@@ -125,10 +142,20 @@ class TestRecipeLayout(unittest.TestCase):
         generators.mkdir(parents=True)
         (generators / 'packages.py').write_text(
             'def getPackages(virtual_packages, config_dir):\n'
-            '    virtual_packages["generated"] = {"pkgdir": config_dir, "version": "1"}\n')
+            '    for name in ("generated", "root-file", "root-generated"):\n'
+            '        virtual_packages[name] = {"pkgdir": config_dir, "version": "1"}\n')
+        root_generators = self.directory / 'generated'
+        root_generators.mkdir()
+        (root_generators / 'packages.py').write_text(
+            'def getPackages(virtual_packages, config_dir):\n'
+            '    virtual_packages["root-generated"] = {"pkgdir": config_dir, "version": "2"}\n')
+        root_file = self.directory / 'root-file.sh'
+        root_file.write_text(recipe('Root-File'))
         root = str(self.directory)
-        self.assertEqual(resolveFilename({}, 'generated', root, getGeneratedPackages(root)),
-                         ('generate:generated@1', root))
+        generated = getGeneratedPackages(root)
+        self.assertEqual(resolveFilename({}, 'generated', root, generated), ('generate:generated@1', root))
+        self.assertEqual(resolveFilename({}, 'root-generated', root, generated), ('generate:root-generated@2', root))
+        self.assertEqual(resolveFilename({}, 'root-file', root, generated), (str(root_file), root))
         path = recipes / 'foo.sh'
         path.write_text(recipe('Foo') + '#!include <root.inc>\n#!include "local.inc"\n')
         (self.directory / 'root.inc').write_text('echo root')

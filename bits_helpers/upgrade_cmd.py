@@ -33,7 +33,7 @@ import urllib.request
 import yaml
 
 from bits_helpers.log import banner, info, warning
-from bits_helpers.paths import checkForFilename, package_recipe_dir
+from bits_helpers.paths import RECIPE_SUBDIR, checkForFilename
 
 TIMEOUT_S = 20
 
@@ -638,7 +638,7 @@ def _cached_repo(path):
     parent = os.path.dirname(directory)
     if os.path.exists(os.path.join(directory, ".bits_provider_ok")):
         return directory
-    if directory == package_recipe_dir(parent) and os.path.exists(os.path.join(parent, ".bits_provider_ok")):
+    if os.path.basename(directory) == RECIPE_SUBDIR and os.path.exists(os.path.join(parent, ".bits_provider_ok")):
         return parent
     return None
 
@@ -662,7 +662,8 @@ def _bring_in(path, config_dir, package, dry):
     src_dir = _cached_repo(path) or os.path.dirname(path)
     dest = checkForFilename({}, os.path.basename(path)[:-3], config_dir)
     if not os.path.exists(dest):
-        dest = os.path.join(package_recipe_dir(config_dir), os.path.basename(path))
+        recipes = os.path.join(config_dir, RECIPE_SUBDIR)
+        dest = os.path.join(recipes if os.path.isdir(recipes) else config_dir, os.path.basename(path))
     if os.path.exists(dest):
         raise NeedsHand("%s exists: it would be replaced by %s's" % (dest, path))
     with open(path) as f:
@@ -695,7 +696,7 @@ def _origin(path, provider_dirs):
     d = os.path.dirname(os.path.abspath(path))
     for pd, (name, commit) in (provider_dirs or {}).items():
         root = os.path.abspath(pd)
-        if d in (root, package_recipe_dir(root)):
+        if d in (root, os.path.join(root, RECIPE_SUBDIR)):
             return "%s@%s" % (name, str(commit)[:10])
     r = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     return os.path.basename(r.stdout.strip()) if r.returncode == 0 else d

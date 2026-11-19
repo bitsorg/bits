@@ -7,69 +7,57 @@ utilities.py as a leaf (depends only on the logger and checksum.parse_entry), so
 layers above it can share these without an import cycle."""
 
 import os
-from os.path import exists, isfile, islink, join
+from os.path import basename, dirname, exists, isdir, isfile, join
 
 from bits_helpers.log import dieOnError, error
 
 RECIPE_SUBDIR = "recipes"
-# A legacy checkout can already use recipes/ for a recipe or generator.
-LEGACY_RECIPE_DIR_ENTRIES = ("latest", "packages.py")
 
 
-def is_package_recipe(filename):
-  return filename.endswith(".sh") and not filename.startswith("defaults-")
-
-
-def package_recipe_dir(repo, strict=False):
-  """Return the recipe directory, or the checkout root for a flat repository."""
-  recipes = join(repo, RECIPE_SUBDIR)
-  for name in LEGACY_RECIPE_DIR_ENTRIES:
-    path = join(recipes, name)
-    if isfile(path) or islink(path):
-      return repo
-  try:
-    with os.scandir(recipes) as entries:
-      for entry in entries:
-        if is_package_recipe(entry.name) and entry.is_file():
-          return recipes
-        if entry.is_dir() and any(isfile(join(entry.path, f)) for f in LEGACY_RECIPE_DIR_ENTRIES):
-          return recipes
-  except (FileNotFoundError, NotADirectoryError):
-    pass
-  except OSError:
-    if strict:
-      raise
-  return repo
+def recipe_file_name(path):
+  """Package lookup name of a listed .sh file or versioned latest recipe."""
+  name = basename(path)
+  return (basename(dirname(path)) if name == "latest" else name[:-3]).lower()
 
 
 def recipe_files(repo, include_defaults=False, strict=False):
-  """List package recipe files; optionally include root-level defaults profiles."""
-  def scan(directory, defaults):
+  """List .sh recipes from both locations, with root copies taking precedence."""
+  def scan(directory, defaults=False, optional=False):
     try:
       with os.scandir(directory) as entries:
-        return [e.path for e in entries if e.name.endswith(".sh")
-                and e.name.startswith("defaults-") == defaults and e.is_file()]
-    except OSError:
-      if strict:
+        return sorted(e.path for e in entries if e.name.endswith(".sh")
+                      and (defaults or not e.name.startswith("defaults-")) and e.is_file())
+    except OSError as exc:
+      if strict and not (optional and isinstance(exc, (FileNotFoundError, NotADirectoryError))):
         raise
       return []
 
-  files = scan(package_recipe_dir(repo, strict=strict), defaults=False)
-  if include_defaults:
-    files.extend(scan(repo, defaults=True))
-  return sorted(files)
+  root = scan(repo, defaults=include_defaults)
+  names = {recipe_file_name(path) for path in root}
+  for path in scan(join(repo, RECIPE_SUBDIR), optional=True):
+    name = recipe_file_name(path)
+    if name not in names:
+      latest = join(repo, name, "latest")
+      root.append(latest if isfile(latest) else path)
+  return root
 
 
-def checkForFilename(taps, pkg, d, ext=".sh"):
-  if ext == ".sh" and not pkg.startswith("defaults-"):
-    d = package_recipe_dir(d)
-  filename = taps.get(pkg, "{}/{}{}".format(d, pkg, ext))
-  if not exists(filename):
-    if "/" in pkg:
-      filename = taps.get(pkg, "{}/{}".format(d, pkg))
-    else:
-      filename = taps.get(pkg, "{}/{}/latest".format(d, pkg))
-  return filename
+def checkForFilename(taps, pkg, d, ext=".sh", *, nested=True):
+  if pkg in taps:
+    return taps[pkg]
+
+  def candidates(directory):
+    yield "{}/{}{}".format(directory, pkg, ext)
+    yield "{}/{}".format(directory, pkg) if "/" in pkg else "{}/{}/latest".format(directory, pkg)
+
+  root, fallback = candidates(d)
+  if exists(root) and (ext != ".sh" or not isdir(root)):
+    return root
+  if nested and ext == ".sh" and not pkg.startswith("defaults-") and not isfile(fallback):
+    for recipe in candidates(join(d, RECIPE_SUBDIR)):
+      if isfile(recipe):
+        return recipe
+  return fallback
 
 def resolveLocalPath(configDir, s):
   """
