@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 from shlex import quote
+from bits_helpers import git_mirror
 from bits_helpers.cmd import getstatusoutput
 from bits_helpers.log import debug
 from bits_helpers.scm import SCM, SCMError
@@ -84,8 +85,25 @@ class Git(SCM):
 
 
 def git(args, directory=".", check=True, prompt=True):
+  # https sources through the site's git mirror (git_mirror), upstream when it fails
+  mirror = git_mirror.config() if args and args[0] in ("clone", "fetch", "ls-remote") else []
+  err, output = _git(args, directory, prompt, mirror)
+  if mirror and err != 0:
+    git_mirror.failed(args, output)
+    err, output = _git(args, directory, prompt, [])
+  if check and err != 0:
+    raise SCMError("Error {} from git {}: {}".format(err, " ".join(args), output))
+  return output if check else (err, output)
+
+
+def _git(args, directory, prompt, extra):
   lastGitOverride = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
   debug("Executing git %s (in directory %s)", " ".join(args), directory)
+  overrides = ([("safe.directory", "$PWD"), ("gc.auto", "0")] if directory else []) + \
+    [(k, quote(v)) for k, v in extra]
+  config = "GIT_CONFIG_COUNT=%d " % (lastGitOverride + len(overrides)) + " ".join(
+    "GIT_CONFIG_KEY_{n}={k} GIT_CONFIG_VALUE_{n}={v}".format(n=lastGitOverride + i, k=quote(k), v=v)
+    for i, (k, v) in enumerate(overrides)) if overrides else ""
   # We can't use git --git-dir=%s/.git or git -C %s here as the former requires
   # that the directory we're inspecting to be the root of a git directory, not
   # just contained in one (and that breaks CI tests), and the latter isn't
@@ -100,8 +118,6 @@ def git(args, directory=".", check=True, prompt=True):
     args=" ".join(map(quote, args)),
     # GIT_TERMINAL_PROMPT is only supported in git 2.3+.
     prompt_var="GIT_TERMINAL_PROMPT=0" if not prompt else "",
-    directory_safe_var=f"GIT_CONFIG_COUNT={lastGitOverride+2} GIT_CONFIG_KEY_{lastGitOverride}=safe.directory GIT_CONFIG_VALUE_{lastGitOverride}=$PWD GIT_CONFIG_KEY_{lastGitOverride+1}=gc.auto GIT_CONFIG_VALUE_{lastGitOverride+1}=0" if directory else "",
+    directory_safe_var=config,
   ), timeout=GIT_CMD_TIMEOUTS.get(args[0] if len(args) else "*", GIT_COMMAND_TIMEOUT_SEC))
-  if check and err != 0:
-    raise SCMError("Error {} from git {}: {}".format(err, " ".join(args), output))
-  return output if check else (err, output)
+  return err, output

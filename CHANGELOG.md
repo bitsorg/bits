@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** A site's bits-store `git` binding (`store.git`, or `$BITS_GIT_MIRROR`) is the mirror of git sources: bits' clones, fetches and `ls-remote` of https URLs go through it (`insteadOf`), so the tags built are kept in the store. Asked once per run; when it does not answer, or a command fails through it, upstream as before.
 - **[Feature]** The build manifest records the file a PythonPipRecipe package's pip installed (`pip_source`: file, sha256, URL without credentials), built or from the store, and the SBOMs name it: CycloneDX as a distribution reference with its SHA-256, SPDX as the download location.
 - **[Change]** A build job's store token (`POST /ops/ci/store-token`) may also create pip pins for its architectures (`/MANIFESTS/pip-pins/<arch>/**`); reads are anyone's, as all of `/MANIFESTS`.
 - **[Feature]** pip packages are pinned: a PythonPipRecipe package's first build through bits-store records the file pip installed by its sha256 (`MANIFESTS/pip-pins/<arch>/<project>/<version>/<python>-<mode>.json`, create-only), and later builds install that file only (`BITS_PIP_PIN`). Needs bits-recipe-tools that writes `.pip-source.json`, and build tokens that may write `/MANIFESTS/pip-pins/<arch>/**`.

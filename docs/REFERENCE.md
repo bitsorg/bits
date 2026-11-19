@@ -3690,6 +3690,7 @@ A file in a later directory replaces the one of the same name, so an empty `10-C
 | `store.s3_endpoint` | Endpoint of `b3://` stores (after `--s3-endpoint` and the environment); unset: boto3's default. |
 | `store.sources` | bits-store's `sources` binding, asked first for source archives (after `$BITS_SOURCE_STORE`); see [The site's sources store](#the-sites-sources-store-bits-store). |
 | `store.pypi` | bits-store's public `pypi` binding, the pip index of builds (after `$BITS_PYPI_INDEX`); see [The site's pip index](#the-sites-pip-index-bits-store). |
+| `store.git` | bits-store's `git` binding, the mirror of git sources (after `$BITS_GIT_MIRROR`); see [The site's git mirror](#the-sites-git-mirror-bits-store). |
 | `containers.registry`, `containers.tag`, `containers.legacy_image` | The default `--docker` image; see [§22](#22-docker-support). |
 | `providers.url` | The always-on providers repository (after `$BITS_PROVIDERS`). |
 | `sbom.namespace` | SPDX document namespace base. |
@@ -4269,6 +4270,15 @@ A site running bits-store names its `sources` binding in the [site configuration
 - Any other answer, or an unreachable store, leaves the download to the remote store and the upstream URL.
 
 An archive from the sources store is not uploaded to the write store: it is already stored. The recipe's checksum is checked on it as on any download (see [Checksum verification](#checksum-verification)).
+
+#### The site's git mirror (bits-store)
+
+A site running bits-store names its `git` binding in the site configuration (`store.git`, e.g. `https://store.example.org/git`) or in `$BITS_GIT_MIRROR`. bits' clones, fetches and `ls-remote` of https sources then go through it (git's `url.<mirror>/.insteadOf=https://`, also for the recipe repositories and submodules bits fetches), so each tag built is kept in the store and stays available when upstream moves it, deletes it or is down:
+
+- bits asks the store once per run (`/health`); when it does not answer, sources come from upstream, as before.
+- A git command that fails through the mirror is run again upstream, and bits says so once.
+- The store's own URLs are left as they are; the CA bundle bits verifies the store with (`$REQUESTS_CA_BUNDLE` or `$CURL_CA_BUNDLE`) is given to git for the store only.
+- Sources over http, ssh or git:// are not rewritten; nor is git run by a recipe during its build.
 
 #### The site's pip index (bits-store)
 
