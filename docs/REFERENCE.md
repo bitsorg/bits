@@ -696,7 +696,7 @@ repository_position: append
 # commit: 1a2b3c4d
 ```
 
-The `source` URL must point to a git repository whose top-level directory contains `*.sh` recipe files (the same layout as any other `*.bits` directory). `tag` selects the branch, tag or commit to check out (default: `version`). A provider repository is loaded once per build; a `requires` entry that asks for a different version of an already-loaded provider is ignored, with a warning.
+The `source` URL must point to a git repository with `*.sh` package recipes at the root, in `recipes/`, or both. `tag` selects the branch, tag or commit to check out (default: `version`). A provider repository is loaded once per build; a `requires` entry that asks for a different version of an already-loaded provider is ignored, with a warning.
 
 ### Always-on providers (`always_load: true`)
 
@@ -870,7 +870,7 @@ During the walk, an `overrides:` entry for a provider in the active defaults (`s
 
 #### Using a local checkout of a provider
 
-To build with your own copy of a provider's recipes, for example while editing `lcg.bits`, check it out in the config directory under the provider's name. Before cloning a declared provider `<pkg>` (in either phase, except the registry itself), bits looks for `<config_dir>/<pkg>/`; if that directory contains `*.sh` recipes it is used instead of the remote, with its git `HEAD` recorded as provenance (plus `-dirty` if it has uncommitted changes). So a provider you are editing (e.g. `lcg.bits/` next to `lcg.bits.sh`) is picked up as-is, just as a local package checkout shadows its `source`. Only declared providers are shadowed; bits never picks up undeclared `*.bits/` directories this way. `--force-tracked` disables this (and all local-checkout pickup), forcing the remote clone. For an *undeclared* local sub-repo, put it on `BITS_PATH` with `--search-path NAMES`.
+To build with your own copy of a provider's recipes, for example while editing `lcg.bits`, check it out in the config directory under the provider's name. Before cloning a declared provider `<pkg>` (in either phase, except the registry itself), bits looks for `<config_dir>/<pkg>/`; if that checkout contains package recipes (under `recipes/` or in a legacy flat layout) or defaults profiles, it is used instead of the remote, with its git `HEAD` recorded as provenance (plus `-dirty` if it has uncommitted changes). So a provider you are editing (e.g. `lcg.bits/` next to `lcg.bits.sh`) is picked up as-is, just as a local package checkout shadows its `source`. Only declared providers are shadowed; bits never picks up undeclared `*.bits/` directories this way. `--force-tracked` disables this (and all local-checkout pickup), forcing the remote clone. For an *undeclared* local sub-repo, put it on `BITS_PATH` with `--search-path NAMES`.
 
 ### Triggering providers from a defaults file
 
@@ -1086,11 +1086,13 @@ Which packages, for which platform and defaults profiles, with which flavours an
 
 Where the work directory and the recipes are, and which local checkouts are built:
 
+Point `--config-dir` and `BITS_PATH` entries at repository roots. Bits looks for packages at each checkout root first, then in `recipes/` before trying the next checkout. A root recipe or generator still takes precedence over any copy in `recipes/`. When moving a recipe, the root copy stays active until removed. Keep shell helpers outside the recipe search locations. Defaults profiles, `patches/`, `checksums/`, `cvmfs.yaml`, and repository-relative file sources and hooks stay at the root.
+
 | Option | Description |
 |--------|-------------|
 | `-C DIR`, `--chdir DIR` | Change to DIR first (or set `$BITS_CHDIR`). |
 | `-w DIR`, `--work-dir DIR` | Work/output directory. Default: `sw`. |
-| `-c DIR`, `--config-dir DIR` | Directory containing recipe files. Default: `.`. |
+| `-c DIR`, `--config-dir DIR` | Recipe checkout root. Default: `.`. |
 | `--search-path NAMES` | Comma-separated recipe sub-repos to search besides the config dir. A relative NAME resolves to `<config-dir>/NAME.bits`; absolute paths are used as-is. Seeds `BITS_PATH` (an explicit `$BITS_PATH` wins). |
 | `--reference-sources DIR` | Directory for the local mirrors of git repositories. Default: `<work-dir>/MIRROR`. |
 | `--provider-policy POLICY` | Control where each repository provider is inserted into `BITS_PATH`. Format: comma-separated `name:prepend\|append` pairs; every provider defaults to `append`, and this flag is the only way to grant `prepend`. See [§13 Provider policy](#provider-policy). |

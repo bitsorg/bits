@@ -45,6 +45,7 @@ from bits_helpers.checksum_store import (find_checksum_file, parse_checksum_file
 from bits_helpers.defaults import asDict, merge_dicts
 from bits_helpers.log import error, info, warning
 from bits_helpers.matchers import _parse_patch_entry, resolve_variables
+from bits_helpers.paths import recipe_file_name, recipe_files
 from bits_helpers.recipe import getRecipeReader, parseRecipe
 from bits_helpers.utilities import apply_version_from, resolve_spec_data
 from bits_helpers.workarea import _resolve_source_entry, _split_arch_prefix
@@ -57,9 +58,9 @@ _HASHED_PROTOCOLS = ("http://", "https://", "ftp://", "ftps://")
 
 # ── Recipes and profiles ──────────────────────────────────────────────────────
 
-def _read(path):
+def _read(path, repo_dir=None):
   """Parsed YAML header of recipe *path*, or ``None`` (warned) if unparsable."""
-  err, meta, _ = parseRecipe(getRecipeReader(path))
+  err, meta, _ = parseRecipe(getRecipeReader(path, repo_dir=repo_dir))
   if err or not isinstance(meta, dict):
     warning("Skipping %s: %s", path, err or "not a recipe")
     return None
@@ -68,12 +69,7 @@ def _read(path):
 
 def recipes_in(repo):
   """``{lowercase package name: recipe path}`` for the recipes of *repo*."""
-  out = {}
-  for f in sorted(os.listdir(repo)):
-    path = os.path.join(repo, f)
-    if f.endswith(".sh") and not f.startswith("defaults-") and os.path.isfile(path):
-      out[f[:-3].lower()] = path
-  return out
+  return {recipe_file_name(path): path for path in recipe_files(repo, strict=True)}
 
 
 def profiles_in(repo, want):
@@ -261,7 +257,7 @@ def plan(repo, recipe_dirs, profile_names, packages, arch):
   search = [repo] + [d for d in recipe_dirs if os.path.abspath(d) != repo]
   found = {}
   for d in reversed(search):               # earlier repositories win, as in a build
-    found.update(recipes_in(d))
+    found.update((name, (path, d)) for name, path in recipes_in(d).items())
   own = recipes_in(repo)
   want = {p.lower() for p in packages}
   profiles = profiles_in(repo, profile_names) if profile_names else []
@@ -298,14 +294,15 @@ def plan(repo, recipe_dirs, profile_names, packages, arch):
   for name in sorted(set(own) | set(found if profiles else ())):
     if want and name not in want:
       continue
-    meta = _read(found[name])
+    path, recipe_repo = found[name]
+    meta = _read(path, repo_dir=recipe_repo)
     if meta is None:
       continue
     pkg = str(meta.get("package", name))
     if pkg.lower() != name:                # the build refuses such a recipe too
-      warning("Skipping %s: its package field is %r", found[name], pkg)
+      warning("Skipping %s: its package field is %r", path, pkg)
       continue
-    patches_dir = os.path.join(os.path.dirname(found[name]), "patches")
+    patches_dir = os.path.join(recipe_repo, "patches")
     try:
       base = wants(meta, ["release"], rel_vars, arch, source_mode(release))
     except ValueError as exc:

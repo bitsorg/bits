@@ -750,7 +750,7 @@ _PKGLIST_RECIPES = {
 
 
 class MockReaderPkgList:
-    def __init__(self, url, dist=None, genPackages=None):
+    def __init__(self, url, dist=None, genPackages=None, repo_dir=None):
         self._contents = _PKGLIST_RECIPES[url]
         self.url = "mock://" + url
 
@@ -913,20 +913,24 @@ class TestBootstrapDefaultConfig(unittest.TestCase):
         ])
         return lambda *a, **kw: next(calls)
 
+    def _registry(self, filename):
+        checkout = tempfile.TemporaryDirectory()
+        self.addCleanup(checkout.cleanup)
+        with open(os.path.join(checkout.name, filename), "w"):
+            pass
+        return checkout.name
+
     @patch("bits_helpers.repo_provider.info")      # avoid LogFormatter double-format bug
     @patch("bits_helpers.repo_provider.clone_or_update_provider")
     @patch("bits_helpers.repo_provider.parseRecipe")
     @patch("bits_helpers.repo_provider.getRecipeReader")
-    @patch("bits_helpers.repo_provider.exists")   # module-level name, not os.path.exists
     def test_returns_config_checkout_when_default_sh_found(
-        self, mock_exists, mock_reader, mock_parse, mock_clone, _info,
+        self, mock_reader, mock_parse, mock_clone, _info,
     ):
         """Happy path: bits-providers has default.bits.sh → returns config checkout."""
-        providers_checkout = "/work/REPOS/bits-providers/abc1234567"
+        providers_checkout = self._registry("default.bits.sh")
         config_checkout    = "/work/REPOS/default.bits/def4567890"
 
-        # exists() returns True only for the default.bits.sh path
-        mock_exists.side_effect = lambda p: p.endswith("default.bits.sh")
         mock_reader.return_value = "reader"
         mock_parse.return_value = (
             None,
@@ -981,13 +985,11 @@ class TestBootstrapDefaultConfig(unittest.TestCase):
     @patch("bits_helpers.repo_provider.clone_or_update_provider")
     @patch("bits_helpers.repo_provider.parseRecipe")
     @patch("bits_helpers.repo_provider.getRecipeReader")
-    @patch("bits_helpers.repo_provider.exists")   # module-level name, not os.path.exists
     def test_returns_none_when_config_clone_fails(
-        self, mock_exists, mock_reader, mock_parse, mock_clone, _info, _warn,
+        self, mock_reader, mock_parse, mock_clone, _info, _warn,
     ):
         """A clone failure for the default config repo is caught and returns None."""
-        providers_checkout = "/work/REPOS/bits-providers/abc1234567"
-        mock_exists.side_effect = lambda p: p.endswith("default.bits.sh")
+        providers_checkout = self._registry("default.bits.sh")
         mock_reader.return_value = "reader"
         mock_parse.return_value = (
             None,
@@ -1014,17 +1016,13 @@ class TestBootstrapDefaultConfig(unittest.TestCase):
     @patch("bits_helpers.repo_provider.clone_or_update_provider")
     @patch("bits_helpers.repo_provider.parseRecipe")
     @patch("bits_helpers.repo_provider.getRecipeReader")
-    @patch("bits_helpers.repo_provider.exists")
     def test_organisation_recipe_preferred_over_default(
-        self, mock_exists, mock_reader, mock_parse, mock_clone, _info,
+        self, mock_reader, mock_parse, mock_clone, _info,
     ):
         """Organisation stored uppercase (LHCB) → resolves to lhcb.bits.sh (lowercase)."""
-        providers_checkout = "/work/REPOS/bits-providers/abc1234567"
+        providers_checkout = self._registry("lhcb.bits.sh")
         config_checkout    = "/work/REPOS/lhcb.bits/def4567890"
 
-        # Only lhcb.bits.sh (lowercase) exists — default.bits.sh is absent.
-        # args.organisation is uppercase "LHCB" as stored in bits.rc.
-        mock_exists.side_effect = lambda p: p.endswith("lhcb.bits.sh")
         mock_reader.return_value = "reader"
         mock_parse.return_value = (
             None,
@@ -1056,16 +1054,13 @@ class TestBootstrapDefaultConfig(unittest.TestCase):
     @patch("bits_helpers.repo_provider.clone_or_update_provider")
     @patch("bits_helpers.repo_provider.parseRecipe")
     @patch("bits_helpers.repo_provider.getRecipeReader")
-    @patch("bits_helpers.repo_provider.exists")
     def test_organisation_falls_back_to_default_sh_when_org_sh_absent(
-        self, mock_exists, mock_reader, mock_parse, mock_clone, _info,
+        self, mock_reader, mock_parse, mock_clone, _info,
     ):
         """When <org>.bits.sh is absent, bootstrap falls back to default.bits.sh."""
-        providers_checkout = "/work/REPOS/bits-providers/abc1234567"
+        providers_checkout = self._registry("default.bits.sh")
         config_checkout    = "/work/REPOS/default.bits/def4567890"
 
-        # LHCB.bits.sh / lhcb.bits.sh absent, default.bits.sh present
-        mock_exists.side_effect = lambda p: p.endswith("default.bits.sh")
         mock_reader.return_value = "reader"
         mock_parse.return_value = (
             None,

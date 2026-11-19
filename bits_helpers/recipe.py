@@ -13,7 +13,7 @@ import os
 import re
 import sys
 from collections import OrderedDict
-from glob import glob
+from glob import escape, glob
 from os.path import join
 from typing import Any, IO
 
@@ -22,7 +22,7 @@ import yaml
 from bits_helpers.cmd import getoutput
 from bits_helpers.git import git
 from bits_helpers.log import dieOnError
-from bits_helpers.paths import getConfigPaths, resolveFilename
+from bits_helpers.paths import RECIPE_SUBDIR, checkForFilename, getConfigPaths, resolveFilename
 
 class SpecError(Exception):
   pass
@@ -43,7 +43,7 @@ def validateSpec(spec):
     spec["version"] = "0"
 
 
-def getRecipeReader(url: str, dist=None, genPackages={}):
+def getRecipeReader(url: str, dist=None, genPackages={}, repo_dir=None):
   m = re.search(r'^(dist|generate):(.*)@([^@]+)$', url)
   if m and m.group(1) == "generate":
     pkg, version = m.group(2), m.group(3)
@@ -54,7 +54,7 @@ def getRecipeReader(url: str, dist=None, genPackages={}):
   elif m and dist:
     return GitReader(url, dist)
   else:
-    return FileReader(url)
+    return FileReader(url, repo_dir)
 
 # Generate a recipe of package
 class GeneratedPackage:
@@ -66,8 +66,14 @@ class GeneratedPackage:
 
 # Read a recipe from a file
 class FileReader:
-  def __init__(self, url) -> None:
+  def __init__(self, url, repo_dir=None) -> None:
     self.url = url
+    self.repo_dir = None
+    if repo_dir:
+      nested = join(os.path.abspath(repo_dir), RECIPE_SUBDIR)
+      path = os.path.abspath(url)
+      if path.startswith(nested + os.sep) and path != join(nested, "latest"):
+        self.repo_dir = repo_dir
   def __call__(self):
     with open(self.url) as f:
       return f.read()
@@ -79,8 +85,10 @@ class GitReader:
   def __call__(self):
     m = re.search(r'^dist:(.*)@([^@]+)$', self.url)
     fn, gh = m.groups()
-    err, d = git(("show", f"{gh}:{fn.lower()}.sh"),
-                 directory=self.configDir)
+    fn = fn.lower()
+    err, d = git(("show", f"{gh}:{fn}.sh"), directory=self.configDir, check=False)
+    if err and not fn.startswith("defaults-"):
+      err, d = git(("show", f"{gh}:{RECIPE_SUBDIR}/{fn}.sh"), directory=self.configDir, check=False)
     if err:
       raise RuntimeError("Cannot read recipe {fn} from reference {gh}.\n"
                          "Make sure you run first (this will not alter your recipes):\n"
@@ -238,7 +246,8 @@ def parseRecipe(reader, generatePackages=None, visited=None):
     header, recipe = d[:_m.start()], d[_m.end():]
     # Splice any `#!include` directives in the body before anything else sees it,
     # so the included text is variable-expanded and hashed as if written inline.
-    recipe = resolveIncludes(recipe, getattr(reader, "url", "") or "")
+    repo_dir = getattr(reader, "repo_dir", None)
+    recipe = resolveIncludes(recipe, getattr(reader, "url", "") or "", repo_dir)
     # YAML forbids '%' as the first character of a plain (unquoted) scalar because
     # it is reserved for directives (e.g. %YAML, %TAG).  Recipe authors may want
     # to write  "- %(name)s-%(version)s.patch"  in patches: (and similar lists)
@@ -271,15 +280,15 @@ def parseRecipe(reader, generatePackages=None, visited=None):
     if spec and "from" in spec:
       basename = os.path.basename(getattr(reader, "url", "") or "")
       filename = basename[:-3] if basename.endswith(".sh") else basename
-      repoDir = os.environ.get("BITS_REPO_DIR")
+      repoDir = repo_dir or os.environ.get("BITS_REPO_DIR")
       if visited is None:
         visited = []
       if spec["from"] in visited:
         raise RuntimeError(f" Cyclic Dependency: {' -> '.join(list(visited) + [spec['from']])}")
       visited.append(spec["from"])
       parent_dir = os.path.join(repoDir, spec["from"])
-      base_filename, pkgdir = resolveFilename({}, filename, parent_dir, generatePackages)
-      base_reader = getRecipeReader(base_filename, repoDir, generatePackages[parent_dir])
+      base_filename, pkgdir = resolveFilename({}, filename, parent_dir, generatePackages or {})
+      base_reader = getRecipeReader(base_filename, repoDir, (generatePackages or {}).get(pkgdir, {}), pkgdir)
       err, base_spec, base_recipe = parseRecipe(base_reader, generatePackages, visited)
       spec, recipe_append = handleMergePolicy(spec, base_spec)
       recipe = recipe + base_recipe if recipe_append else recipe
@@ -302,11 +311,10 @@ def parseRecipe(reader, generatePackages=None, visited=None):
 def getGeneratedPackages(configDir):
   all_pkgs = {}
   pkgDirs = getConfigPaths(configDir)
-  for pkgdir in pkgDirs:
+  def generated_in(directory, pkgdir):
     dir_pkgs = {}
-    for vp in [x.split(os.sep)[-2] for x in glob(join(pkgdir, "*", "packages.py"))]:
-      packages_py = join(pkgdir, vp, "packages.py")
-      sys.path.insert(0, join(pkgdir, vp))
+    for packages_py in glob(join(escape(directory), "*", "packages.py")):
+      sys.path.insert(0, os.path.dirname(packages_py))
       try:
         pkg = __import__("packages")
       except (ImportError, SyntaxError) as e:
@@ -319,6 +327,14 @@ def getGeneratedPackages(configDir):
         dieOnError(True, "Error running getPackages() in %r: %s" % (packages_py, e))
       sys.modules.pop("packages")
       sys.path.pop(0)
+    return dir_pkgs
+
+  for pkgdir in pkgDirs:
+    dir_pkgs = generated_in(pkgdir, pkgdir)
+    nested_pkgs = generated_in(join(pkgdir, RECIPE_SUBDIR), pkgdir)
+    for name, meta in nested_pkgs.items():
+      if name not in dir_pkgs and not os.path.exists(checkForFilename({}, name, pkgdir, nested=False)):
+        dir_pkgs[name] = meta
     all_pkgs[pkgdir] = dir_pkgs
   return all_pkgs
 

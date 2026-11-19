@@ -51,6 +51,7 @@ import sys
 import glob
 
 from bits_helpers.log import debug, error, info
+from bits_helpers.paths import recipe_files
 from bits_helpers.recipe import parseRecipe, FileReader
 
 
@@ -120,12 +121,12 @@ def collect_homebrew(configDirs, architecture):
     configDirs = [configDirs]
   seen = set()
   for configDir in configDirs:
-    for path in sorted(glob.glob(os.path.join(configDir, "*.sh"))):
+    for path in recipe_files(configDir, include_defaults=True):
       real = os.path.realpath(path)
       if real in seen:
         continue
       seen.add(real)
-      err, spec, _ = parseRecipe(FileReader(path))
+      err, spec, _ = parseRecipe(FileReader(path, repo_dir=configDir))
       if err or not spec:
         # Not a parseable recipe (e.g. a defaults-*.sh helper). Skip quietly.
         continue
@@ -143,13 +144,8 @@ def _standalone_scan_dirs(configDir, work_dir):
   """
   dirs = [configDir]
   repos = os.path.join(os.path.abspath(work_dir), "REPOS")
-  if os.path.isdir(repos):
-    # Any directory under REPOS that contains recipes. Duplicates across
-    # provider versions are harmless — formulae are collected into a set.
-    found = set()
-    for path in glob.glob(os.path.join(repos, "**", "*.sh"), recursive=True):
-      found.add(os.path.dirname(path))
-    dirs.extend(sorted(found))
+  dirs.extend(sorted(path for path in glob.glob(os.path.join(repos, "*", "*"))
+                     if os.path.isdir(path) and not os.path.islink(path)))
   return dirs
 
 
