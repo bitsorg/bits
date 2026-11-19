@@ -1069,6 +1069,7 @@ Which packages, for which platform and defaults profiles, with which flavours an
 |--------|-------------|
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 | `--flavour NAME[=VALUE]` (aliases `--flavor`, `--set`) | Set a build-wide flavour variable (repeatable, comma-separated). `NAME`→`true`, `NAME=VALUE`→`VALUE`, `!NAME`→`false`. Gates `(?NAME)` conditional requires/sources/patches and is exported into the build environment (not for a variable declared `export: false`); overrides a defaults `variables:` entry of the same name. See [Flavours](#flavours). |
+| `--pip-build wheel\|source\|all` | How PythonPipRecipe packages install, for this build: `wheel` (prebuilt where pip finds one), `source` (each from its sdist) or `all` (their build tools too). Default: the defaults' `system.pip_build`, else `wheel`; see [The site's pip index](#the-sites-pip-index-bits-store). |
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected, or the `architecture:` template from defaults (see [The `architecture:` template](#architecture-string-and-the-architecture-template)). An explicit value here overrides the template. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `--day DAY` | Value of the `{day}` nightly CVMFS path slot (e.g. `Fri`). Default: the UTC weekday, filled in only when a template uses `{day}`; `''` collapses the slot. Layout only — never hashed. See [bits store / bits cvmfs](#bits-store--bits-cvmfs-admin--ci-groups). |
@@ -3256,7 +3257,7 @@ package_family:
 | `expand_recipe` | `true` expands every recipe body strictly, as a recipe's own `variables:` or `expand_recipe: true` does: an unknown `%(name)s` in it is an error. |
 | `auto_patch` | `false` turns off automatic patch application for every package; see [Controlling patch application](#controlling-patch-application). |
 | `force_revision`, `revision_policy` | Revision labels for installed packages; see [Forcing or dropping the revision suffix](#forcing-or-dropping-the-revision-suffix-force_revision). |
-| `system` | Build-host and publishing settings, e.g. `remote_store`, `fetch_cache` (the name of the community's cache of downloaded sources, see the recipe field `fetch_cache`), `sandbox_network`, `mem_per_job_default`, `build_oversubscribe`, `build_unleash_final`, `source_mode` and the CVMFS path templates (see [CVMFS layout](#cvmfs-layout)). |
+| `system` | Build-host and publishing settings, e.g. `remote_store`, `fetch_cache` (the name of the community's cache of downloaded sources, see the recipe field `fetch_cache`), `sandbox_network`, `mem_per_job_default`, `build_oversubscribe`, `build_unleash_final`, `source_mode`, `pip_build` and the CVMFS path templates (see [CVMFS layout](#cvmfs-layout)). |
 
 
 ---
@@ -4277,6 +4278,8 @@ A site running bits-store names its public `pypi` binding in the site configurat
 - bits asks it once per run; when it does not answer (off-site, say), pip reads its own index, and says so.
 - Outside a container bits also gives pip the CA bundle it verifies the store with (`$REQUESTS_CA_BUNDLE` or `$CURL_CA_BUNDLE`, as `PIP_CERT`); the bits-containers images trust the CERN CA themselves. A `PIP_INDEX_URL` or `PIP_CERT` already in the environment of a build outside a container is kept, and `-e PIP_INDEX_URL=...` wins in any build.
 - Neither enters a package's hash.
+
+A group builds its pip packages from source with `pip_build` in its defaults' `system:` (`wheel`, the default; `source`; `all`), and anyone for one build with `--pip-build` or `$BITS_PIP_BUILD`. `source` builds each PythonPipRecipe package from its sdist (`--no-binary <package>`), its build tools still wheels; `all` builds those too (`--no-binary :all:`: slower, and some do not build). It enters the hash of PythonPipRecipe packages only (`source` and `all` each their own), so switching rebuilds those and what depends on them, and back to `wheel` finds the wheel builds again. Recipes that replace `MakeInstall` are not affected. It needs bits-recipe-tools with `BITS_PIP_BUILD`.
 
 ### Store integrity verification
 

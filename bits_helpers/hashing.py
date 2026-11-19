@@ -183,6 +183,10 @@ def storeHashes(package, specs, considerRelocation):
   # set, so the hashes from before it existed stay the same at 0.
   if BUILD_EPOCH:
     h_all("build_epoch:%d" % BUILD_EPOCH)
+  # A pip package built from source (system.pip_build, --pip-build): only when set,
+  # so wheel builds keep their hashes.
+  if spec.get("pip_build"):
+    h_all("pip_build:" + spec["pip_build"])
 
   # commit_hash could be a commit hash (if we're not building a tag, but
   # instead e.g. a branch or particular commit specified by its hash), or it

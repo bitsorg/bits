@@ -291,6 +291,11 @@ _PIP_RECIPE = re.compile(r"^[^#\n]*bits-include\s+PythonPipRecipe\b", re.M)
 _CPE_FIELDS = re.compile(r"(?<!\\):")
 
 
+def pip_recipe(body):
+    """Does a recipe body install its package with PythonPipRecipe (pip, by version)."""
+    return bool(_PIP_RECIPE.search(str(body or "")))
+
+
 def _cpe(ref, fill):
     """*ref* (``cpe:2.3:…``, short forms padded with ``*``) with its %(…)s filled
     in, escaped as CPE 2.3 requires; None unless it has the 13 fields. A version
@@ -330,7 +335,7 @@ def _references(spec: dict) -> list:
         elif ref not in out:
             out.append(ref)
     body = str(spec.get("recipe") or "")
-    if version and not any(r.startswith("pkg:") for r in out) and _PIP_RECIPE.search(body):
+    if version and not any(r.startswith("pkg:") for r in out) and pip_recipe(body):
         m = _PYPI_NAME.search(body)
         pypi = (m.group(1) if m else name).lower().replace("_", "-")
         out.append("pkg:pypi/%s@%s" % (quote(pypi, safe=".-"), quote(version, safe=".-_~")))

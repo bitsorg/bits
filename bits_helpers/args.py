@@ -1544,6 +1544,10 @@ def add_build_arguments(subparsers, ctx):
                             help="Build on this system, even if it doesn't have a supported architecture.")
   build_parser.add_argument("-z", "--devel-prefix", nargs="?", dest="develPrefix", default=argparse.SUPPRESS,
                             help="Version name to use for development packages. Defaults to branch name.")
+  build_parser.add_argument("--pip-build", dest="pipBuild", choices=("wheel", "source", "all"), default=None,
+                            help=("How PythonPipRecipe packages install, for this build: wheel (prebuilt "
+                                  "where there is one), source (each from its sdist) or all (its build "
+                                  "tools too). Default: the defaults' system.pip_build, else wheel."))
   build_parser.add_argument("-e", dest="environment", action="append", default=[],
                             help="KEY=VALUE binding to add to the build environment. May be specified multiple times.")
   build_parser.add_argument("-j", "--jobs", dest="jobs", type=int, default=multiprocessing.cpu_count(),

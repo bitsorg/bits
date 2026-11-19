@@ -8,6 +8,7 @@ from bits_helpers import __version__
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
 from bits_helpers import pypi_index, site
+from bits_helpers.manifest import pip_recipe
 from bits_helpers.repo_provider import (fetch_repo_providers_iteratively, load_always_on_providers,
                                         announce_providers, MAX_PROVIDER_ITERATIONS,
                                         no_recipes_hint)
@@ -1201,6 +1202,27 @@ def _source_mode(defaults_meta):
         val = str(system.get("source_mode")
                   or variables.get("source_mode") or "tar").strip().lower()
     return "git" if val == "git" else "tar"
+
+
+PIP_BUILDS = ("wheel", "source", "all")
+
+
+def _pip_build(defaults_meta, args=None):
+  """How PythonPipRecipe packages install: 'wheel' (pip's choice, prebuilt where it
+  can), 'source' (the package from its sdist) or 'all' (its build tools too).
+  --pip-build, else BITS_PIP_BUILD, else the defaults' system.pip_build."""
+  val = getattr(args, "pipBuild", None) or os.environ.get("BITS_PIP_BUILD", "").strip().lower()
+  if not val:
+    val = str(((defaults_meta or {}).get("system") or {}).get("pip_build") or "wheel").strip().lower()
+  dieOnError(val not in PIP_BUILDS, "pip_build %r: one of %s" % (val, ", ".join(PIP_BUILDS)))
+  return val
+
+
+def _apply_pip_build(spec, mode):
+  """Mark a PythonPipRecipe package built otherwise than from wheels: its hash and
+  build environment (BITS_PIP_BUILD) carry the mode. 'wheel' marks nothing."""
+  if mode != "wheel" and pip_recipe(spec.get("recipe")):
+    spec["pip_build"] = mode
 
 
 def _apply_source_mode(spec, mode):
@@ -3138,6 +3160,8 @@ def build_one_package(p, ctx):
 
   # pip's index: the site's bits-store /pypi when it answers (before -e, which wins)
   buildEnvironment += pypi_index.build_environment(bool(getattr(args, "docker", False)))
+  if spec.get("pip_build"):
+    buildEnvironment.append(("BITS_PIP_BUILD", spec["pip_build"]))   # PythonPipRecipe reads it
 
   # Add the extra environment as passed from the command line.
   buildEnvironment += [e.partition('=')[::2] for e in args.environment]
@@ -4203,12 +4227,14 @@ def doBuild(args, parser):
   # is gone. Devel packages always build from their local checkout, so they are
   # exempt (their source is forced just below).
   _smode = _source_mode(defaultsMeta)
+  _pmode = _pip_build(defaultsMeta, args)
   for pkg, spec in specs.items():
     spec["is_devel_pkg"] = pkg in develPkgs
     if spec["is_devel_pkg"]:
       spec["source"] = str(Path.cwd() / pkg)
     else:
       _apply_source_mode(spec, _smode)
+    _apply_pip_build(spec, _pmode)
 
     # Only initialize Sapling if it's in PATH and the repo uses it
     use_sapling = False

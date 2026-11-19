@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** A group builds its pip packages from source: `system.pip_build` in its defaults (`wheel`, the default; `source`: each PythonPipRecipe package from its sdist; `all`: its build tools too), and anyone for one build with `bits build --pip-build` or `$BITS_PIP_BUILD`. Only PythonPipRecipe packages change hash, each mode its own; with `wheel` none does. Needs bits-recipe-tools that reads `BITS_PIP_BUILD`.
 - **[Change]** At CERN (`10-CERN.yaml`) builds' pip reads through bits-store's public `/pypi` (`store.pypi: https://bits.cern.ch:8444/pypi/simple`); off-site, where it does not answer, pip reads PyPI as before.
 - **[Feature]** A site's bits-store public `pypi` binding (`store.pypi`, or `$BITS_PYPI_INDEX`) is every build's pip index (`PIP_INDEX_URL`): each file pip installs is kept in the store, with the SHA-256 the index lists. No token reaches recipe code. When it does not answer, pip reads its own index; outside a container pip also gets the CA bundle bits verifies the store with (`PIP_CERT`); an index or CA bundle the environment sets is kept, and `-e` wins. Not a hash input.
 - **[Change]** `bits build` and `bits publish` no longer list the whole S3 store after uploading to push its usage gauges to VictoriaMetrics (`METRICS_URL`): the console's Dashboard bar that read them is retired for its Store page, and bits-store's `/metrics` gives the same gauges from its index. `bits store stats` still reports, and pushes with `--monitor-url`.
