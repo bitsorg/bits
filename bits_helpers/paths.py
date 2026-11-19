@@ -7,19 +7,33 @@ utilities.py as a leaf (depends only on the logger and checksum.parse_entry), so
 layers above it can share these without an import cycle."""
 
 import os
-from os.path import exists, isdir, join, lexists
+from os.path import exists, isdir, isfile, join, lexists
 
 from bits_helpers.log import dieOnError, error
 
-# A legacy checkout can already use packages/ for a recipe or generator.
-LEGACY_PACKAGES_ENTRIES = ("latest", "packages.py")
+RECIPE_SUBDIR = "recipes"
+# A legacy checkout can already use recipes/ for a recipe or generator.
+LEGACY_RECIPE_DIR_ENTRIES = ("latest", "packages.py")
+
+
+def is_package_recipe(filename):
+  return filename.endswith(".sh") and not filename.startswith("defaults-")
 
 
 def package_recipe_dir(repo):
-  """Return the package directory, or the checkout root for a flat repository."""
-  packages = join(repo, "packages")
-  if isdir(packages) and not any(lexists(join(packages, f)) for f in LEGACY_PACKAGES_ENTRIES):
-    return packages
+  """Return the recipe directory, or the checkout root for a flat repository."""
+  recipes = join(repo, RECIPE_SUBDIR)
+  if not isdir(recipes) or any(lexists(join(recipes, f)) for f in LEGACY_RECIPE_DIR_ENTRIES):
+    return repo
+  try:
+    with os.scandir(recipes) as entries:
+      for entry in entries:
+        if is_package_recipe(entry.name) and entry.is_file():
+          return recipes
+        if entry.is_dir() and any(isfile(join(entry.path, f)) for f in LEGACY_RECIPE_DIR_ENTRIES):
+          return recipes
+  except OSError:
+    pass
   return repo
 
 
@@ -35,8 +49,7 @@ def recipe_files(repo, include_defaults=False, strict=False):
         raise
       return []
 
-  packages = package_recipe_dir(repo)
-  files = scan(packages, defaults=False)
+  files = scan(package_recipe_dir(repo), defaults=False)
   if include_defaults:
     files.extend(scan(repo, defaults=True))
   return sorted(files)

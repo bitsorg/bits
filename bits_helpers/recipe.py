@@ -22,7 +22,10 @@ import yaml
 from bits_helpers.cmd import getoutput
 from bits_helpers.git import git
 from bits_helpers.log import dieOnError
-from bits_helpers.paths import LEGACY_PACKAGES_ENTRIES, getConfigPaths, package_recipe_dir, resolveFilename
+from bits_helpers.paths import (
+  LEGACY_RECIPE_DIR_ENTRIES, RECIPE_SUBDIR, getConfigPaths, is_package_recipe,
+  package_recipe_dir, resolveFilename,
+)
 
 class SpecError(Exception):
   pass
@@ -82,11 +85,17 @@ class GitReader:
     fn, gh = m.groups()
     fn = fn.lower()
     if not fn.startswith("defaults-"):
-      err, entries = git(("ls-tree", "--full-tree", "-z", "--name-only", gh, "--", "packages/"),
+      prefix = RECIPE_SUBDIR + "/"
+      err, entries = git(("ls-tree", "-r", "--full-tree", "-z", "--name-only", gh, "--", prefix),
                          directory=self.configDir, check=False)
-      paths = set(entries.split("\0")) - {""}
-      if not err and paths and not paths.intersection("packages/" + f for f in LEGACY_PACKAGES_ENTRIES):
-        fn = "packages/" + fn
+      paths = {p[len(prefix):] for p in entries.split("\0") if p.startswith(prefix)}
+      if not err and not paths.intersection(LEGACY_RECIPE_DIR_ENTRIES):
+        for path in paths:
+          parts = path.split("/")
+          if ((len(parts) == 1 and is_package_recipe(parts[0])) or
+              (len(parts) == 2 and parts[1] in LEGACY_RECIPE_DIR_ENTRIES)):
+            fn = prefix + fn
+            break
     err, d = git(("show", f"{gh}:{fn}.sh"), directory=self.configDir, check=False)
     if err:
       raise RuntimeError("Cannot read recipe {fn} from reference {gh}.\n"

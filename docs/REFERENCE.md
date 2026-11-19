@@ -696,7 +696,7 @@ repository_position: append
 # commit: 1a2b3c4d
 ```
 
-The `source` URL must point to a git repository with `*.sh` package recipes in `packages/`, or at the root for a legacy flat checkout. `tag` selects the branch, tag or commit to check out (default: `version`). A provider repository is loaded once per build; a `requires` entry that asks for a different version of an already-loaded provider is ignored, with a warning.
+The `source` URL must point to a git repository with `*.sh` package recipes in `recipes/`, or at the root for a legacy flat checkout. `tag` selects the branch, tag or commit to check out (default: `version`). A provider repository is loaded once per build; a `requires` entry that asks for a different version of an already-loaded provider is ignored, with a warning.
 
 ### Always-on providers (`always_load: true`)
 
@@ -870,7 +870,7 @@ During the walk, an `overrides:` entry for a provider in the active defaults (`s
 
 #### Using a local checkout of a provider
 
-To build with your own copy of a provider's recipes, for example while editing `lcg.bits`, check it out in the config directory under the provider's name. Before cloning a declared provider `<pkg>` (in either phase, except the registry itself), bits looks for `<config_dir>/<pkg>/`; if that checkout contains package recipes (under `packages/` or in a legacy flat layout) or defaults profiles, it is used instead of the remote, with its git `HEAD` recorded as provenance (plus `-dirty` if it has uncommitted changes). So a provider you are editing (e.g. `lcg.bits/` next to `lcg.bits.sh`) is picked up as-is, just as a local package checkout shadows its `source`. Only declared providers are shadowed; bits never picks up undeclared `*.bits/` directories this way. `--force-tracked` disables this (and all local-checkout pickup), forcing the remote clone. For an *undeclared* local sub-repo, put it on `BITS_PATH` with `--search-path NAMES`.
+To build with your own copy of a provider's recipes, for example while editing `lcg.bits`, check it out in the config directory under the provider's name. Before cloning a declared provider `<pkg>` (in either phase, except the registry itself), bits looks for `<config_dir>/<pkg>/`; if that checkout contains package recipes (under `recipes/` or in a legacy flat layout) or defaults profiles, it is used instead of the remote, with its git `HEAD` recorded as provenance (plus `-dirty` if it has uncommitted changes). So a provider you are editing (e.g. `lcg.bits/` next to `lcg.bits.sh`) is picked up as-is, just as a local package checkout shadows its `source`. Only declared providers are shadowed; bits never picks up undeclared `*.bits/` directories this way. `--force-tracked` disables this (and all local-checkout pickup), forcing the remote clone. For an *undeclared* local sub-repo, put it on `BITS_PATH` with `--search-path NAMES`.
 
 ### Triggering providers from a defaults file
 
@@ -1086,7 +1086,7 @@ Which packages, for which platform and defaults profiles, with which flavours an
 
 Where the work directory and the recipes are, and which local checkouts are built:
 
-Point `--config-dir` and `BITS_PATH` entries at repository roots. When a checkout has a `packages/` directory, only that directory supplies package recipes (including versioned recipes and package generators). Without it, Bits looks for package recipes at the root as before. A `packages/` directory with a `latest` entry or a `packages.py` directly inside it is treated as a legacy versioned recipe or generator directory. Defaults profiles, `patches/`, `checksums/`, `cvmfs.yaml`, and repository-relative file sources and hooks stay at the root.
+Point `--config-dir` and `BITS_PATH` entries at repository roots. When `recipes/` contains package recipes, versioned recipes, or package generators, Bits uses it instead of the root for package lookup. A `recipes/` directory with only support files, or with `latest` or `packages.py` directly inside it (a legacy versioned recipe or generator), does not switch the checkout to the new layout. Defaults profiles, `patches/`, `checksums/`, `cvmfs.yaml`, and repository-relative file sources and hooks stay at the root.
 
 | Option | Description |
 |--------|-------------|
