@@ -149,6 +149,14 @@ class RpmTest(unittest.TestCase):
     with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
       rpm.doRpm(self.args(rpmView=".."), argparse.ArgumentParser())
 
+  def test_a_signing_key_not_in_the_keyring(self):
+    err = io.StringIO()
+    with self.assertRaises(SystemExit), contextlib.redirect_stderr(err), \
+         mock.patch("shutil.which", return_value="/usr/bin/tool"), \
+         mock.patch.object(rpm, "fingerprints", return_value=set()):
+      rpm.doRpm(self.args(rpmSignKey="nobody"), argparse.ArgumentParser())
+    self.assertIn("no secret key nobody", err.getvalue())
+
   def test_a_failing_tool_is_an_error(self):
     with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
       rpm.run(["false"])

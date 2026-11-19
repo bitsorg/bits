@@ -18,6 +18,7 @@ def run(cmd, **kw):
   try:
     return subprocess.run(cmd, check=True, **kw)
   except (OSError, subprocess.CalledProcessError) as e:
+    sys.stderr.write(getattr(e, "stderr", None) or "")
     error("%s failed: %s", cmd[0], e)
     sys.exit(1)
 
@@ -284,6 +285,8 @@ def doRpm(args, parser):
     error("bits rpm needs %s: dnf install rpm-build rpm-sign createrepo_c gnupg2",
           " ".join(missing))
     sys.exit(1)
+  if args.rpmSignKey and not fingerprints("--list-secret-keys", args.rpmSignKey):
+    parser.error("there is no secret key %s in your GPG keyring" % args.rpmSignKey)
   if args.rpmRepo:
     problem = signing_problem(abspath(args.rpmRepo), args.rpmSignKey)
     if problem:
@@ -322,9 +325,9 @@ def doRpm(args, parser):
       rpms.append(rpmbuild(view_spec(args.rpmView, meta, packages, prefix, join(top, "root")),
                            top, out))
   if args.rpmSignKey:
-    env = {"GPG_TTY": os.ttyname(0) if os.isatty(0) else "", **os.environ}
-    run(["rpmsign", "--define", "_gpg_name " + args.rpmSignKey, "--addsign"] + rpms,
-        stdout=subprocess.DEVNULL, env=env)
+    signed = run(["rpmsign", "--define", "_gpg_name " + args.rpmSignKey, "--addsign"] + rpms,
+                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    sys.stderr.write("".join(l for l in signed.stderr.splitlines(True) if "GPG_TTY" not in l))
   if args.rpmRepo:
     repo = abspath(args.rpmRepo)
     publish(rpms, repo, args.rpmRepoUrl, args.rpmSignKey)
