@@ -1,3 +1,4 @@
+import fcntl
 import glob
 import json
 import os
@@ -248,6 +249,12 @@ def prefix_of(path):
 def publish(rpms, repo, url, key):
   banner("Publishing %d RPMs to %s", len(rpms), repo)
   os.makedirs(repo, exist_ok=True)
+  with open(join(repo, ".lock"), "w") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    update(rpms, repo, url, key)
+
+
+def update(rpms, repo, url, key):
   for r in rpms:
     there = join(repo, os.path.basename(r))
     if os.path.exists(there) and prefix_of(there) != prefix_of(r):
