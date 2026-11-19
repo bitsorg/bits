@@ -210,6 +210,13 @@ class RpmTest(unittest.TestCase):
                            text=True, check=True).stdout.split()
     self.assertIn("/opt/bits/dev3/hello/1.0/x86_64-el9", files)
 
+  def test_an_unsafe_prefix_is_rejected(self):
+    for bad in ('/opt"; rm -rf /', '/opt/$(touch pwned)', '/opt bits', '/opt|x'):
+      err = io.StringIO()
+      with self.assertRaises(SystemExit), contextlib.redirect_stderr(err):
+        rpm.doRpm(self.args(rpmPrefix=bad), argparse.ArgumentParser())
+      self.assertIn("letters, digits", err.getvalue())
+
   def test_repo_file(self):
     self.assertEqual(rpm.repo_file("file:///srv/rpms", False),
                      "[bits]\nname=bits\nbaseurl=file:///srv/rpms\nenabled=1\n"

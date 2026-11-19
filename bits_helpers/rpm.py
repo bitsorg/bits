@@ -281,6 +281,8 @@ def doRpm(args, parser):
   prefix = args.rpmPrefix.rstrip("/")
   if not os.path.isabs(prefix):
     parser.error("--prefix must be an absolute path")
+  if not re.match(r"^(/[A-Za-z0-9._+-]+)+$", prefix):
+    parser.error("--prefix must contain only letters, digits and ._+- in its path components")
   if args.rpmView and not SAFE.match(args.rpmView):
     parser.error("--view must be a name of letters, digits and ._+-, not starting with . or -")
   if args.rpmRepoUrl and not args.rpmRepo:
