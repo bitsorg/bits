@@ -146,6 +146,16 @@ class TestManifestInit(unittest.TestCase):
                                                  "pkg:generic/sqlite@v1"])
         self.assertNotIn("references", pkgs[1])
 
+    def test_pip_source_recorded_only_when_set(self):
+        m = _make_manifest(self.tmp)
+        src = {"file": "six-1.17.0-py2.py3-none-any.whl", "sha256": "ab" * 32, "url": "https://h/six.whl"}
+        spec = {"package": "six", "version": "1.17.0", "revision": "1", "hash": "h", "pip_source": src}
+        m.add_package(spec, "built_from_source")
+        m.add_package(dict(spec, package="zlib", pip_source=None), "built_from_source")
+        pkgs = self._load(m)["packages"]
+        self.assertEqual(pkgs[0]["pip_source"], src)
+        self.assertNotIn("pip_source", pkgs[1])
+
     def test_a_pip_recipe_is_named_by_its_pypi_purl(self):
         m = _make_manifest(self.tmp)
         body = "package: dm_tree\n---\n. $(bits-include PythonPipRecipe)\nPYPI_NAME=\"dm-tree\"\n"

@@ -79,6 +79,20 @@ class TestComponents(unittest.TestCase):
         self.assertEqual(sbom._download(cmake), "https://cmake.org/files/cmake-3.30.6.tar.gz")
 
 
+    def test_a_pip_package_names_the_file_pip_installed(self):
+        sha = "5" * 64
+        e = {"package": "contourpy", "version": "1.0.7", "revision": "3", "hash": "p" * 40,
+             "references": ["pkg:pypi/contourpy@1.0.7"], "requires": [], "build_requires": [],
+             "pip_source": {"file": "contourpy-1.0.7.tar.gz", "sha256": sha,
+                            "url": "https://bits.cern.ch:8444/pypi/files/contourpy/%s/contourpy-1.0.7.tar.gz" % sha}}
+        m = {"schema_version": 4, "updated_at": "2026-11-19T15:00:00Z", "packages": [e]}
+        self.assertEqual(sbom._purl(e), "pkg:pypi/contourpy@1.0.7")           # the recipe's purl
+        self.assertEqual(sbom._download(e), e["pip_source"]["url"])
+        comp = sbom.to_cyclonedx(m)["components"][0]
+        self.assertEqual(comp["externalReferences"], [{"type": "distribution", "url": e["pip_source"]["url"],
+                                                       "hashes": [{"alg": "SHA-256", "content": sha}]}])
+        self.assertEqual(sbom.to_spdx(m)["packages"][0]["downloadLocation"], e["pip_source"]["url"])
+
     def test_a_system_package_with_a_version_is_identified(self):
         m = _manifest()
         m["system_package_info"] = {"zlib": {"version": "1.2.11", "references": [

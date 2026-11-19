@@ -98,6 +98,8 @@ fields as additive and key off ``schema_version``.
       "source":                 str,              # git repository URL, "" if none (v4+)
       "tag":                    str,              # git tag/branch built, "" if none (v4+)
       "references":             [str],            # CPEs / purls naming it for scanners; only when any
+      "pip_source":             {"file": str, "sha256": str, "url": str},
+                                                  # the file pip installed (PythonPipRecipe); only then
       "pinned_by":              str,              # "defaults:<profile>" or "requires:<package>" that
                                                   # set its version; only when pinned
       "sbom":                   "tool",           # a host tool, never shipped; only when so
@@ -592,6 +594,7 @@ class BuildManifest:
                 list(spec.get("build_requires") or [])
                 + list(self._sys_edges.get(spec.get("package"), ((), ()))[1])),
             **({"references": _refs} if _refs else {}),
+            **({"pip_source": dict(spec["pip_source"])} if spec.get("pip_source") else {}),
             **({"pinned_by": spec["pinned_by"]} if spec.get("pinned_by") else {}),
             # A host tool (recipe `sbom: tool`): run, never shipped; scans leave it out.
             **({"sbom": "tool"} if sbom_tool(spec) else {}),

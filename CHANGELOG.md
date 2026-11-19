@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** The build manifest records the file a PythonPipRecipe package's pip installed (`pip_source`: file, sha256, URL without credentials), built or from the store, and the SBOMs name it: CycloneDX as a distribution reference with its SHA-256, SPDX as the download location.
 - **[Change]** A build job's store token (`POST /ops/ci/store-token`) may also create pip pins for its architectures (`/MANIFESTS/pip-pins/<arch>/**`); reads are anyone's, as all of `/MANIFESTS`.
 - **[Feature]** pip packages are pinned: a PythonPipRecipe package's first build through bits-store records the file pip installed by its sha256 (`MANIFESTS/pip-pins/<arch>/<project>/<version>/<python>-<mode>.json`, create-only), and later builds install that file only (`BITS_PIP_PIN`). Needs bits-recipe-tools that writes `.pip-source.json`, and build tokens that may write `/MANIFESTS/pip-pins/<arch>/**`.
 - **[Feature]** A group builds its pip packages from source: `system.pip_build` in its defaults (`wheel`, the default; `source`: each PythonPipRecipe package from its sdist; `all`: its build tools too), and anyone for one build with `bits build --pip-build` or `$BITS_PIP_BUILD`. Only PythonPipRecipe packages change hash, each mode its own; with `wheel` none does. Needs bits-recipe-tools that reads `BITS_PIP_BUILD`.

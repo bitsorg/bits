@@ -50,26 +50,31 @@ def read(sync, k):
     return None
 
 
-def after_build(spec, sync, k, install_dir):
-  """What pip installed (.pip-source.json) recorded on the spec; pinned when there
-  was no pin and the build writes through a bits-store."""
+def after_build(spec, sync, k, install_dir, built=True):
+  """What pip installed (.pip-source.json) recorded on the spec (pip_source, for the
+  build manifest); pinned when *built* here, unpinned, and writing through a bits-store."""
   try:
     with open(os.path.join(install_dir, SOURCE)) as f:
-      got = _pin(f.read())
+      text = f.read()
   except OSError:
-    got = None
+    return
+  got = _pin(text)
   if not got:
     return
+  url = json.loads(text).get("url")
+  if isinstance(url, str):   # without credentials (an index URL may carry them)
+    got = dict(got, url=re.sub(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@", r"\1", url))
   spec["pip_source"] = got
-  if spec.get("pip_pin") or not (getattr(sync, "writeStore", "") and hasattr(sync, "put_key")):
+  if not built or spec.get("pip_pin") or not (getattr(sync, "writeStore", "") and hasattr(sync, "put_key")):
     return
-  data = json.dumps(got, sort_keys=True).encode()
+  pin = {"file": got["file"], "sha256": got["sha256"]}
+  data = json.dumps(pin, sort_keys=True).encode()
   try:
     if sync.put_key(k, data):
       info("%s: pinned %s (sha256 %s)", spec["package"], got["file"], got["sha256"][:12])
       return
     taken = read(sync, k)
-    if taken and taken != got:
+    if taken and taken != pin:
       warning("%s: another build pinned %s first; builds from now on install that",
               spec["package"], taken["file"])
   except Exception as exc:   # pylint: disable=broad-except

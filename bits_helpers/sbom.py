@@ -156,11 +156,15 @@ def _commit(e):
 
 
 def _source_urls(e):
-    """(url, checksum) of the source archives, credentials removed."""
+    """(url, checksum) of the source archives, and of the file pip installed (a
+    PythonPipRecipe package), credentials removed."""
     out = []
     for s in e.get("source_checksums") or []:
         if isinstance(s, dict) and clean_url(s.get("url")):
             out.append((clean_url(s.get("url")), _checksum(s.get("checksum"))))
+    pip = e.get("pip_source")
+    if isinstance(pip, dict) and clean_url(pip.get("url")):
+        out.append((clean_url(pip["url"]), _checksum("sha256:%s" % pip.get("sha256"))))
     return out
 
 

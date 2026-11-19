@@ -54,7 +54,7 @@ class PipPinsTest(unittest.TestCase):
     self.recorded()
     pip_pins.after_build(self.spec, store, k, self.dir)
     want = {"file": "contourpy-1.0.7.tar.gz", "sha256": SHA}
-    self.assertEqual(self.spec["pip_source"], want)
+    self.assertEqual(self.spec["pip_source"], dict(want, url="https://x/contourpy-1.0.7.tar.gz"))
     self.assertEqual(pip_pins.read(store, k), want)
     # a build with the pin writes nothing, and one that lost the race keeps the first
     self.recorded(sha=OTHER)
@@ -62,6 +62,16 @@ class PipPinsTest(unittest.TestCase):
     self.assertEqual(store.puts, 1)
     pip_pins.after_build(dict(self.spec), store, k, self.dir)
     self.assertEqual((store.puts, pip_pins.read(store, k)), (2, want))
+
+  def test_recorded_without_credentials_and_reused_not_pinned(self):
+    store, k = Store(), "MANIFESTS/pip-pins/a/contourpy/1.0.7/3.13-wheel.json"
+    with open(os.path.join(self.dir, pip_pins.SOURCE), "w") as f:
+      json.dump({"url": "https://bits:tok@store/pypi/files/x/contourpy-1.0.7.tar.gz",
+                 "file": "contourpy-1.0.7.tar.gz", "sha256": SHA}, f)
+    pip_pins.after_build(self.spec, store, k, self.dir, built=False)          # from the store
+    self.assertEqual(self.spec["pip_source"], {"file": "contourpy-1.0.7.tar.gz", "sha256": SHA,
+                                               "url": "https://store/pypi/files/x/contourpy-1.0.7.tar.gz"})
+    self.assertEqual(store.puts, 0)
 
   def test_no_pin_written(self):
     k = "MANIFESTS/pip-pins/a/contourpy/1.0.7/3.13-wheel.json"

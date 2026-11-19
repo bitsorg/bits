@@ -1970,12 +1970,12 @@ def doFinalSync(spec, specs, args, syncHelper):
       from bits_helpers.store_integrity import record_tarball_checksum
       record_tarball_checksum(spec, args.workDir, args.architecture)
 
-  # A pip package built here: what pip installed recorded, and pinned when unpinned
-  if pip_recipe(spec.get("recipe")) and not spec.get("cachedTarball") and \
-     not spec["revision"].startswith("local"):
+  # A pip package: what pip installed recorded; built here and unpinned, pinned
+  if pip_recipe(spec.get("recipe")) and not spec["revision"].startswith("local"):
     _arch = effective_arch(spec, args.architecture)
     pip_pins.after_build(spec, syncHelper, pip_pins.key(spec, specs, _arch),
-                         _pkg_install_path(args.workDir, _arch, spec))
+                         _pkg_install_path(args.workDir, _arch, spec),
+                         built=not spec.get("cachedTarball"))
 
   # --aggressive-cleanup + a write store: the build script kept the tarball (it
   # would otherwise have skipped it) only so it could be uploaded above. Now that
