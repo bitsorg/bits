@@ -7,7 +7,7 @@ from pathlib import Path
 from bits_helpers import __version__
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
-from bits_helpers import site
+from bits_helpers import pypi_index, site
 from bits_helpers.repo_provider import (fetch_repo_providers_iteratively, load_always_on_providers,
                                         announce_providers, MAX_PROVIDER_ITERATIONS,
                                         no_recipes_hint)
@@ -3135,6 +3135,9 @@ def build_one_package(p, ctx):
   # Add resolved hooks as environment variables (POST_INSTALL -> POST_INSTALL_HOOKS)
   for hook_name, hook_value in spec.get("hook", {}).items():
     buildEnvironment.append((hook_name + "_HOOKS", hook_value))
+
+  # pip's index: the site's bits-store /pypi when it answers (before -e, which wins)
+  buildEnvironment += pypi_index.build_environment(bool(getattr(args, "docker", False)))
 
   # Add the extra environment as passed from the command line.
   buildEnvironment += [e.partition('=')[::2] for e in args.environment]

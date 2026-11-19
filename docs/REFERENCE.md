@@ -3688,6 +3688,7 @@ A file in a later directory replaces the one of the same name, so an empty `10-C
 | `store.operations` | Store of `certify`, `compliance`, `gc`, `store-stats`, `publish` and `bits store` (after `$BITS_S3_STORE`). |
 | `store.s3_endpoint` | Endpoint of `b3://` stores (after `--s3-endpoint` and the environment); unset: boto3's default. |
 | `store.sources` | bits-store's `sources` binding, asked first for source archives (after `$BITS_SOURCE_STORE`); see [The site's sources store](#the-sites-sources-store-bits-store). |
+| `store.pypi` | bits-store's public `pypi` binding, the pip index of builds (after `$BITS_PYPI_INDEX`); see [The site's pip index](#the-sites-pip-index-bits-store). |
 | `containers.registry`, `containers.tag`, `containers.legacy_image` | The default `--docker` image; see [§22](#22-docker-support). |
 | `providers.url` | The always-on providers repository (after `$BITS_PROVIDERS`). |
 | `sbom.namespace` | SPDX document namespace base. |
@@ -4267,6 +4268,15 @@ A site running bits-store names its `sources` binding in the [site configuration
 - Any other answer, or an unreachable store, leaves the download to the remote store and the upstream URL.
 
 An archive from the sources store is not uploaded to the write store: it is already stored. The recipe's checksum is checked on it as on any download (see [Checksum verification](#checksum-verification)).
+
+#### The site's pip index (bits-store)
+
+A site running bits-store names its public `pypi` binding in the site configuration (`store.pypi`, e.g. `https://store.example.org/pypi/simple`) or in `$BITS_PYPI_INDEX`. bits makes it the index of every build's pip (`PIP_INDEX_URL`), so each file pip installs is kept in the store, with the SHA-256 the index lists, and stays available when the index drops it or is down:
+
+- The binding is public: no store token reaches recipe code.
+- bits asks it once per run; when it does not answer (off-site, say), pip reads its own index, and says so.
+- Outside a container bits also gives pip the CA bundle it verifies the store with (`$REQUESTS_CA_BUNDLE` or `$CURL_CA_BUNDLE`, as `PIP_CERT`); the bits-containers images trust the CERN CA themselves. A `PIP_INDEX_URL` or `PIP_CERT` already in the environment of a build outside a container is kept, and `-e PIP_INDEX_URL=...` wins in any build.
+- Neither enters a package's hash.
 
 ### Store integrity verification
 
