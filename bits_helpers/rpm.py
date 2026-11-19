@@ -14,6 +14,14 @@ from bits_helpers.log import banner, error, warning
 SAFE = re.compile(r"^[A-Za-z0-9_+][A-Za-z0-9._+-]*$")
 
 
+def run(cmd, **kw):
+  try:
+    return subprocess.run(cmd, check=True, **kw)
+  except (OSError, subprocess.CalledProcessError) as e:
+    error("%s failed: %s", cmd[0], e)
+    sys.exit(1)
+
+
 def check_safe(pkg):
   for k in ("pkg_family", "name", "version", "revision", "hash", "effective_architecture"):
     if pkg.get(k) and not SAFE.match(str(pkg[k])):
@@ -185,10 +193,12 @@ def rpmbuild(text, top, out):
   spec_file = join(top, "package.spec")
   with open(spec_file, "w") as f:
     f.write(text)
-  subprocess.run(["rpmbuild", "--quiet", "-bb", "--define", "_topdir " + top, spec_file],
-                 check=True)
-  made, = glob.glob(join(top, "RPMS", "*", "*.rpm"))
-  return shutil.move(made, join(out, os.path.basename(made)))
+  run(["rpmbuild", "--quiet", "-bb", "--define", "_topdir " + top, spec_file])
+  made = glob.glob(join(top, "RPMS", "*", "*.rpm"))
+  if len(made) != 1:
+    error("rpmbuild made %d RPMs instead of 1", len(made))
+    sys.exit(1)
+  return shutil.move(made[0], join(out, os.path.basename(made[0])))
 
 
 def build(root, meta, prefix, out):
@@ -247,11 +257,11 @@ def publish(rpms, repo, url, key):
     if not os.path.exists(there):
       shutil.copy(r, there + ".part")
       os.replace(there + ".part", there)
-  subprocess.run(["createrepo_c", "-q", "--update", repo], check=True)
+  run(["createrepo_c", "-q", "--update", repo])
   if key:
     gpg = ["gpg", "--batch", "--yes", "--armor", "--local-user", key]
-    subprocess.run(gpg + ["--detach-sign", join(repo, "repodata", "repomd.xml")], check=True)
-    subprocess.run(gpg + ["--output", join(repo, "RPM-GPG-KEY-bits"), "--export", key], check=True)
+    run(gpg + ["--detach-sign", join(repo, "repodata", "repomd.xml")])
+    run(gpg + ["--output", join(repo, "RPM-GPG-KEY-bits"), "--export", key])
   text = repo_file(url or published_url(repo) or "file://" + repo, bool(key))
   with open(join(repo, "bits.repo"), "w") as f:
     f.write(text)
@@ -313,8 +323,8 @@ def doRpm(args, parser):
                            top, out))
   if args.rpmSignKey:
     env = {"GPG_TTY": os.ttyname(0) if os.isatty(0) else "", **os.environ}
-    subprocess.run(["rpmsign", "--define", "_gpg_name " + args.rpmSignKey, "--addsign"] + rpms,
-                   check=True, stdout=subprocess.DEVNULL, env=env)
+    run(["rpmsign", "--define", "_gpg_name " + args.rpmSignKey, "--addsign"] + rpms,
+        stdout=subprocess.DEVNULL, env=env)
   if args.rpmRepo:
     repo = abspath(args.rpmRepo)
     publish(rpms, repo, args.rpmRepoUrl, args.rpmSignKey)

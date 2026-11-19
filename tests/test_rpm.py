@@ -149,6 +149,12 @@ class RpmTest(unittest.TestCase):
     with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
       rpm.doRpm(self.args(rpmView=".."), argparse.ArgumentParser())
 
+  def test_a_failing_tool_is_an_error(self):
+    with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+      rpm.run(["false"])
+    with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+      rpm.run(["no-such-tool-for-bits"])
+
   def test_incomplete_meta(self):
     self.assertEqual(rpm.dependencies({"package": self.hello}, "recursive"), [])
     for text in ("{not json", "[]", '{"package": {"name": "hello"}}'):
