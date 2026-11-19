@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """bits-store's git binding as the mirror of git sources (bits-store README: git).
 
-The site key store.git (or $BITS_GIT_MIRROR) names it, e.g.
+The site key store.git (or $BITS_GIT_MIRROR; set empty: no mirror) names it, e.g.
 https://store.example.org/git: bits' clones, fetches and ls-remote of https sources
 go there (url.<mirror>/.insteadOf=https://), through the store's partial mirrors.
 Unset, or the store not answering, git reads upstream; a command that fails through
@@ -22,8 +22,11 @@ _told = set()
 
 
 def configured():
-  """The site's git mirror URL, or ""."""
-  return (os.environ.get("BITS_GIT_MIRROR") or str(site.get("store.git") or "")).strip().rstrip("/")
+  """The site's git mirror URL, or "": $BITS_GIT_MIRROR when set, even empty (off)."""
+  url = os.environ.get("BITS_GIT_MIRROR")
+  if url is None:
+    url = str(site.get("store.git") or "")
+  return url.strip().rstrip("/")
 
 
 def _root(url):

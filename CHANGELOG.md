@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Change]** At CERN (`10-CERN.yaml`) bits' git sources go through bits-store's public `/git` (`store.git: https://bits.cern.ch:8444/git`); off-site, where it does not answer, upstream as before. `BITS_GIT_MIRROR=` set empty turns the mirror off.
 - **[Feature]** A site's bits-store `git` binding (`store.git`, or `$BITS_GIT_MIRROR`) is the mirror of git sources: bits' clones, fetches and `ls-remote` of https URLs go through it (`insteadOf`), so the tags built are kept in the store. Asked once per run; when it does not answer, or a command fails through it, upstream as before.
 - **[Feature]** The build manifest records the file a PythonPipRecipe package's pip installed (`pip_source`: file, sha256, URL without credentials), built or from the store, and the SBOMs name it: CycloneDX as a distribution reference with its SHA-256, SPDX as the download location.
 - **[Change]** A build job's store token (`POST /ops/ci/store-token`) may also create pip pins for its architectures (`/MANIFESTS/pip-pins/<arch>/**`); reads are anyone's, as all of `/MANIFESTS`.

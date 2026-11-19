@@ -5,3 +5,5 @@
 import os
 
 os.environ["BITS_SITE_ISOLATED"] = "1"
+# ... and no git mirror: CERN's (store.git) is never asked from the tests.
+os.environ["BITS_GIT_MIRROR"] = ""

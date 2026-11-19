@@ -48,6 +48,16 @@ class GitMirrorTest(unittest.TestCase):
     os.environ["BITS_GIT_MIRROR"] = "http://store.example.org/git"     # https only
     self.assertEqual(git_mirror.config(), [])
 
+  def test_empty_turns_it_off(self):
+    with patch.object(git_mirror.site, "get", lambda k, d=None: "https://store.example.org/git"):
+      self.assertEqual(git_mirror.configured(), "https://store.example.org/git")   # the site's
+      os.environ["BITS_GIT_MIRROR"] = ""
+      self.assertEqual(git_mirror.configured(), "")                               # set empty: off
+
+  def test_cern_default(self):
+    from bits_helpers import site
+    self.assertEqual(site.get("store.git"), "https://bits.cern.ch:8444/git")
+
   def test_answers_asked_once(self):
     srv = ThreadingHTTPServer(("127.0.0.1", 0), Health)
     threading.Thread(target=srv.serve_forever, daemon=True).start()

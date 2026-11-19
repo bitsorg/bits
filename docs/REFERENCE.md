@@ -3692,7 +3692,7 @@ A file in a later directory replaces the one of the same name, so an empty `10-C
 | `store.s3_endpoint` | Endpoint of `b3://` stores (after `--s3-endpoint` and the environment); unset: boto3's default. |
 | `store.sources` | bits-store's `sources` binding, asked first for source archives (after `$BITS_SOURCE_STORE`); see [The site's sources store](#the-sites-sources-store-bits-store). |
 | `store.pypi` | bits-store's public `pypi` binding, the pip index of builds (after `$BITS_PYPI_INDEX`); see [The site's pip index](#the-sites-pip-index-bits-store). |
-| `store.git` | bits-store's `git` binding, the mirror of git sources (after `$BITS_GIT_MIRROR`); see [The site's git mirror](#the-sites-git-mirror-bits-store). |
+| `store.git` | bits-store's `git` binding, the mirror of git sources (after `$BITS_GIT_MIRROR`; set empty, none); see [The site's git mirror](#the-sites-git-mirror-bits-store). |
 | `containers.registry`, `containers.tag`, `containers.legacy_image` | The default `--docker` image; see [§22](#22-docker-support). |
 | `providers.url` | The always-on providers repository (after `$BITS_PROVIDERS`). |
 | `sbom.namespace` | SPDX document namespace base. |
@@ -4275,7 +4275,7 @@ An archive from the sources store is not uploaded to the write store: it is alre
 
 #### The site's git mirror (bits-store)
 
-A site running bits-store names its `git` binding in the site configuration (`store.git`, e.g. `https://store.example.org/git`) or in `$BITS_GIT_MIRROR`. bits' clones, fetches and `ls-remote` of https sources then go through it (git's `url.<mirror>/.insteadOf=https://`, also for the recipe repositories and submodules bits fetches), so each tag built is kept in the store and stays available when upstream moves it, deletes it or is down:
+A site running bits-store names its `git` binding in the site configuration (`store.git`, e.g. `https://store.example.org/git`) or in `$BITS_GIT_MIRROR` (CERN's: `https://bits.cern.ch:8444/git`; `BITS_GIT_MIRROR=` set empty turns it off). bits' clones, fetches and `ls-remote` of https sources then go through it (git's `url.<mirror>/.insteadOf=https://`, also for the recipe repositories and submodules bits fetches), so each tag built is kept in the store and stays available when upstream moves it, deletes it or is down:
 
 - bits asks the store once per run (`/health`); when it does not answer, sources come from upstream, as before.
 - A git command that fails through the mirror is run again upstream, and bits says so once.
