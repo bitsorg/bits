@@ -131,7 +131,8 @@ def build_capabilities(platform, pipeline=None, arch=None):
     its packages (also of its build types, <platform>-opt, and shared ones; those
     not redistributable under /restricted, kept per community) and their revision
     markers, and those of its *arch* when another (ALICE's x86_64-el9 builds
-    slc9_x86-64); have the sources store fetch; read the Python package index. In
+    slc9_x86-64); have the sources store fetch; read the Python package index and
+    pin pip packages (MANIFESTS/pip-pins, create-only). In
     *pipeline* also (9a): create its files beside a build's BOMs (named p<pipeline>-)
     and its records."""
     for name in (platform, arch or platform):
@@ -142,7 +143,8 @@ def build_capabilities(platform, pipeline=None, arch=None):
             for cap in (("GET", "/store/%s/**" % arch), ("PUT", "/store/%s/**" % arch),
                         ("GET", "/restricted/%s/**" % arch), ("PUT", "/restricted/%s/**" % arch),
                         ("GET", "/MANIFESTS/rev-index/%s/**" % arch),
-                        ("PUT", "/MANIFESTS/rev-index/%s/**" % arch))] + [
+                        ("PUT", "/MANIFESTS/rev-index/%s/**" % arch),
+                        ("PUT", "/MANIFESTS/pip-pins/%s/**" % arch))] + [
         ("GET", "/sources/**"), ("GET", "/pypi/**")]
     if pipeline is not None:
         if type(pipeline) is not int or pipeline <= 0:              # not a bool, str or float

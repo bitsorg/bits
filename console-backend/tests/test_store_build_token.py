@@ -94,9 +94,11 @@ class StoreBuildTokenTest(_DB):
             ("GET", "/store/x86_64-el9*/**"), ("PUT", "/store/x86_64-el9*/**"),
             ("GET", "/restricted/x86_64-el9*/**"), ("PUT", "/restricted/x86_64-el9*/**"),
             ("GET", "/MANIFESTS/rev-index/x86_64-el9*/**"), ("PUT", "/MANIFESTS/rev-index/x86_64-el9*/**"),
+            ("PUT", "/MANIFESTS/pip-pins/x86_64-el9*/**"),
             ("GET", "/store/share/**"), ("PUT", "/store/share/**"),
             ("GET", "/restricted/share/**"), ("PUT", "/restricted/share/**"),
             ("GET", "/MANIFESTS/rev-index/share/**"), ("PUT", "/MANIFESTS/rev-index/share/**"),
+            ("PUT", "/MANIFESTS/pip-pins/share/**"),
             ("GET", "/sources/**"), ("GET", "/pypi/**")])
         for bad in ("", "../x", "x/y", "*", None):
             with self.assertRaises(ValueError):
