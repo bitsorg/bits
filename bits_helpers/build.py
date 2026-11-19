@@ -1972,6 +1972,7 @@ def doFinalSync(spec, specs, args, syncHelper):
 
   # A pip package: what pip installed recorded; built here and unpinned, pinned
   if pip_recipe(spec.get("recipe")) and not spec["revision"].startswith("local"):
+    from bits_helpers.arch import effective_arch   # as below: the name is local to this function
     _arch = effective_arch(spec, args.architecture)
     pip_pins.after_build(spec, syncHelper, pip_pins.key(spec, specs, _arch),
                          _pkg_install_path(args.workDir, _arch, spec),

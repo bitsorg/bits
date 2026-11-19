@@ -88,5 +88,28 @@ class PipPinsTest(unittest.TestCase):
     self.assertIsNone(pip_pins.read(store, k))
 
 
+class DoFinalSyncTest(unittest.TestCase):
+  """bits build's last step records what pip installed (a regression: it failed with
+  UnboundLocalError on effective_arch, imported later in the same function)."""
+
+  def test_pip_source_recorded(self):
+    from types import SimpleNamespace
+    from unittest import mock
+    from bits_helpers import build
+    work = tempfile.mkdtemp()
+    self.addCleanup(lambda: __import__("shutil").rmtree(work))
+    spec = {"package": "six", "version": "1.17.0", "revision": "1", "hash": "h" * 40,
+            "recipe": ". $(bits-include PythonPipRecipe)\n", "cachedTarball": ""}
+    root = build._pkg_install_path(work, "x86_64-el9", spec)
+    os.makedirs(root)
+    with open(os.path.join(root, pip_pins.SOURCE), "w") as f:
+      json.dump({"url": "https://x/six.whl", "file": "six-1.17.0-py2.py3-none-any.whl", "sha256": SHA}, f)
+    args = SimpleNamespace(workDir=work, architecture="x86_64-el9", aggressiveCleanup=False,
+                           manifest=None, storeIntegrity=False)
+    with mock.patch.object(build, "createDistLinks"), mock.patch("bits_helpers.sync.may_upload", return_value=False):
+      build.doFinalSync(spec, {"six": spec}, args, SimpleNamespace(writeStore=""))
+    self.assertEqual(spec["pip_source"]["sha256"], SHA)
+
+
 if __name__ == "__main__":
   unittest.main()
