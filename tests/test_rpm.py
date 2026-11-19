@@ -17,9 +17,9 @@ from bits_helpers import rpm
 ARCH = "x86_64-el9"
 
 
-def make_package(work_dir, name, pkg_hash, deps=(), build=()):
+def make_package(work_dir, name, pkg_hash, deps=(), build=(), arch=ARCH):
   pkg = {"name": name, "version": "1.0", "revision": "1", "hash": pkg_hash,
-         "effective_architecture": ARCH}
+         "effective_architecture": arch}
   pp = rpm.work_path(pkg)
   root = os.path.join(work_dir, pp)
   os.makedirs(os.path.join(root, "etc", "profile.d"))
@@ -117,6 +117,14 @@ class RpmTest(unittest.TestCase):
                  "Prefix: /opt/bits", "Requires: hello-hhhhhhhhhhhh_1.0_x86_64_el9",
                  "Requires: zlib-zzzzzzzzzzzz_1.0_x86_64_el9", '"/opt/bits/LCG_110"'):
       self.assertIn(line, lines)
+
+  def test_a_share_package(self):
+    make_package(self.work_dir, "data", "d" * 40, arch="share")
+    with mock.patch("shutil.which", return_value="/usr/bin/rpmbuild"), \
+         mock.patch.object(rpm, "build", return_value="data.rpm") as build, \
+         contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+      rpm.doRpm(self.args(package="data"), argparse.ArgumentParser())
+    self.assertEqual(build.call_args[0][0], os.path.join(self.work_dir, "share", "data", "1.0-1"))
 
   def test_unsafe_names(self):
     for bad in ('1.0"; rm -rf /; "', "$(id)", "..", "-rf"):

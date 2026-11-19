@@ -262,7 +262,11 @@ def doRpm(args, parser):
       parser.error(problem)
 
   work_dir = abspath(args.workDir)
-  root = _find_installroot(work_dir, args.architecture, args.package, args.version)
+  arch = args.architecture
+  if not os.path.isdir(join(work_dir, arch, args.package)) and \
+     os.path.isdir(join(work_dir, "share", args.package)):
+    arch = "share"
+  root = _find_installroot(work_dir, arch, args.package, args.version)
   meta = read_meta(root)
   if not meta:
     error("%s has no .meta.json", root)
