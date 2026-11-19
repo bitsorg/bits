@@ -79,6 +79,16 @@ class RpmTest(unittest.TestCase):
     self.assertIn('export hello_ROOT="/opt/bits/hello/1.0-hhhhhhhhhhhh/x86_64-el9"', init)
     with open(os.path.join(self.root, "paths.txt")) as f:
       self.assertIn(self.work_dir, f.read())
+    for name in ("init.sh", ".bits-pkginfo"):
+      with open(os.path.join(dest, "etc", "profile.d", name)) as f:
+        self.assertNotIn(self.work_dir, f.read())
+
+  def test_a_file_left_naming_the_build_dir(self):
+    with open(os.path.join(self.root, "paths.txt"), "a") as f:
+      f.write("%s/BUILD/hello/config.log\n" % self.work_dir)
+    with mock.patch.object(rpm, "warning") as warn:
+      rpm.stage(self.root, self.meta, "/opt/bits", os.path.join(self.work_dir, "stage"))
+    self.assertIn("paths.txt", warn.call_args[0])
 
   def test_build_only_dependencies_stay_out(self):
     cmake = make_package(self.work_dir, "cmake", "c" * 40)

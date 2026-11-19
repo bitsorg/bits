@@ -9,7 +9,7 @@ import tempfile
 import time
 from os.path import abspath, dirname, join, relpath
 
-from bits_helpers.log import banner, error
+from bits_helpers.log import banner, error, warning
 
 SAFE = re.compile(r"^[A-Za-z0-9_+][A-Za-z0-9._+-]*$")
 
@@ -74,7 +74,10 @@ def stage(root, meta, prefix, top):
   targets = {"%s/%s" % (work_dir, work_path(p)): "%s/%s" % (prefix, rpm_path(p)) for p in pkgs}
   targets["%s/INSTALLROOT/%s/%s" % (work_dir, pkg["hash"], work_path(pkg))] = "%s/%s" % (
     prefix, rpm_path(pkg))
-  relocate_dependencies(dest, targets)
+  leftover = relocate_dependencies(dest, targets)
+  if leftover:
+    warning("%s %s: %s still name %s", pkg["name"], version_dir(pkg), ", ".join(leftover),
+            work_dir)
 
   init = join(dest, "etc", "profile.d", "init.sh")
   with open(init) as f:
@@ -86,6 +89,13 @@ def stage(root, meta, prefix, top):
   text = re.sub(r'^.*"\$WORK_DIR/[^"]*"/\S*/etc/profile\.d/init\.sh.*\n', "", text, flags=re.M)
   with open(init, "w") as f:
     f.write(text)
+  for name in ("init.sh", ".bits-pkginfo"):
+    path = join(dest, "etc", "profile.d", name)
+    if work_dir and os.path.isfile(path):
+      with open(path) as f:
+        text = f.read().replace(work_dir, prefix)
+      with open(path, "w") as f:
+        f.write(text)
 
 
 def stage_view(view, packages, prefix, top):
