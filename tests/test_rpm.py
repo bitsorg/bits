@@ -103,6 +103,19 @@ class RpmTest(unittest.TestCase):
                  "Requires: zlib-zzzzzzzzzzzz_1.0_x86_64_el9", '"/opt/bits/LCG_110"'):
       self.assertIn(line, lines)
 
+  def test_unsafe_names(self):
+    for bad in ('1.0"; rm -rf /; "', "$(id)", "..", "-rf"):
+      self.meta["package"]["version"] = bad
+      with open(os.path.join(self.root, ".meta.json"), "w") as f:
+        json.dump(self.meta, f)
+      with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()), \
+           mock.patch("shutil.which", return_value="/usr/bin/rpmbuild"):
+        rpm.doRpm(self.args(), argparse.ArgumentParser())
+
+  def test_unsafe_view(self):
+    with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+      rpm.doRpm(self.args(rpmView=".."), argparse.ArgumentParser())
+
   def test_a_dependency_not_installed_here(self):
     shutil.rmtree(os.path.join(self.work_dir, ARCH, "zlib"))
     with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()), \

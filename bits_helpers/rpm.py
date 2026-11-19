@@ -11,6 +11,15 @@ from os.path import abspath, dirname, join, relpath
 
 from bits_helpers.log import banner, error
 
+SAFE = re.compile(r"^[A-Za-z0-9_+][A-Za-z0-9._+-]*$")
+
+
+def check_safe(pkg):
+  for k in ("pkg_family", "name", "version", "revision", "hash", "effective_architecture"):
+    if pkg.get(k) and not SAFE.match(str(pkg[k])):
+      error("%s has an unsafe %s: %r", pkg.get("name"), k, pkg[k])
+      sys.exit(1)
+
 
 def clean(text):
   return re.sub(r"[^A-Za-z0-9._+]", "_", text) or "0"
@@ -236,8 +245,8 @@ def doRpm(args, parser):
   prefix = args.rpmPrefix.rstrip("/")
   if not os.path.isabs(prefix):
     parser.error("--prefix must be an absolute path")
-  if args.rpmView and not re.match(r"^[A-Za-z0-9._+-]+$", args.rpmView):
-    parser.error("--view must be a name of letters, digits and ._+-")
+  if args.rpmView and not SAFE.match(args.rpmView):
+    parser.error("--view must be a name of letters, digits and ._+-, not starting with . or -")
   if args.rpmRepoUrl and not args.rpmRepo:
     parser.error("--repo-url needs --repo")
   needs = ["rpmbuild"] + ["createrepo_c"] * bool(args.rpmRepo) + ["rpmsign", "gpg"] * bool(
@@ -258,6 +267,8 @@ def doRpm(args, parser):
   if not meta:
     error("%s has no .meta.json", root)
     sys.exit(1)
+  for p in [meta["package"]] + dependencies(meta, "recursive"):
+    check_safe(p)
   packages = [(root, meta)]
   for dep in dependencies(meta, "recursive"):
     dep_root = join(work_dir, work_path(dep))
@@ -266,6 +277,7 @@ def doRpm(args, parser):
       error("%s %s is not installed in %s: build it here first", dep["name"],
             version_dir(dep), work_dir)
       sys.exit(1)
+    check_safe(dep_meta["package"])
     packages.append((dep_root, dep_meta))
 
   out = abspath(args.rpmOutputDir or join(work_dir, "RPMS", rpm_name(meta["package"])))
