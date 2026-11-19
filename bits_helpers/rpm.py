@@ -59,8 +59,7 @@ def read_meta(root):
 
 
 def dependencies(meta, kind):
-  deps = meta["dependencies"][kind]
-  return list({d["hash"]: d for d in deps["runtime"] + deps["build"]}.values())
+  return list({d["hash"]: d for d in meta["dependencies"][kind]["runtime"]}.values())
 
 
 def stage(root, meta, prefix, top):
@@ -84,6 +83,7 @@ def stage(root, meta, prefix, top):
     old = "/".join(work_path(p).split("/")[1:])
     new = '"%s/%s"' % (prefix, rpm_path(p))
     text = re.sub(r'"\$WORK_DIR/[^"]*"/%s(?![\w.+~-])' % re.escape(old), lambda _: new, text)
+  text = re.sub(r'^.*"\$WORK_DIR/[^"]*"/\S*/etc/profile\.d/init\.sh.*\n', "", text, flags=re.M)
   with open(init, "w") as f:
     f.write(text)
 

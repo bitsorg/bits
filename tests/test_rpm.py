@@ -17,7 +17,7 @@ from bits_helpers import rpm
 ARCH = "x86_64-el9"
 
 
-def make_package(work_dir, name, pkg_hash, deps=()):
+def make_package(work_dir, name, pkg_hash, deps=(), build=()):
   pkg = {"name": name, "version": "1.0", "revision": "1", "hash": pkg_hash,
          "effective_architecture": ARCH}
   pp = rpm.work_path(pkg)
@@ -30,11 +30,11 @@ def make_package(work_dir, name, pkg_hash, deps=()):
     "etc/profile.d/.bits-relocate": "etc/profile.d/init.sh\npaths.txt\n",
     "etc/profile.d/init.sh": "WORK_DIR=%s\n" % work_dir + "".join(
       '. "$WORK_DIR/$BITS_ARCH_PREFIX"/%s/1.0-1/etc/profile.d/init.sh\n' % d["name"]
-      for d in deps) + 'export %s_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/%s/1.0-1\n' % (name, name),
+      for d in list(deps) + list(build)) + 'export %s_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/%s/1.0-1\n' % (name, name),
     "paths.txt": "%s/INSTALLROOT/%s/%s/lib\n" % (work_dir, pkg_hash, pp) + "".join(
       "%s/%s/lib\n" % (work_dir, rpm.work_path(d)) for d in deps),
     ".meta.json": json.dumps({"package": pkg, "dependencies": {
-      kind: {"runtime": list(deps), "build": []} for kind in ("direct", "recursive")}}),
+      kind: {"runtime": list(deps), "build": list(build)} for kind in ("direct", "recursive")}}),
   }
   for path, text in files.items():
     with open(os.path.join(root, path), "w") as f:
@@ -79,6 +79,21 @@ class RpmTest(unittest.TestCase):
     self.assertIn('export hello_ROOT="/opt/bits/hello/1.0-hhhhhhhhhhhh/x86_64-el9"', init)
     with open(os.path.join(self.root, "paths.txt")) as f:
       self.assertIn(self.work_dir, f.read())
+
+  def test_build_only_dependencies_stay_out(self):
+    cmake = make_package(self.work_dir, "cmake", "c" * 40)
+    make_package(self.work_dir, "app", "a" * 40, [self.zlib], [cmake])
+    root = os.path.join(self.work_dir, ARCH, "app", "1.0-1")
+    meta = rpm.read_meta(root)
+    self.assertEqual([d["name"] for d in rpm.dependencies(meta, "recursive")], ["zlib"])
+    self.assertNotIn("cmake", rpm.spec(meta, "/opt/bits", "/stage"))
+    top = os.path.join(self.work_dir, "stage")
+    rpm.stage(root, meta, "/opt/bits", top)
+    with open(os.path.join(top, "root", "opt", "bits", "app", "1.0-" + "a" * 12, ARCH, "etc",
+                           "profile.d", "init.sh")) as f:
+      init = f.read()
+    self.assertNotIn("cmake", init)
+    self.assertIn('. "/opt/bits/zlib/1.0-zzzzzzzzzzzz/x86_64-el9"/etc/profile.d/init.sh', init)
 
   def test_spec(self):
     lines = rpm.spec(self.meta, "/opt/bits", "/stage").splitlines()
