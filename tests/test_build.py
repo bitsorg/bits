@@ -286,6 +286,7 @@ def dummy_exists(x):
 @patch("bits_helpers.build.BASH", new="/bin/bash")
 class BuildTestCase(unittest.TestCase):
     @patch("requests.Session.get", new=MagicMock())
+    @patch("bits_helpers.build.pypi_index.build_environment", new=MagicMock(return_value=[]))  # no network
     @patch("bits_helpers.sync.execute", new=dummy_execute)
     @patch("bits_helpers.git.git")
     @patch("bits_helpers.build.exists", new=MagicMock(side_effect=dummy_exists))

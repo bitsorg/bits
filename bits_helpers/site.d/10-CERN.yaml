@@ -1,4 +1,4 @@
-# CERN: the bits stores, images and SBOM namespace, and ALICE's public store for
+# CERN: the bits stores, pip index, images and SBOM namespace, and ALICE's public store for
 # its architectures. Elsewhere, mask this file with an empty 10-CERN.yaml.
 store:
   # Builds read what the bits CI builds publish (signed reuse still applies);
@@ -14,6 +14,8 @@ store:
     ubuntu2404_x86-64: https://s3.cern.ch/swift/v1/alibuild-repo
   operations: https://s3.cern.ch/lcgapp-bits-testing
   s3_endpoint: https://s3.cern.ch
+  # pip's index: bits-store's public /pypi; off-site pip reads PyPI itself
+  pypi: https://bits.cern.ch:8444/pypi/simple
 containers:
   registry: gitlab-registry.cern.ch/bits/containers
   legacy_image: registry.cern.ch/alisw/{distro}-builder
