@@ -1507,7 +1507,11 @@ def _parse_cli_preapproval(payload):
             if not (isinstance(h, str) and h.isascii() and h.isalnum() and len(h) <= 64
                     and sha and _HEX64_RE.fullmatch(sha)):
                 raise ValueError
-            packages.add((arch, h, sha, _shown(e.get("package")), _shown(e.get("version"))))
+            # who uploaded the object, when not this build: shown, and bound as it is
+            by = e.get("stored_by") or ""
+            if not (isinstance(by, str) and by.isprintable() and len(by) <= 128):
+                raise ValueError
+            packages.add((arch, h, sha, _shown(e.get("package")), _shown(e.get("version")), by))
     if not packages or len(packages) > _CLI_PREAPPROVE_MAX_PKGS:
         raise ValueError
     return build_id, sorted(set(groups)), sorted(packages), \
@@ -1558,13 +1562,18 @@ def cli_preapprove_pending(req_id: str):
         raise HTTPException(404, "no such request")
     if req["status"] != "pending":
         return {"status": req["status"], "build_id": req["build_id"]}
-    archs = {}
-    for arch, _h, _s, name, version in req["packages"]:
+    archs, uploads, unknown = {}, [], 0
+    for arch, _h, _s, name, version, *by in req["packages"]:
         archs.setdefault(arch, []).append("%s %s" % (name, version))
+        if by and by[0] == "unknown":                           # a store that does not say
+            unknown += 1
+        elif by and by[0] and not by[0].startswith("build:"):   # a person's upload, not a build's
+            uploads.append({"arch": arch, "package": name, "version": version, "by": _shown(by[0])})
     options = json.loads(webauthn_rp.authentication_options(settings, req["challenge"], []))
     return {"status": "pending", "build_id": req["build_id"], "groups": req["groups"],
             "code": req["code"], "requested_by": req["shown"], "verified": False,
-            "architectures": archs, "publicKey": options}
+            "architectures": archs, "uploads": uploads, "uploads_unknown": unknown,
+            "publicKey": options}
 
 
 @app.post("/preapprove/cli/{req_id}/approve")
@@ -1677,7 +1686,7 @@ def _cli_preapproval_gap(pre, manifest, certifier, resolved, principal):
     arch = manifest.get("architecture") or "shared"
     if not (isinstance(arch, str) and _GROUP_RE.fullmatch(arch)):
         return "manifest architecture is malformed"
-    approved = {h: sha for a, h, sha, *_ in pre.get("packages") or () if a == arch}
+    approved = {h: (sha, by) for a, h, sha, *by in pre.get("packages") or () if a == arch}
     if not approved:
         return "pre-approval of build does not cover architecture %s" % arch
     pkgs = manifest.get("packages")
@@ -1685,8 +1694,13 @@ def _cli_preapproval_gap(pre, manifest, certifier, resolved, principal):
     for p in pkgs if isinstance(pkgs, list) else ():
         h = p.get("hash") if isinstance(p, dict) else None
         if isinstance(h, str) and h in approved:
-            if _norm_sha256(p.get("tarball_sha256")) != approved[h]:
+            sha, by = approved[h]
+            if _norm_sha256(p.get("tarball_sha256")) != sha:
                 return "pre-approved package %s has different bytes in the %s manifest" % (h, arch)
+            # bound with its uploader: the merge keeps it in the chain ("unknown": any named)
+            ups = {a.get("by") for a in p.get("approvals") or [] if isinstance(a, dict) and a.get("as") == "upload"}
+            if by[2:] and by[2] and not (by[2] in ups or by[2] == "unknown" and ups):
+                return "pre-approved package %s has another uploader in the %s manifest" % (h, arch)
             seen.add(h)
     if len(seen) != len(approved):
         return "%d pre-approved package(s) missing from the %s manifest" \

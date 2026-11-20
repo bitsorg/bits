@@ -74,10 +74,29 @@ class TestCliPreapprove(unittest.TestCase):
         pre = main.preapprovals.get(BID)
         self.assertEqual((pre["status"], pre["user"], pre["via"], pre["groups"]),
                          ("approved", "alice", "cli", ["lcg"]))
-        self.assertIn(("shared", "h3", SHA, "data", "1.0"), [tuple(p) for p in pre["packages"]])
+        self.assertIn(("shared", "h3", SHA, "data", "1.0", ""), [tuple(p) for p in pre["packages"]])
         # handled: a second approve is refused
         self.assertEqual(self._approve(rid, assertion=self.last).status_code, 400)
         self.assertEqual(self.client.get("/preapprove/cli/" + rid).json()["status"], "approved")
+
+    def test_uploads_by_people_are_shown_and_bound(self):
+        bom = _bom()
+        bom["packages"][0]["stored_by"] = "bob"           # kept bob's upload of ROOT
+        bom["packages"][1]["stored_by"] = "build:7"       # another build's: not a person's
+        bad = json.loads(json.dumps(bom))
+        bad["packages"][0]["stored_by"] = "bob\u202e"      # not printable: refused
+        self.assertEqual(self._request(boms=[bad]).status_code, 400)
+        other = _bom("shared", pkgs=(("data", "h3"),))
+        other["packages"][0]["stored_by"] = "unknown"     # the store did not say
+        rid = self._request(boms=[bom, other]).json()["request_id"]
+        pend = self.client.get("/preapprove/cli/" + rid).json()
+        self.assertEqual(pend["uploads"], [{"arch": "x86_64-el9-gcc14-opt", "package": "ROOT",
+                                            "version": "1.0", "by": "bob"}])
+        self.assertEqual(pend["uploads_unknown"], 1)
+        self.assertEqual(self._approve(rid).status_code, 200)
+        bound = {tuple(p)[:2] + tuple(p)[5:] for p in main.preapprovals.get(BID)["packages"]}
+        self.assertEqual(bound, {("x86_64-el9-gcc14-opt", "h1", "bob"), ("x86_64-el9-gcc14-opt", "h2", "build:7"),
+                                 ("shared", "h3", "unknown")})
 
     def test_non_admin_denied_nothing_recorded(self):
         rid = self._request(groups=("atlas",)).json()["request_id"]

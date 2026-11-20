@@ -817,6 +817,20 @@ class CliBuildTest(CertifierBase):
         actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.KIND})
         self.assertEqual(self.cli_rows()["*"]["state"], "refused")
 
+    def test_who_uploaded_is_as_approved(self):
+        doc = self.s3.docs["MANIFESTS/%s/host-1.el9.json" % self.BID]
+        doc["packages"][0]["stored_by"] = "mallory"
+        self.cli_approve(packages=[["el9", "h3", "sh3", "r", "1", "bob"]])
+        self.certify()
+        self.assertEqual(self.cli_rows()["*"]["state"], "signing")      # not what was approved
+        self.assertEqual(self.writer.puts, [])
+        doc["packages"][0]["stored_by"] = "bob"
+        self.conn.execute("UPDATE actions SET not_before_ms = 0")
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.KIND})
+        self.assertEqual(self.cli_rows()["el9"]["state"], "signed")
+        chain = json.loads(self.writer.puts[0][1])["packages"][0]["approvals"]
+        self.assertEqual([(a["as"], a["by"]) for a in chain], [("upload", "bob"), ("certify", "alice")])
+
     def test_the_approved_run_is_found_among_other_files(self):
         d = self.s3.docs
         d["MANIFESTS/%s/sbom.cdx.json" % self.BID] = {"bomFormat": "CycloneDX"}

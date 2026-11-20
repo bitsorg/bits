@@ -94,15 +94,16 @@ class TestSignPreapproved(unittest.TestCase):
     CLI_BID = "rel-0123456789ab"
     SHA = "ab" * 32
 
-    def _cli_record(self, user="alice"):
+    def _cli_record(self, user="alice", by=()):
         main.preapprovals.put(self.CLI_BID, {
             "groups": ["lcg"], "user": user, "status": "approved", "via": "cli",
-            "packages": [["x86_64-el9", "h1", self.SHA, "A", "1"],
+            "packages": [["x86_64-el9", "h1", self.SHA, "A", "1", *by],
                          ["shared", "h9", self.SHA, "D", "1"]]})
 
-    def _cli_sign(self, certifier="alice", arch="x86_64-el9", pkgs=(("h1", SHA),)):
+    def _cli_sign(self, certifier="alice", arch="x86_64-el9", pkgs=(("h1", SHA),), by=None):
         body = json.dumps({"architecture": arch, "packages": [
-            {"package": "A", "hash": h, "tarball_sha256": sha, "group": "lcg"}
+            dict({"package": "A", "hash": h, "tarball_sha256": sha, "group": "lcg"},
+                 **({"approvals": [{"as": "upload", "by": b} for b in by]} if by else {}))
             for h, sha in pkgs] + [{"package": "Other", "hash": "h2",
                                     "tarball_sha256": self.SHA, "group": "lcg"}]}).encode()
         q = "?build_id=" + self.CLI_BID + ("&certifier=" + certifier if certifier else "")
@@ -145,6 +146,18 @@ class TestSignPreapproved(unittest.TestCase):
             r = self._cli_sign(**kw)
             self.assertEqual(r.status_code, 403, kw)
         self.assertNotIn("signs", main.preapprovals.get(self.CLI_BID))
+
+    def test_cli_preapproval_binds_who_uploaded(self):
+        # The bound uploader in the merged chain; "unknown" (the store did not say): any
+        # named; "" (not an upload): other BOMs' chains don't matter. A record per build.
+        for n, (bound, refused, signed) in enumerate(((["bob"], (None, ["mallory"]), ["bob"]),
+                                                      (["unknown"], (None,), ["carol"]),
+                                                      ([""], (), ["carol"]))):
+            self.CLI_BID = "rel-0123456789a%d" % n
+            self._cli_record(by=bound)
+            for by in refused:
+                self.assertEqual(self._cli_sign(by=by).status_code, 403, (bound, by))
+            self.assertEqual(self._cli_sign(by=signed).status_code, 200, bound)
 
     def test_cli_preapproval_needs_protected_ref(self):
         self._cli_record()

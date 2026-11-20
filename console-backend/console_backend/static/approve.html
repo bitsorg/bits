@@ -61,6 +61,12 @@
   <p style="margin:.2rem 0"><span class="muted">Groups:</span> <span id="preGroups"></span></p>
   <p style="margin:.2rem 0"><span class="muted">Requested from:</span> <span id="preFrom"></span>
     <span class="muted">(as reported by the terminal, not verified)</span></p>
+  <div id="preUploads" class="hidden">
+    <p style="margin:.8rem 0 .2rem"><b>Uploaded by people, not built by this build:</b>
+      approving certifies them too, in your name after theirs.</p>
+    <pre id="preUploadList"></pre>
+  </div>
+  <p id="preUnknown" class="muted hidden" style="margin:.4rem 0"></p>
   <p class="muted" style="margin:.8rem 0 .2rem">Packages per architecture:</p>
   <div id="preArchs"></div>
   <p class="muted" style="margin:.8rem 0">The approval binds these exact package
@@ -167,6 +173,15 @@ function showPre(req) {
   $('preGroups').textContent = (req.groups || []).join(', ');
   const rb = req.requested_by || {};
   $('preFrom').textContent = [rb.user, rb.host].filter(Boolean).join(' @ ') || '(not given)';
+  const ups = req.uploads || [];
+  if (ups.length) {
+    $('preUploadList').textContent = ups.map(u => `${u.package} ${u.version} (${u.arch}): uploaded by ${u.by}`).join('\n');
+    $('preUploads').classList.remove('hidden');
+  }
+  if (req.uploads_unknown > 0) {
+    $('preUnknown').textContent = `${req.uploads_unknown} package(s) kept from the store, which does not say who uploaded them.`;
+    $('preUnknown').classList.remove('hidden');
+  }
   const box = $('preArchs');
   for (const [arch, pkgs] of Object.entries(req.architectures || {})) {
     const d = document.createElement('details');

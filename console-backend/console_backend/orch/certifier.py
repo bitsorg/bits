@@ -412,9 +412,12 @@ def cli_boms(store, bid, approval):
         if arch in run:
             raise Refused("two store BOMs of build %s for %s in one run" % (bid, arch))
         run[arch] = (key, doc)
-    bound = {(a, h, sha) for a, h, sha, *_rest in json.loads(approval["packages"] or "[]")}
+    # (arch, hash, sha256[, stored_by]): who uploaded each, when the approval bound it
+    bound = {(a, h, sha, *rest[2:3]) for a, h, sha, *rest in json.loads(approval["packages"] or "[]")}
+    by = all(len(t) == 4 for t in bound)
     for leaf in sorted(runs):
-        got = {(arch, str(e.get("hash")), certify.norm_sha(e.get("tarball_sha256")))
+        got = {(arch, str(e.get("hash")), certify.norm_sha(e.get("tarball_sha256")),
+                *([str(e.get("stored_by") or "")] if by else []))
                for arch, (_k, doc) in runs[leaf].items() for e in doc["packages"]
                if isinstance(e, dict)}
         if got != bound:
