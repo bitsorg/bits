@@ -30,6 +30,7 @@ import secrets
 
 import yaml
 
+from ..build_args import problem as args_problem
 from . import approvals, build_queue, db, events, schedules
 
 log = logging.getLogger("bits_orchestrator.nightlies")
@@ -129,6 +130,9 @@ def build_args(s, platform_arch, image, max_jobs, day="", defaults=None):
         a += ["--set", "%s=%s" % (k, v)]
     if s["extra_build_args"]:
         a.append(" ".join(s["extra_build_args"].split()))
+    why = args_problem(" ".join(a).split(), image=image)     # a schedule saved before the check
+    if why:
+        raise Unbuildable("its bits build arguments: %s" % why)
     return " ".join(a)
 
 

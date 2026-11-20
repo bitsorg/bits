@@ -110,7 +110,8 @@ class TestOpsBuild(unittest.TestCase):
     @patch("console_backend.forge_ops.requests.post")
     def test_only_the_builds_variables(self, post):
         post.return_value = FakeResp(201, {"id": 5, "web_url": "u", "status": "created"})
-        ok = [{"key": k, "value": "x"} for k in sorted(main.BUILD_VARIABLES - {"COMMUNITY", "BITS_RUNNER_TAG"})]
+        ok = [{"key": k, "value": "--debug" if k == "BITS_BUILD_ARGS" else "x"}
+              for k in sorted(main.BUILD_VARIABLES - {"COMMUNITY", "BITS_RUNNER_TAG"})]
         ok += [{"key": "COMMUNITY", "value": "testbed"}, {"key": "BITS_RUNNER_TAG", "value": "bits-host-mac01"},
                {"key": "BITS_CERTIFIER", "value": "mallory"},
                {"key": "PUBLISH_CVMFS", "value": "true", "variable_type": "env_var"}]
@@ -127,7 +128,8 @@ class TestOpsBuild(unittest.TestCase):
                           ({"key": "VERSION", "value": "1", "protected": True}, "VERSION"),
                           ("VERSION=1", "?"),
                           ({"key": ["VERSION"], "value": "1"}, "VERSION"),
-                          ({"key": "BITS_RUNNER_TAG", "value": "shared-docker"}, "BITS_RUNNER_TAG")):
+                          ({"key": "BITS_RUNNER_TAG", "value": "shared-docker"}, "BITS_RUNNER_TAG"),
+                          ({"key": "BITS_BUILD_ARGS", "value": "--debug --remote-store s3://x"}, "--remote-store")):
             r = self._post("alice", extra={"variables": [{"key": "COMMUNITY", "value": "testbed"}, bad]})
             self.assertEqual(r.status_code, 400, bad)
             self.assertIn(says, r.json()["detail"], bad)

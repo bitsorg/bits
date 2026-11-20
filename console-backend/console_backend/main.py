@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from . import (audit, auth_oidc, authz, catalog, ci_auth, config, credentials, credproxy,
+from . import (audit, auth_oidc, authz, build_args, catalog, ci_auth, config, credentials, credproxy,
                forge_ops, identity, session, signproxy, store_admin, store_series, store_token, store_where,
                webauthn_rp)
 from fastapi.responses import RedirectResponse
@@ -219,6 +219,10 @@ def _checked_build(data, community, ref, variables, op="build"):
                     or v.get("variable_type", "env_var") != "env_var"})
     if other:
         raise HTTPException(400, "variables a build may not set: %s" % ", ".join(other)[:500])
+    for v in variables:
+        why = build_args.problem(v["value"].split()) if v["key"] == "BITS_BUILD_ARGS" else None
+        if why:
+            raise HTTPException(400, "BITS_BUILD_ARGS: %s" % why)
     tags = [v["value"] for v in variables if v["key"] == "BITS_RUNNER_TAG"]
     if any(not _RUNNER_TAG.fullmatch(t) for t in tags):
         raise HTTPException(400, "BITS_RUNNER_TAG: a build host's tag, bits-build-<arch> or bits-host-<name>")

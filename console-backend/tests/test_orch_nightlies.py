@@ -49,7 +49,7 @@ class VariablesTest(unittest.TestCase):
         self.s = sch.check({"name": "n", "package": "ROOT", "version": "v6-36", "platforms": ["x86_64-el9"],
                             "time": "02:00", "defaults": "release::gcc15", "set": {"release": "LCG_110b"},
                             "extra_repos": "https://github.com/bitsorg/lcg.bits.git@LCG_110b",
-                            "extra_build_args": "--keep-going\t--fetch-repos", "rebuild": True, "jobs": 8,
+                            "extra_build_args": "--run-tests\t--fetch-repos", "rebuild": True, "jobs": 8,
                             "cvmfs": True}, "LCG")
         r = Reader()
         self.cfg = nl.config(r, "LCG", "main")
@@ -65,6 +65,12 @@ class VariablesTest(unittest.TestCase):
             nl.resolve_platform("x", [], {"platforms": ["x|img with space"]})
         self.assertEqual(nl.resolve_platform("osx", [{"name": "osx"}], {}), ("", "osx", "osx", "x86_64"))
 
+    def test_a_schedule_saved_before_the_check_is_not_built(self):
+        with self.assertRaisesRegex(nl.Unbuildable, "--insecure"):
+            nl.variables(dict(self.s, extra_build_args="--run-tests --insecure"), "x86_64-el9", self.cfg, None)
+        with self.assertRaisesRegex(nl.Unbuildable, "only the platform's image"):
+            nl.variables(dict(self.s, extra_build_args="--docker-image other"), "x86_64-el9", self.cfg, None)
+
     def test_a_nights_build_is_what_the_gitlab_fan_out_sends_with_its_defaults_and_day(self):
         v = _vars(nl.variables(self.s, "x86_64-el9", self.cfg, None, "2026-10-29"))
         self.assertEqual(v, {
@@ -73,7 +79,7 @@ class VariablesTest(unittest.TestCase):
             "BITS_BUILD_ARGS": "--force-rebuild ROOT --architecture el9-lcg --docker --docker-image"
                                " registry/lcg-el9 -j 8 --docker-extra-args=--cpus=16 --sandbox off"
                                " --defaults release::gcc15 --day Thu --set release=LCG_110b"
-                               " --keep-going --fetch-repos",
+                               " --run-tests --fetch-repos",
             "DEFAULTS": "release::gcc15", "VERSION": "v6-36", "BITS_EXTRA_REPOS": "https://github.com/bitsorg/lcg.bits.git@LCG_110b",
             "PUBLISH_CVMFS": "true", "NIGHTLY_SUFFIX": " [nightly]"})
         v = _vars(nl.variables(self.s, "x86_64-el9", self.cfg, "alice"))

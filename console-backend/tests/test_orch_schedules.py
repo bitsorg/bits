@@ -84,8 +84,12 @@ class CheckTest(unittest.TestCase):
                     {"certify": "yes"}, {"extra_build_args": "--x '$(id)'"}, {"name": ""},
                     {"platforms": ["x86_64-el9\n"]}, {"set": {"k\n": "v"}}, {"set": {"k": "v\n"}},
                     {"extra_build_args": "--a\x1cb"}, {"extra_build_args": "--a\u2028b"},
-                    {"extra_repos": "https://h/p@-x"}, {"extra_build_args": "--keep-going --defaults x"},
-                    {"extra_build_args": "--defaults=x"}):
+                    {"extra_repos": "https://h/p@-x"}, {"extra_build_args": "--run-tests --defaults x"},
+                    {"extra_build_args": "--defaults=x"}, {"extra_build_args": "--run-tests --insecure"},
+                    {"extra_build_args": "--docker-extra-args=--privileged"},
+                    {"set": {"lcg.ver": "1"}}, {"set": {"release": "a/b"}}, {"set": {"release": ".."}},
+                    {"extra_build_args": "--day .."}, {"extra_build_args": "--docker"},
+                    {"extra_build_args": "--docker-image=x"}, {"extra_build_args": "-a x"}):
             with self.assertRaises(sch.Invalid, msg=bad):
                 sch.check(_p(**bad), "lcg")
 

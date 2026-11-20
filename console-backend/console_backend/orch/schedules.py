@@ -29,6 +29,7 @@ import json
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .. import build_args
 from . import db, events
 
 # Matched whole (fullmatch), ASCII only: these become CI variables and bits arguments.
@@ -151,6 +152,17 @@ def check(p, community):
     s["extra_build_args"] = _text(p, "extra_build_args", _ARGS, "bits build arguments without quotes")
     if re.search(r"(^|\s)--defaults(=|\s|$)", s["extra_build_args"]):
         raise Invalid("extra_build_args: give the defaults in defaults (the build job resolves its CVMFS target with them)")
+    # What the nights' builds will give bits (nightlies.build_args), as their pipeline checks it
+    chains = ["::".join(filter(None, (c, s["defaults"]))) for c in s["variants"] or [""]]
+    words = [w for c in chains if c for w in ("--defaults", c)]
+    words += [w for k, v in s["set"].items() for w in ("--set", "%s=%s" % (k, v))] + s["extra_build_args"].split()
+    why = build_args.problem(words)
+    if why:
+        raise Invalid("its bits build arguments: %s" % why)
+    given = {w.split("=", 1)[0] for w in s["extra_build_args"].split()} \
+        & {"--docker", "--docker-image", "-a", "--architecture"}
+    if given:
+        raise Invalid("extra_build_args: %s come from the platform" % ", ".join(sorted(given)))
     days = p.get("days", EVERY_DAY)
     if isinstance(days, bool) or not isinstance(days, int) or not 0 < days <= EVERY_DAY:
         raise Invalid("days: a weekday mask, 1 (Monday) to 127 (every day)")
