@@ -594,8 +594,8 @@ class TestPublishOneLayout(unittest.TestCase):
         with open(os.path.join(root, "etc", "modulefiles", "GCC"), "w") as fh:
             fh.write("#%Module1.0\n")
         with open(os.path.join(root, "relocate-me.sh"), "w") as fh:
-            fh.write('printf %%s "$BITS_CVMFS_TEMPLATES" > "%s"\n'
-                     % os.path.join(t, "seen.json"))
+            fh.write('printf %%s "$BITS_CVMFS_TEMPLATES" > "%s"\nenv > "%s"\n'
+                     % (os.path.join(t, "seen.json"), os.path.join(t, "env")))
         tars = os.path.join(t, "TARS", "tc", "store", "ab", "abc")
         os.makedirs(tars)
         tar = os.path.join(tars, "GCC-14-1.tc.tar.gz")
@@ -608,14 +608,21 @@ class TestPublishOneLayout(unittest.TestCase):
         spec = {"package": "GCC", "version": "14", "revision": "1",
                 "effective_architecture": "tc"}
         paths = []
+        secrets = {"PREPUB_API_TOKEN": "p", "CI_JOB_TOKEN": "c", "AWS_SECRET_ACCESS_KEY": "s",
+                   "BITS_SIGN_KEY": "k", "CI_REGISTRY_PASSWORD": "r", "CI_JOB_JWT_V2": "j"}
         with mock.patch.object(cp, "tar_path", lambda s, r, a: tar), \
              mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
+             mock.patch.dict(os.environ, secrets), \
              mock.patch.object(cp, "_publish_tar",
                                lambda c, p, *a, **k: paths.append(p) or "J"):
             cp.publish_one(spec, ctx)
         self.assertEqual(paths, ["g/GCC/14/tc", "g/el9-gcc14-opt/Modules/modulefiles/GCC"])
         with open(os.path.join(t, "seen.json")) as fh:
             self.assertEqual(json.load(fh), tm)
+        with open(os.path.join(t, "env")) as fh:           # the package's script: no credential
+            seen = {line.split("=", 1)[0] for line in fh}
+        self.assertFalse(seen & set(secrets), seen & set(secrets))
+        self.assertIn("PATH", seen)
 
         # With a packages template the modulefile is not published on its own:
         # the package carries it, and module_links links it in later.

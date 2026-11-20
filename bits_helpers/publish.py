@@ -1019,7 +1019,9 @@ def doPublish(args, parser):
         # 3. Relocate working copy to final CVMFS target path.
         # ------------------------------------------------------------------
         info("Relocating to %s …", cvmfs_target)
-        env = {**os.environ, "INSTALL_BASE": cvmfs_target}
+        from bits_helpers.cmd import credential_free_env
+        # the package's own script: none of the job's credentials (PREPUB_API_TOKEN)
+        env = {**credential_free_env(), "INSTALL_BASE": cvmfs_target}
         result = subprocess.run(
             ["bash", "-e", relocate_script],
             cwd=copy_dir,

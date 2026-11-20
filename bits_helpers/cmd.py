@@ -54,6 +54,19 @@ def secret_free_env():
   return {k: v for k, v in os.environ.items() if not _SECRET.match(k)}
 
 
+# Named as a credential: tokens (prepub's, CI's, the forge's), secrets, passwords, keys;
+# and a value that is a URL with credentials (CI_REPOSITORY_URL holds the job token).
+_CREDENTIAL = re.compile(r"TOKEN|SECRET|PASSW|PASSPHRASE|CREDENTIAL|JWT|_KEY$|AUTH_CONFIG", re.I)
+_URL_USERINFO = re.compile(r"://[^/@\s]+@")
+
+
+def credential_free_env():
+  """secret_free_env() without anything named as a credential or holding a URL with
+  one: for a package's own scripts run where the publish credentials are."""
+  return {k: v for k, v in secret_free_env().items()
+          if not _CREDENTIAL.search(k) and not _URL_USERINFO.search(v)}
+
+
 def getstatusoutput(command, timeout=None, cwd=None, env=None):
   """Run command and return its return code and output (stdout and stderr)."""
   proc = Popen(command, shell=isinstance(command, str), stdout=PIPE, stderr=STDOUT, cwd=cwd,

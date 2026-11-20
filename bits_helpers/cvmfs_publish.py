@@ -1447,7 +1447,9 @@ def publish_one(spec, ctx):
                 print("WARNING: %s@%s: %d file(s) name the build area outside the package "
                       "and its dependencies: %s" % (pkg, vdir, len(stray), " ".join(stray[:5])
                       + (" ..." if len(stray) > 5 else "")), file=sys.stderr)
-            env = dict(os.environ, INSTALL_BASE=own,
+            from bits_helpers.cmd import credential_free_env
+            # the package's own scripts: none of the job's credentials (PREPUB_API_TOKEN)
+            env = dict(credential_free_env(), INSTALL_BASE=own,
                        WORK_DIR=work_dir, BITS_RELOCATE_STRIP_PP="1")
             # Views (lcg-view) place the packages they reference with these.
             if ctx.get("templates"):
