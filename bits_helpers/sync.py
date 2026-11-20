@@ -153,14 +153,21 @@ class SourceStoreSync:
 def source_sync_for(spec, sync_helper):
   """Return *sync_helper* for *spec*'s sources: behind the site's sources store,
   if there is one (source_store), and dropping source uploads and store fetches
-  when *spec* forbids source redistribution. None passes through without a store."""
+  when *spec* forbids source redistribution; then the site's restricted sources
+  store is asked first, and may fetch (it keeps them private). None passes through
+  without a store."""
   from bits_helpers import source_store
   store = source_store.configured()
   if store is not None:
     sync_helper = SourceStoreSync(sync_helper or NoRemoteSync(), store)
-  if sync_helper is None or sources_redistributable(spec):
+  if sources_redistributable(spec):
     return sync_helper
-  return SourceUploadGate(sync_helper)
+  if sync_helper is not None:
+    sync_helper = SourceUploadGate(sync_helper)
+  restricted = source_store.configured_restricted()
+  if restricted is not None:
+    sync_helper = SourceStoreSync(sync_helper or NoRemoteSync(), restricted)
+  return sync_helper
 
 
 # S3 user-metadata key holding the sha256 of an uploaded content tarball. A

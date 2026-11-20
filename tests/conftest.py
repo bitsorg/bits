@@ -9,3 +9,4 @@ os.environ["BITS_SITE_ISOLATED"] = "1"
 # asked from the tests.
 os.environ["BITS_GIT_MIRROR"] = ""
 os.environ["BITS_SOURCE_STORE"] = ""
+os.environ["BITS_SOURCE_STORE_RESTRICTED"] = ""

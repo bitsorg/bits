@@ -4,7 +4,10 @@
 
 The site key store.sources (or $BITS_SOURCE_STORE; set empty: none) names it, e.g.
 https://store.example.org/sources/archives; it is asked once per run whether it
-answers (/health), else archives come from their URLs. With a store token (bits login,
+answers (/health), else archives come from their URLs. The site's restricted one
+(store.sources_restricted, or $BITS_SOURCE_STORE_RESTRICTED) holds archives that may
+not be passed on: read with a store token only (build jobs, community admins), and
+asked for them alone (sync.source_sync_for). With a store token (bits login,
 ~/.bits/token) bits may ask the store to fetch a missing archive (?url=): it
 answers 202 while it fetches, then 302. Without one, or for a token the store does
 not take, the read is anyone's. Any other answer leaves the download to the
@@ -35,11 +38,23 @@ _answers = {}        # store root -> answers /health, asked once per run
 def configured():
   """The sources store of this site, or None: $BITS_SOURCE_STORE when set, even empty
   (none), else store.sources; None too when it does not answer (off-site, say)."""
-  url = os.environ.get("BITS_SOURCE_STORE")
-  if url is None:
-    url = str(site.get("store.sources") or "")
-  url = url.strip()
+  url = setting("BITS_SOURCE_STORE", "store.sources")
   return SourceStore(url) if url and _up(url) else None
+
+
+def configured_restricted():
+  """The restricted sources store of this site, as configured(): None too without a
+  store token, which every read of it needs."""
+  url = setting("BITS_SOURCE_STORE_RESTRICTED", "store.sources_restricted")
+  return SourceStore(url) if url and store_token(url) and _up(url) else None
+
+
+def setting(env, key):
+  """The URL in $*env* when set, even empty (none), else the site's *key*."""
+  url = os.environ.get(env)
+  if url is None:
+    url = str(site.get(key) or "")
+  return url.strip()
 
 
 def _up(url):

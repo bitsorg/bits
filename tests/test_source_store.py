@@ -241,6 +241,31 @@ class SourceSyncTest(unittest.TestCase):
     helper.fetch_source_from(H, FILE, "/d", SRC)
     self.store.fetch.assert_called_once_with(H, FILE, "/d", None)
 
+  def test_restricted_sources_from_the_restricted_store_which_may_fetch_them(self):
+    restricted, inner = MagicMock(), MagicMock()
+    with patch("bits_helpers.source_store.configured_restricted", return_value=restricted):
+      helper = sync.source_sync_for({"redistributable": "binaries"}, inner)
+      restricted.fetch.return_value = False
+      self.store.fetch.return_value = False
+      helper.fetch_source_from(H, FILE, "/d", SRC)
+      restricted.fetch.assert_called_once_with(H, FILE, "/d", SRC)     # asked first, with the URL
+      self.store.fetch.assert_called_once_with(H, FILE, "/d", None)    # the public one: no URL
+      helper.upload_source("/tmp/x", H, FILE)
+      inner.upload_source.assert_not_called()                          # never to a write store
+      sync.source_sync_for({"redistributable": "all"}, inner).fetch_source_from(H, FILE, "/d", SRC)
+      restricted.fetch.assert_called_once()                            # not for one that may be
+
+  def test_the_restricted_store_needs_a_token(self):
+    with patch.dict(os.environ, {"BITS_SOURCE_STORE_RESTRICTED": "https://s.example.org/sources/restricted"}), \
+         patch.object(source_store, "_up", lambda url: True):
+      with patch.object(source_store, "store_token", lambda base, f=None: None):
+        self.assertIsNone(source_store.configured_restricted())
+      with patch.object(source_store, "store_token", lambda base, f=None: "tok"):
+        self.assertEqual(source_store.configured_restricted().base, "https://s.example.org/sources/restricted")
+      with patch.dict(os.environ, {"BITS_SOURCE_STORE_RESTRICTED": ""}), \
+           patch.object(source_store, "store_token", lambda base, f=None: "tok"):
+        self.assertIsNone(source_store.configured_restricted())                  # set empty: none
+
   def test_without_a_remote_store_the_sources_store_is_still_asked(self):
     helper = sync.source_sync_for({"redistributable": "all"}, None)
     self.store.fetch.return_value = False

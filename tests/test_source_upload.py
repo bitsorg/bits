@@ -6,6 +6,7 @@ its recipe names, checked against the recipe's checksum first."""
 import hashlib
 import os
 import unittest
+import unittest.mock
 
 from bits_helpers.download import getUrlChecksum
 from bits_helpers.source_upload import SourceUploadError, add_source
@@ -39,6 +40,12 @@ class AddSourceTest(StandIn):
         a == "Bearer good" for m, p, a in Store.asked if m == "POST"), Store.asked)
     # the first upload stays
     self.assertEqual(self.add(), (where, False))
+
+  def test_to_the_restricted_store(self):
+    with unittest.mock.patch.dict(os.environ, {"BITS_SOURCE_STORE_RESTRICTED": self.base.replace("archives", "restricted")}):
+      where, stored = add_source(URL, self.file, restricted=True)
+    self.assertTrue(stored and "/sources/restricted/" in where)
+    self.assertIn(self.key.replace("archives", "restricted"), Store.markers)
 
   def test_a_file_not_the_recipes(self):
     with self.assertRaisesRegex(SourceUploadError, "does not match"):
