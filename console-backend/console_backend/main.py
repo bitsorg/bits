@@ -220,6 +220,9 @@ def _checked_build(data, community, ref, variables, op="build"):
                     or v.get("variable_type", "env_var") != "env_var"})
     if other:
         raise HTTPException(400, "variables a build may not set: %s" % ", ".join(other)[:500])
+    given = {v["key"]: v["value"] for v in variables}
+    if given.get("CERTIFY_MANIFEST") and given.get("REPUBLISH") != "true":
+        raise HTTPException(400, "CERTIFY_MANIFEST: for a re-publish (REPUBLISH=true) only")
     for v in variables:
         why = build_args.problem(v["value"].split()) if v["key"] == "BITS_BUILD_ARGS" else None
         if why:
