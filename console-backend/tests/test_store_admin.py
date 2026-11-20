@@ -85,6 +85,13 @@ class StoreAdminTest(unittest.TestCase):
         self.assertEqual((c["sub"], c["exp"] - c["iat"], c["cap"]), ("admin:carol", 60, [{"m": "GET", "p": "/_admin/**"}]))
         self.assertEqual(jwt.get_unverified_header(tok)["kid"], "admin-1")
 
+    def test_the_git_and_fills_views(self):
+        for path, view, params in (("/store-admin/git", "git", []),
+                                   ("/store-admin/fills?since=2026-11-01", "fills", [("since", "2026-11-01")])):
+            self.assertEqual(self.get("carol", path).status_code, 200)
+            url, got, *_ = self.calls[-1]
+            self.assertEqual((url, got), ("http://bits-store:8099/_admin/" + view, params))
+
     def test_refused(self):
         for user, path, code in ((None, "/store-admin/summary", 401), ("alice", "/store-admin/summary", 403),
                                  ("bob", "/store-admin/summary", 403), ("carol", "/store-admin/upload", 404),

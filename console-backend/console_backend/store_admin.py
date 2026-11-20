@@ -16,7 +16,7 @@ import requests
 from . import audit, signproxy, store_token
 
 VIEWS = ("summary", "objects", "object", "access", "withdrawn", "gc", "gc/files", "gc/log",  # GET
-         "problems")
+         "problems", "git", "fills")
 ACTIONS = ("withdraw", "lift", "delete", "gc/plan", "gc/apply")  # PUT, a JSON object
 MAX_QUERY = 2048
 MAX_BODY = 4096                                     # as bits-store takes them
