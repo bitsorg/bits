@@ -103,6 +103,26 @@ def put(base, action, body, token, timeout=(5, 60)):
     return _answer(r)
 
 
+def where(base, questions, token, timeout=(5, 60)):
+    """bits-store's answer to POST <base>/_admin/where (0.8.8): for each {binding,
+    under} of *questions*, in order, its first objects (None: no such binding).
+    Unreachable when it does not answer so, e.g. an older bits-store."""
+    with requests.Session() as s:
+        s.trust_env = False
+        try:
+            r = s.post("%s/_admin/where" % base.rstrip("/"), json={"look": questions}, timeout=timeout,
+                       headers={"Authorization": "Bearer " + token}, allow_redirects=False)
+        except requests.RequestException as exc:
+            raise Unreachable("bits-store's admin API: %s" % type(exc).__name__) from None
+    code, body = (r.status_code, None) if r.status_code != 200 else _answer(r)
+    found = (body or {}).get("found")
+    if code == 404:
+        raise Unreachable("bits-store's where answered 404 (no index)")
+    if code != 200 or not isinstance(found, list) or len(found) != len(questions):
+        raise Unreachable("bits-store's where answered %d (it needs 0.8.8 or later)" % code)
+    return [f if isinstance(f, list) else None for f in found]
+
+
 def _answer(r):
     try:
         body = r.json()

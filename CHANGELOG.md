@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** The console backend tells overall admins where a build's packages are kept in bits-store (`GET /store-admin/sbom/{pipeline}`), for the SBOM report: from the build's SBOM, each package's tarball (a gated binding's under the build's community), source archives, pip file and git origin, found with one question to bits-store 0.8.8 (`POST /_admin/where`) and its Git view. An older bits-store: 502.
 - **[Feature]** The console backend passes on bits-store 0.8.7's admin views of the mirrored git repositories and of the fetches from upstream by host (`GET /store-admin/{git,fills}`), for the Store page.
 - **[Change]** The Vulnerabilities page's risk over time: of a release's builds on one day, the one with the lowest risk stands for it (it was the newest), so a package built for several versions or platforms a day no longer jumps between them: the chart shows its best build of the day (a finding on one platform only can drop out), a build no scanner can read only when there is no other. Days already recorded keep their build.
 - **[Feature]** The console backend gives overall admins bits-store's history for the Store page (`GET /store-admin/series?window=1h|6h|1d|1w|30d|90d|1y`): what each content type holds over the window, git's disk, requests and fills from upstream per bucket by format, and the window's p95 latency and answered share, from VictoriaMetrics (`BITS_METRICS_URL`, an internal network) by a fixed set of queries. Off until set.

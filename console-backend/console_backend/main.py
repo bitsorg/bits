@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from starlette.concurrency import run_in_threadpool
 
 from . import (audit, auth_oidc, authz, catalog, ci_auth, config, credentials, credproxy,
-               forge_ops, identity, session, signproxy, store_admin, store_series, store_token,
+               forge_ops, identity, session, signproxy, store_admin, store_series, store_token, store_where,
                webauthn_rp)
 from fastapi.responses import RedirectResponse
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
@@ -821,6 +821,55 @@ async def store_admin_series(request: Request, window: str = "1w"):
     except store_series.Unreachable as exc:
         raise HTTPException(502, str(exc))
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/store-admin/sbom/{pipeline}")
+async def store_admin_sbom(pipeline: int, request: Request, build: str = ""):
+    """Where the packages of *pipeline*'s build are kept in bits-store, from its SBOM,
+    for overall admins (the SBOM report): each one's tarball, sources, pip file and
+    git origin, found by one minute's admin token (bits-store 0.8.8: POST where)."""
+    if not settings.store_admin_configured():
+        raise HTTPException(503, "bits-store's admin API is not configured")
+    data = await _current_async(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    overall, _ = authz.admin_groups(data["user"], await run_in_threadpool(_resolved_policy, data["token"]))
+    if not overall:
+        audit.record("store_admin_denied", user=data["user"], view="sbom", principal="human")
+        raise HTTPException(403, "only a bits admin may see the store's admin views")
+    bid, body = await orch_api._published_sbom(pipeline, orch_api.SBOM_FILES["cyclonedx"], build)
+    try:
+        doc = json.loads(body)
+    except (ValueError, RecursionError):
+        doc = None
+    if not isinstance(doc, dict):
+        raise HTTPException(502, "build %s's SBOM is not a JSON object" % bid)
+    row = await run_in_threadpool(orch_api._read, lambda conn: conn.execute(
+        "SELECT community FROM builds WHERE pipeline_id = ? AND build_id = ?", (pipeline, bid)).fetchone())
+    from bits_helpers.download import getUrlChecksum  # the surrounding bits repo's
+    url, sub = settings.store_admin_url, "admin:" + data["user"]
+    # a token per question: one with POST is refused whole by a bits-store before 0.8.8
+    sign = lambda caps: _sign_store_token(sub, "admin", caps, store_admin.TOKEN_TTL, "admin", view="sbom")["token"]
+
+    def ask():
+        _, access = store_admin.get(url, "access", [], sign([("GET", "/_admin/access")]))
+        bindings = [b for b in access.get("bindings") or [] if isinstance(b, dict) and isinstance(b.get("prefix"), str)]
+        places, questions = store_where.looks(doc, bindings, row["community"] if row else "", getUrlChecksum)
+        if len(questions) > store_where.PLACES_MAX:
+            raise HTTPException(413, "build %s's SBOM asks about more than %d places" % (bid, store_where.PLACES_MAX))
+        found = []
+        for i in range(0, len(questions), store_where.WHERE_MAX):
+            found += store_admin.where(url, questions[i:i + store_where.WHERE_MAX], sign([("POST", "/_admin/where")]))
+        code, git = 404, {}
+        if any(k["what"] == "git" for ks in places.values() for k in ks):    # it walks the mirrors: only when asked
+            code, git = store_admin.get(url, "git", [], sign([("GET", "/_admin/git")]))
+        repos = git.get("repos") if code == 200 and isinstance(git.get("repos"), list) else []
+        return store_where.answer(places, questions, found, repos, bindings)
+    try:
+        places = await run_in_threadpool(ask)
+    except store_admin.Unreachable as exc:
+        raise HTTPException(502, str(exc))
+    return JSONResponse({"build": bid, "places": places}, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/store-admin/{view:path}")
