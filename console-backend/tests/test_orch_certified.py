@@ -105,9 +105,9 @@ class SetTest(_DB):
         self.assertIn("mixes architectures", live["lcg/m.json"]["problem"])
         self.assertEqual(live["lcg/x.json"]["problem"], "not JSON")
 
-    def test_the_store_copy_is_matched_ignoring_certified_by(self):
+    def test_the_store_copy_is_matched_ignoring_who_certified_it(self):
         store_a = dict(A)
-        git_a = dict(A, certified_by=["alice"])
+        git_a = dict(A, certified_by=["alice"], certified_at="2026-11-20T10:00:00Z")
         s3 = FakeS3({"MANIFESTS/b1/host.el9.json": json.dumps(store_a).encode(),
                      "MANIFESTS/b1/host.el9.json.sig": b"{}",
                      "MANIFESTS/b2/host.el10.json": json.dumps(dict(B, extra=1)).encode()})

@@ -866,6 +866,20 @@ class OwnedSetTest(_StoreBase):
         v = self.conn.execute("SELECT * FROM set_versions ORDER BY version DESC").fetchone()
         self.assertEqual((v["source"], v["added"]), ("orchestrator", 1))
         self.assertIsNone(self.rows()["el9"]["set_body"])
+        # Each package carries who certified it, and the set's copy keeps it.
+        self.assertEqual({tuple(sorted(a)) for p in m["packages"] for a in p["approvals"]},
+                         {("as", "at", "by")})
+        self.assertEqual({a["by"] for p in m["packages"] for a in p["approvals"]}, {"alice"})
+        bom = json.loads(self.conn.execute("SELECT b.body FROM certified c JOIN boms b ON"
+                                           " b.sha256 = c.bom_sha256").fetchone()["body"])
+        self.assertEqual(bom["certified_by"], ["alice"])
+        self.assertIn("certified_at", bom)
+        # Certified again by carol: the set keeps who put it in, and when (carol signs).
+        (_a, body, f), = certifier.compute(self.conn, self.settings, self.console, self.deps.store(),
+                                           7, "b2", "carol", probe=self.probe, key_id=self.kid)
+        self.assertEqual(json.loads(body)["certified_by"], ["carol"])
+        self.assertEqual(json.loads(body)["packages"][0]["approvals"], m["packages"][0]["approvals"])
+        self.assertEqual((f["in_set"], f["set_body"]), (1, None))
 
     def test_decertify_takes_the_build_out_and_its_manifest_is_withdrawn(self):
         self.approve()
@@ -1025,6 +1039,25 @@ class OwnedSetTest(_StoreBase):
                           "sequence": 2}).encode()
         why = certifier.removal_only(self.settings, self.deps.store(), "el9", new, self.conn)
         self.assertIn("would add 1 entr", why)
+
+    def test_a_withdrawal_adds_no_approvals(self):
+        key = "%s-el9.json" % certifier.write_prefix(self.settings)
+        alice, mallory = {"as": "certify", "by": "alice"}, {"as": "upload", "by": "mallory"}
+        for was, chain, why in (([alice], [alice, mallory], "would add approvals"), ([alice], [], None),
+                                ([alice], [alice], None), (None, [alice], None)):   # None: signed before chains
+            old = json.dumps({"packages": [dict(_pkg("Secret", "h5"), group="lcg",
+                                                **({"approvals": was} if was is not None else {}))],
+                              "sequence": 1}).encode()
+            self.s3.docs[key] = old
+            self.s3.docs[key + ".sig"] = json.dumps(
+                trust.sign_bytes(old, trust.load_private_key(self.key))).encode()
+            new = json.dumps({"packages": [dict(_pkg("Secret", "h5"), group="lcg", approvals=chain)],
+                              "sequence": 2}).encode()
+            got = certifier.removal_only(self.settings, self.deps.store(), "el9", new, self.conn)
+            if why:
+                self.assertIn(why, got or "")
+            else:
+                self.assertIsNone(got, (was, chain))
 
     def test_decertify_package_takes_out_a_bom_left_with_nothing(self):
         self.approve()

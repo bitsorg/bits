@@ -373,7 +373,16 @@ Certifier identity and authority:
 - Identity: with `--certifier-token PAT` (or `$BITS_CERTIFIER_TOKEN`) the
   initiating admin's own GitLab PAT authenticates them via `GET /user` — an
   unforgeable identity — which must be an authorised admin and is recorded as
-  `certified_by` in the signed manifest. Without a certifier token, the gate
+  `certified_by` in the signed manifest. Each package's `approvals` there holds
+  who uploaded it when not its build (`stored_by`; a named uploader over
+  `unknown`), then each certification of a BOM listing it that the BOM records,
+  by time (`certified_by`, `certified_at`). The console's certifier stamps the
+  BOMs it puts in the set; certifying a build again does not change them. The
+  chain is as trustworthy as what writes the set's BOMs (the console's worker
+  when it owns the set, else the manifests repository's merge requests), and an
+  upload named on a direct S3 store as its `bits-by` metadata, which anyone
+  holding the store's write keys sets.
+  Without a certifier token, the gate
   falls back to reading who approved the merge request (read-only bot token).
   Either way the certifier identity travels with the signature.
 - Per-key group binding: a `keys/key-policy.json` mapping `key_id -> [groups]`

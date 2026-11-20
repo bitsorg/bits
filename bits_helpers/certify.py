@@ -202,6 +202,29 @@ def _settle_conflict(key, cands, probe, stale):
            reason))
 
 
+def _approvals(e, man):
+    """The approval chain of BOM entry *e* in manifest *man*: who uploaded the object
+    when not its build (stored_by), then who certified the BOM, and when."""
+    out = []
+    if isinstance(e.get("stored_by"), str) and e["stored_by"]:
+        out.append({"as": "upload", "by": e["stored_by"]})
+    at = man.get("certified_at") if isinstance(man.get("certified_at"), str) else ""
+    who = man.get("certified_by") if isinstance(man.get("certified_by"), list) else []
+    out += [dict({"as": "certify", "by": u}, **({"at": at} if at else {}))
+            for u in who if isinstance(u, str) and u]
+    return out
+
+
+def _in_order(chain):
+    """*chain* without repeats, in an order its BOMs' order does not change: the
+    uploads (a named one over "unknown"), then the certifications by time."""
+    ups = {a["by"] for a in chain if a["as"] == "upload"}
+    ups = sorted(ups - {"unknown"} or ups)
+    certs = {(a.get("at", ""), a["by"]) for a in chain if a["as"] == "certify"}
+    return [{"as": "upload", "by": u} for u in ups] + \
+        [dict({"as": "certify", "by": u}, **({"at": at} if at else {})) for at, u in sorted(certs)]
+
+
 def merge_common_manifest(manifests, default_group=None, valid_days=None,
                           source_commit=None, probe=None) -> dict:
     """Merge build manifests into one common manifest, deduped by content hash.
@@ -267,8 +290,13 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
             for _fld in ("bits_version", "bits_dist_hash"):
                 if man.get(_fld) and _fld not in entry:
                     entry[_fld] = man[_fld]
+            chain = _approvals(e, man)
+            if chain:
+                entry["approvals"] = _in_order(chain)
             slot = by_key.setdefault((arch, h), {})
             have = slot.setdefault(norm_sha(sha), (entry, bid))[0]
+            if have is not entry and chain:    # the same object in another certified BOM
+                have["approvals"] = _in_order(have.get("approvals", []) + chain)
             if entry.get("built_by") and not have.get("built_by"):
                 # Who compiled it and when: the build that did, not one that reused it.
                 have.update({k: entry[k] for k in ("built_by", "completed_at", "bits_version",

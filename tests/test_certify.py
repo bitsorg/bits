@@ -77,6 +77,32 @@ class TestMerge(unittest.TestCase):
             e = certify.merge_common_manifest(order)["packages"][0]
             self.assertEqual((e["built_by"], e["completed_at"]), ("u@host", "2026-10-20T00:00:00Z"))
 
+    def test_the_approval_chain_of_an_object(self):
+        # Who uploaded it (when not its build), then each certification listing it.
+        m1 = dict(_manifest("b1", [_pkg("A", "h1", "sha256:aa", stored_by="alice"), _pkg("B", "h2", "sha256:bb")]),
+                  certified_by=["bob"], certified_at="2026-11-20T10:00:00Z")
+        m2 = dict(_manifest("b2", [_pkg("A", "h1", "sha256:aa")]), certified_by=["carol", "bob"])
+        m3 = _manifest("b3", [_pkg("C", "h3", "sha256:cc")])          # not certified: no chain
+        p = {e["package"]: e for e in certify.merge_common_manifest([m1, m2, m3])["packages"]}
+        self.assertEqual(p["A"]["approvals"], [{"as": "upload", "by": "alice"},     # without a time: first
+                                               {"as": "certify", "by": "bob"}, {"as": "certify", "by": "carol"},
+                                               {"as": "certify", "by": "bob", "at": "2026-11-20T10:00:00Z"}])
+        self.assertEqual(p["B"]["approvals"], [{"as": "certify", "by": "bob", "at": "2026-11-20T10:00:00Z"}])
+        self.assertNotIn("approvals", p["C"])
+        self.assertNotIn("stored_by", p["A"])                           # carried in the chain
+        # The same chain whatever the BOMs' order; a named uploader over "unknown".
+        m4 = dict(_manifest("b4", [_pkg("A", "h1", "sha256:aa", stored_by="unknown")]),
+                  certified_by=["dave"], certified_at="2026-11-19T10:00:00Z")
+        chains = [certify.merge_common_manifest(o)["packages"][0]["approvals"]
+                  for o in ([m1, m2, m4], [m4, m2, m1], [m2, m4, m1])]
+        self.assertEqual(chains[0], chains[1])
+        self.assertEqual(chains[0], chains[2])
+        self.assertEqual([(a["as"], a["by"]) for a in chains[0]],
+                         [("upload", "alice"), ("certify", "bob"), ("certify", "carol"),
+                          ("certify", "dave"), ("certify", "bob")])
+        alone = certify.merge_common_manifest([m4])["packages"][0]["approvals"]
+        self.assertEqual(alone[0], {"as": "upload", "by": "unknown"})
+
     def test_conflicting_sha_same_arch_fails_closed(self):
         # Same hash + same architecture => same store path => must be same bytes.
         m1 = _manifest("b1", [_pkg("A", "h1", "sha256:aa", arch="slc7_x86-64")])

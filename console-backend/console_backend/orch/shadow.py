@@ -16,8 +16,8 @@ same inputs:
 
 It compares the result with the manifests the job signed (its artifacts, or the
 store's copy while it still carries the pipeline's commit), once their
-signature verifies against the trust anchor. Timestamps and certified_by are
-left out of the comparison; everything else must be equal. Each architecture is
+signature verifies against the trust anchor. Timestamps, certified_by and each
+package's approvals are left out of the comparison; everything else must be equal. Each architecture is
 a sign run (mode 'shadow') and a shadow.match or shadow.mismatch event. Nothing
 is signed, committed or written to the store.
 
@@ -263,7 +263,13 @@ def _canonical(obj):
 
 
 def content(manifest):
-    return {k: v for k, v in manifest.items() if k not in VOLATILE}
+    """*manifest* without who certified it and when: at the top, and each package's
+    approval chain (the worker keeps one, the CI does not)."""
+    out = {k: v for k, v in manifest.items() if k not in VOLATILE}
+    if isinstance(out.get("packages"), list):
+        out["packages"] = [{k: v for k, v in p.items() if k != "approvals"} if isinstance(p, dict) else p
+                           for p in out["packages"]]
+    return out
 
 
 def digest(manifest):
@@ -277,6 +283,7 @@ def _label(p):
 
 def diff(ours, signed):
     """What differs between our manifest and the signed one, capped."""
+    ours, signed = content(ours), content(signed)      # not who certified it
     key = lambda p: (p.get("effective_architecture") or "", p.get("hash"))  # noqa: E731
     a = {key(p): p for p in ours.get("packages") or [] if isinstance(p, dict)}
     b = {key(p): p for p in signed.get("packages") or [] if isinstance(p, dict)}

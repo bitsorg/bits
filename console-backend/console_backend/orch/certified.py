@@ -361,7 +361,7 @@ def materialize(conn, version, root):
 
 
 def _strip(doc):
-    return {k: v for k, v in doc.items() if k not in ("certified_by", "_source_group")}
+    return {k: v for k, v in doc.items() if k not in ("certified_by", "certified_at", "_source_group")}
 
 
 def _store_docs(s3, bucket, build_id):

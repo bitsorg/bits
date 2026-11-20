@@ -488,6 +488,19 @@ def _decertified(path):
     return {str(n).lower() for n in names} if isinstance(names, list) else set()
 
 
+def _set_stamp(path, stamp):
+    """The certified_by/certified_at of the set's copy at *path*, else *stamp*: the
+    set keeps who put a BOM in it (certified again, the set's copy is not changed)."""
+    try:
+        with open(path) as fh:
+            old = json.load(fh)
+    except (OSError, ValueError):
+        return stamp
+    if not isinstance(old, dict) or not isinstance(old.get("certified_by"), list):
+        return stamp
+    return {k: old[k] for k in ("certified_by", "certified_at") if k in old}
+
+
 def compute(conn, settings, console, store, pid, bid, approver, probe=None, key_id=None,
             approval=None):
     """The rows to sign: [(arch, body bytes, fields)], computed from the set at
@@ -533,7 +546,13 @@ def compute(conn, settings, console, store, pid, bid, approver, probe=None, key_
                 doc = dict(doc, packages=[e for e in doc.get("packages") or []
                                           if not (isinstance(e, dict) and str(
                                               e.get("package") or "").lower() in gone)])
-            text = json.dumps(dict(doc, certified_by=[approver]), indent=1)
+            # Who certified it and when, in the set's copy: each package's approval
+            # chain (bits certify). Certified again: the set's stamp, unchanged.
+            stamp = {"certified_by": [approver], "certified_at": certify.now_iso()}
+            if in_set[arch]:
+                stamp = _set_stamp(dest, stamp)
+            text = json.dumps(dict({k: v for k, v in doc.items() if k not in
+                                    ("certified_by", "certified_at")}, **stamp), indent=1)
             with open(dest, "w") as fh:
                 fh.write(text)
             if not in_set[arch]:
@@ -760,13 +779,17 @@ def run(params, deps):
 
 
 # What may differ between two copies of one entry: which build recorded it.
-_PROVENANCE = ("built_by", "completed_at", "bits_version", "bits_dist_hash")
+_PROVENANCE = ("built_by", "completed_at", "bits_version", "bits_dist_hash", "approvals")
 
 
 def _ident(e):
     """An entry as a withdrawal must keep it: every field but its provenance
     (a re-signed entry may not change its group, licence, redistributable, ...)."""
     return json.dumps({k: v for k, v in e.items() if k not in _PROVENANCE}, sort_keys=True)
+
+
+def _list(x):
+    return x if isinstance(x, list) else []
 
 
 def _but_group(e):
@@ -823,6 +846,14 @@ def removal_only(settings, store, arch, body, conn=None):
     if extra:
         return ("it would add %d entr(y/ies) (%s), or change more than the group of one"
                 % (len(extra), ", ".join(extra[:5])))
+    # An entry kept as signed keeps its approvals or fewer (one signed before chains
+    # were: any; a regrouped one: its group's BOM in the set certifies it, with its chain).
+    chains = {_ident(e): _list(e["approvals"]) for e in olds if "approvals" in e}
+    grown = [str(e.get("package") or e.get("hash")) for e in new.get("packages") or []
+             if _ident(e) in chains and any(a not in chains[_ident(e)] for a in _list(e.get("approvals")))]
+    if grown:
+        return ("it would add approvals to %d entr(y/ies) (%s)"
+                % (len(grown), ", ".join(grown[:5])))
     before = old.get("sequence") if isinstance(old.get("sequence"), int) else 0
     if not isinstance(new.get("sequence"), int) or new["sequence"] <= before:
         return "its sequence does not follow the store's %d" % before
