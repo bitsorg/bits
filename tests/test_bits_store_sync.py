@@ -32,6 +32,7 @@ class Store(BaseHTTPRequestHandler):
   group, sigs, unsigned = "lhcb", {}, False     # /restricted's Bits-Object-Group; signatures by hash
   markers, meta, staged, busy, racer, put_fails = {}, {}, {}, 0, None, 0
   refused, failing_completes = "", 0           # refused: a path prefix answered 403
+  by = {}                                      # hash -> Bits-Object-By
 
   def log_message(self, *a):
     pass
@@ -99,6 +100,8 @@ class Store(BaseHTTPRequestHandler):
       self.send_header("Bits-Object-Name", build[0])
       if area == "restricted" and self.group:
         self.send_header("Bits-Object-Group", self.group)
+      if h in self.by:
+        self.send_header("Bits-Object-By", self.by[h])
     self.send_header("Content-Length", "0")
     self.end_headers()
 
@@ -189,7 +192,7 @@ class StandIn(unittest.TestCase):
     Store.builds, Store.public, Store.asked, Store.cut, Store.failing, Store.bare = {H2: (NAME, DATA)}, False, [], False, 0, False
     Store.private, Store.group, Store.sigs, Store.unsigned = {}, "lhcb", {}, False
     Store.markers, Store.meta, Store.staged, Store.busy, Store.racer, Store.put_fails = {}, {}, {}, 0, None, 0
-    Store.refused, Store.failing_completes = "", 0
+    Store.refused, Store.failing_completes, Store.by = "", 0, {}
     p = patch("bits_helpers.bits_store_sync.time.sleep")
     p.start()
     self.addCleanup(p.stop)
@@ -464,12 +467,18 @@ class BitsStoreWriteTest(StandIn):
     spec = self.built(h=H2, revision="1")
     self.writer().upload_symlinks_and_tarball(spec)
     self.assertEqual(spec["store_tarball_sha256"], "sha256:" + "a" * 64)
+    self.assertEqual(spec["store_tarball_by"], "unknown")             # before bits-store said
     self.assertEqual(Store.builds[H2], (NAME, DATA))
     self.assertFalse(any(p.startswith("/store/") for m, p, _ in Store.asked if m == "POST"))
     del Store.meta[H2]                                 # an old one: its bytes hashed
+    Store.by[H2] = "j%C3%BCrgen%0Aevil"               # its uploader, escaped
     spec = self.built(h=H2, revision="1")
     self.writer().upload_symlinks_and_tarball(spec)
     self.assertEqual(spec["store_tarball_sha256"], "sha256:" + hashlib.sha256(DATA).hexdigest())
+    self.assertEqual(spec["store_tarball_by"], "jürgenevil")         # printable only
+    spec = self.built(h=H1)                            # uploaded by this build: nobody else's
+    self.writer().upload_symlinks_and_tarball(spec)
+    self.assertNotIn("store_tarball_by", spec)
 
   def test_a_race_lost_keeps_the_winner(self):
     Store.racer, Store.busy = ("zlib-v1.3-3.%s.tar.gz" % ARCH, b"first"), 1
@@ -548,6 +557,7 @@ class RestrictedTest(StandIn):
 
   def test_read_after_the_store_with_a_token(self):
     Store.builds, Store.private, Store.sigs = {}, {H2: (NAME, DATA)}, {H2: self.sign()}
+    Store.by[H2] = "alice"                             # who uploaded it
     store = self.store()
     store.fetch_tarball(self.spec(H2))
     self.assertEqual(self.stored(), DATA)
@@ -557,6 +567,7 @@ class RestrictedTest(StandIn):
     self.assertEqual(store.verified_private(ARCH, H2), "sha256:" + hashlib.sha256(DATA).hexdigest())
     m = sync.MultiRemoteSync([sync.RemoteSync(), store], [])
     self.assertEqual(m.verified_private(ARCH, H2), store.verified_private(ARCH, H2))
+    self.assertEqual((store.writer_of(ARCH, H2), m.writer_of(ARCH, H2)), ("alice", "alice"))
     self.assertTrue(m.stored_privately(ARCH, H2))
 
   def test_never_kept_unless_its_signature_verifies(self):

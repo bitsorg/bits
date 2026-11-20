@@ -133,6 +133,16 @@ class TestManifestInit(unittest.TestCase):
         self.assertEqual(pkgs[0]["view"], {"exclude": ["share/doc"]})
         self.assertNotIn("view", pkgs[1])
 
+    def test_stored_by_recorded_only_when_another_wrote_it(self):
+        m = _make_manifest(self.tmp)
+        spec = {"package": "ROOT", "version": "6", "revision": "1", "hash": "h",
+                "store_tarball_sha256": "sha256:" + "a" * 64, "store_tarball_by": "alice"}
+        m.add_package(spec, "built_from_source")
+        m.add_package(dict(spec, package="zlib", store_tarball_by=None), "built_from_source")
+        pkgs = self._load(m)["packages"]
+        self.assertEqual((pkgs[0]["stored_by"], pkgs[0]["tarball_sha256"]), ("alice", "sha256:" + "a" * 64))
+        self.assertNotIn("stored_by", pkgs[1])
+
     def test_references_recorded_only_when_set(self):
         m = _make_manifest(self.tmp)
         spec = {"package": "sqlite", "version": "3320300", "revision": "1", "hash": "h",

@@ -4983,6 +4983,7 @@ The manifest records every input and output that could affect reproducibility:
 | `completed_at` | ISO-8601 UTC timestamp of package completion |
 | `rebuilt_because` | Why a package built here was not reused (e.g. `store tarball not certified`); only when known |
 | `references`, `pinned_by`, `sbom` | The recipe's CPEs and purls for scanners, the profile or package that pinned its version, and `tool` for a host tool; only when set |
+| `stored_by` | Who uploaded the stored object `tarball_sha256` names, when it is not this build's: one already at the hash that the upload kept (another build's `build:<job>`, a person's user name, or `unknown` when the store does not say), or a restricted build reused on bits-store's signature; only then |
 | `symlinked_from`, `symlink_policy` | The deployed package an `already_installed` package was linked from (`--symlink-packages-from`), and the policy; only then |
 | `pkg_family` | Install family sub-directory (empty if none) |
 | `effective_architecture` | `share` for noarch packages, the neutral arch for `own_hash` packages, else the build arch |

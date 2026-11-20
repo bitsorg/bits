@@ -412,17 +412,19 @@ class Boto3TestCase(unittest.TestCase):
         b3sync.s3.upload_file.assert_not_called()
         b3sync.s3.put_object.assert_not_called()
         self.assertEqual(good_spec["store_tarball_sha256"], remote_sha)
+        self.assertEqual(good_spec["store_tarball_by"], "unknown")    # not through bits-store
 
         # Ceph RGW returns the name as "Sha256": still found, nothing streamed.
         good_spec = dict(GOOD_SPEC)
         b3sync.s3.head_object = lambda Bucket, Key: {
-            "Metadata": {"Sha256": remote_sha}}
+            "Metadata": {"Sha256": remote_sha, "Bits-By": "build%3A7"}}
         b3sync.s3.get_object = lambda Bucket, Key, Range=None: (
             {"Body": MagicMock()} if Range else self.fail("streamed"))
         b3sync.s3.upload_file.reset_mock()
         b3sync.upload_symlinks_and_tarball(good_spec)
         b3sync.s3.upload_file.assert_not_called()
         self.assertEqual(good_spec["store_tarball_sha256"], remote_sha)
+        self.assertEqual(good_spec["store_tarball_by"], "build:7")    # bits-store's uploader
 
         # Listed and HEADed, but its data cannot be read (Ceph RGW, NoSuchKey on
         # GET): replaced with the local tarball, whose sha256 is then recorded.

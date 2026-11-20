@@ -2886,7 +2886,10 @@ def build_one_package(p, ctx):
       _idx = trusted_reuse_index(args, workDir)
       _key = (effective_arch(spec, args.architecture), spec["hash"])
       # a restricted build: vouched for by bits-store's signature, checked on download
-      _sha = _idx.get(_key) or syncHelper.verified_private(*_key)
+      _sha, _by = _idx.get(_key), None
+      if _sha is None:                # vouched for by its upload's signature: whose upload
+        _sha = syncHelper.verified_private(*_key)
+        _by = _sha and (syncHelper.writer_of(*_key) or "unknown")
       if _sha is None:
         warning("Trusted reuse: %s@%s not vouched for by the signed manifest; "
                 "discarding remote tarball and rebuilding.",
@@ -2907,6 +2910,8 @@ def build_one_package(p, ctx):
         else:
           debug("Trusted reuse: %s@%s verified against signed manifest",
                 spec["package"], spec["hash"])
+          if _by:
+            spec["store_tarball_by"] = _by
 
     # A hash-policy package first looks up the remote identity, so read-only
     # builds can reuse CI artifacts. Only after that lookup misses do we switch

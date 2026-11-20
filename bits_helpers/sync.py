@@ -178,6 +178,14 @@ def source_sync_for(spec, sync_helper):
 _SHA256_META = "sha256"
 
 
+def writer_name(value):
+  """Who uploaded a stored object, from bits-store's URL-escaped subject (metadata
+  bits-by, header Bits-Object-By): printable, bounded; None when not given."""
+  from urllib.parse import unquote
+  name = "".join(c for c in unquote(str(value or ""))[:128] if c.isprintable() and c not in "\r\n")
+  return name or None
+
+
 def recorded_sha256(head):
   """The sha256 recorded on a store object, from a ``head_object`` reply, or "".
 
@@ -495,6 +503,10 @@ class RemoteSync:
     """"sha256:<hex>" of a private build whose store signature verified on download, or None."""
     return None
 
+  def writer_of(self, arch, pkg_hash):
+    """Who uploaded the stored build of (arch, hash), as the store says, or None."""
+    return None
+
   def writestore_has_tarball(self, spec, architecture=None):
     """True iff *spec*'s content tarball already exists in the WRITE store.
 
@@ -610,6 +622,9 @@ class MultiRemoteSync(RemoteSync):
 
   def verified_private(self, arch, pkg_hash):
     return next((v for v in (r.verified_private(arch, pkg_hash) for r in self.readers) if v), None)
+
+  def writer_of(self, arch, pkg_hash):
+    return next((v for v in (r.writer_of(arch, pkg_hash) for r in self.readers + self.writers) if v), None)
 
   def writestore_has_tarball(self, spec, architecture=None):
     # Existence in EVERY write store — the readers are irrelevant to uploading.
@@ -1327,6 +1342,7 @@ class Boto3RemoteSync(RemoteSync):
     self.writeStore = re.sub("^b3://", "", writeStore)
     self.architecture = architecture
     self.workdir = workdir
+    self._writers = {}               # key -> who uploaded it (bits-store's bits-by)
     self._s3_init()
 
   def probe_url(self):
@@ -1440,6 +1456,8 @@ class Boto3RemoteSync(RemoteSync):
       if err.response["Error"]["Code"] == "404":
         return None
       raise
+    self._writers[key] = writer_name(next((v for k, v in (head.get("Metadata") or {}).items()
+                                           if k.lower() == "bits-by"), None))   # RGW: Bits-By
     sha = recorded_sha256(head)
     if sha:
       return sha
@@ -1705,8 +1723,8 @@ class Boto3RemoteSync(RemoteSync):
     if remote_sha is not None:
       if self._s3_readable(tar_path):
         spec["store_tarball_sha256"] = remote_sha
-        debug("%s exists in the store — keeping the stored object and recording "
-              "its sha256", tarball)
+        spec["store_tarball_by"] = self._writers.get(tar_path) or "unknown"
+        info("%s: kept the stored object, uploaded by %s", tarball, spec["store_tarball_by"])
         return
       warning("%s: the store lists it but cannot return its data; replacing it with "
               "the local tarball. BOMs recording %s need certifying again.",

@@ -914,6 +914,9 @@ class HashPolicyBuildFallbackTest(unittest.TestCase):
             def verified_private(self, a, h):
                 return private_sha if (a, h) == (arch, remote_hash) else None
 
+            def writer_of(self, a, h):
+                return "alice" if (a, h) == (arch, remote_hash) else None
+
             def fetch_tarball(self, _spec):
                 if remote_tarball:
                     directory = os.path.join(
@@ -1082,8 +1085,11 @@ class PrivateReuseTest(unittest.TestCase):
     def test_vouched_by_its_signature(self):
         import hashlib
         good = "sha256:" + hashlib.sha256(b"remote").hexdigest()
-        self.assertTrue(self._run(good)["cachedTarball"])
-        self.assertEqual(self._run("sha256:" + "0" * 64)["cachedTarball"], "")   # other bytes
+        spec = self._run(good)
+        self.assertTrue(spec["cachedTarball"])
+        self.assertEqual(spec["store_tarball_by"], "alice")                       # whose upload
+        spec = self._run("sha256:" + "0" * 64)
+        self.assertEqual((spec["cachedTarball"], spec.get("store_tarball_by")), ("", None))  # other bytes
         self.assertEqual(self._run(None)["cachedTarball"], "")                  # not vouched
 
 

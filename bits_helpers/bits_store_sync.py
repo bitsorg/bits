@@ -33,7 +33,7 @@ from bits_helpers.arch import effective_arch
 from bits_helpers.log import debug, info, warning, dieOnError, ProgressPrint
 from bits_helpers.rev_index import REVISION_TOKEN_PATTERN
 from bits_helpers.source_store import store_token
-from bits_helpers.sync import RemoteSync, binary_redistributable
+from bits_helpers.sync import RemoteSync, binary_redistributable, writer_name
 from bits_helpers.utilities import resolve_store_path, ver_rev
 
 SCHEME = "bits-store+"
@@ -84,6 +84,7 @@ class BitsStoreSync(RemoteSync):
     self._lock = threading.Lock()
     self._private = {}                   # (arch, hash) -> the group whose /restricted build it is
     self._verified = {}                  # (arch, hash) -> "sha256:<hex>" of one whose signature verified
+    self._writers = {}                   # (arch, hash) -> who uploaded it (Bits-Object-By)
     self._restricted_refused = False     # the token may not read /restricted: not asked again
     self._restricted_keys = None
 
@@ -147,6 +148,10 @@ class BitsStoreSync(RemoteSync):
     """"sha256:<hex>" of the /restricted build downloaded with a valid signature, or None."""
     return self._verified.get((arch, pkg_hash))
 
+  def writer_of(self, arch, pkg_hash):
+    """Who uploaded the build of (arch, hash), as bits-store answered it last, or None."""
+    return self._writers.get((arch, pkg_hash))
+
   def _find(self, method, arch, pkg_hash):
     """(file name, redirect) of the build of *pkg_hash*, or (None, None)."""
     return self._locate(method, arch, pkg_hash)[:2]
@@ -182,6 +187,7 @@ class BitsStoreSync(RemoteSync):
       debug("%s: %s", url, r.status_code if r is not None else "no answer")   # 404: not stored
       return None, None, ""
     name, group = r.headers.get("Bits-Object-Name", ""), r.headers.get("Bits-Object-Group", "")
+    self._writers[(arch, pkg_hash)] = writer_name(r.headers.get("Bits-Object-By"))
     if not _NAME.fullmatch(name) or name in (".", "..") or not name.endswith("." + arch + ".tar.gz"):
       debug("%s: ignoring the unsafe or foreign name %r", url, name)   # never a path outside
       return None, None, ""
@@ -361,6 +367,9 @@ class BitsStoreSync(RemoteSync):
       warning("%s: not stored, kept on this host (%s)", name, exc)
       return False
     spec["store_tarball_sha256"] = sha or self._stored_sha256(base, arch, spec, name)
+    if not sha:                          # kept the build another wrote: whose it is
+      spec["store_tarball_by"] = self._writers.get((arch, spec["hash"])) or "unknown"
+      info("%s: kept the stored build, uploaded by %s", name, spec["store_tarball_by"])
     return None
 
   def write_rev_marker(self, spec, arch):

@@ -596,6 +596,9 @@ class BuildManifest:
             **({"references": _refs} if _refs else {}),
             **({"pip_source": dict(spec["pip_source"])} if spec.get("pip_source") else {}),
             **({"pinned_by": spec["pinned_by"]} if spec.get("pinned_by") else {}),
+            # Who uploaded the stored object this entry names, when not this build:
+            # kept from another writer, or a restricted build reused on its signature.
+            **({"stored_by": spec["store_tarball_by"]} if spec.get("store_tarball_by") else {}),
             # A host tool (recipe `sbom: tool`): run, never shipped; scans leave it out.
             **({"sbom": "tool"} if sbom_tool(spec) else {}),
             "source":                 _no_userinfo(spec.get("source") or ""),
