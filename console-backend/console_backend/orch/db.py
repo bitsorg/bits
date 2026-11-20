@@ -720,6 +720,27 @@ MIGRATIONS = [
     [
         "ALTER TABLE schedules ADD COLUMN head INTEGER NOT NULL DEFAULT 0",
     ],
+    # 31: bits-store's problems (store_problems.py), each folded into an issue as a
+    # failure is; an issue's source says which: 'build' or 'store'.
+    [
+        "ALTER TABLE issues ADD COLUMN source TEXT NOT NULL DEFAULT 'build'",
+        """CREATE TABLE store_problems (
+            id          INTEGER PRIMARY KEY,
+            store_id    INTEGER NOT NULL,  -- its row in bits-store's index
+            first_ms    INTEGER NOT NULL,  -- with store_id: the row (ids restart with an index)
+            last_ms     INTEGER NOT NULL,
+            count       INTEGER NOT NULL,
+            level       TEXT NOT NULL,
+            kind        TEXT NOT NULL,
+            subject     TEXT NOT NULL,
+            message     TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            issue_id    INTEGER NOT NULL REFERENCES issues(id),
+            recorded_ms INTEGER NOT NULL,
+            UNIQUE (store_id, first_ms)
+        )""",
+        "CREATE INDEX store_problems_issue ON store_problems(issue_id, id)",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

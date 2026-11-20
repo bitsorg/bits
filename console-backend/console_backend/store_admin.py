@@ -4,13 +4,19 @@
 reached on its own address (BITS_STORE_ADMIN_URL, an internal network) with a short
 admin token per request, never through the store's public address."""
 
+import base64
 import json
 import re
+import secrets
+import time
 from urllib.parse import parse_qsl
 
 import requests
 
-VIEWS = ("summary", "objects", "object", "access", "withdrawn", "gc", "gc/files", "gc/log")  # GET
+from . import audit, signproxy, store_token
+
+VIEWS = ("summary", "objects", "object", "access", "withdrawn", "gc", "gc/files", "gc/log",  # GET
+         "problems")
 ACTIONS = ("withdraw", "lift", "delete", "gc/plan", "gc/apply")  # PUT, a JSON object
 MAX_QUERY = 2048
 MAX_BODY = 4096                                     # as bits-store takes them
@@ -107,3 +113,42 @@ def _answer(r):
     if body is None:
         raise Unreachable("bits-store's admin API answered %d without JSON" % r.status_code)
     return r.status_code, body
+
+
+def admin_token(settings, sub, caps, ttl=TOKEN_TTL):
+    """(token, jti) of bits-store's admin key for *sub* (admin:<who>), allowing *caps*:
+    signed by the security proxy's route when set, else from the key's seed. For a
+    caller outside a request (the orchestrator); the API signs its own (main.py)."""
+    st = settings
+    key = st.store_admin_token_key
+    if st.store_admin_token_sign_route:
+        from bits_helpers import trust  # the surrounding bits repo's
+
+        def key(data):
+            env = signproxy.call(st, trust.sign_bytes_via_proxy, data, route=st.store_admin_token_sign_route,
+                                 prefix=st.store_admin_token_sign_prefix,
+                                 agent_socket=st.store_token_sign_socket or None,
+                                 host=(st.store_token_sign_host or None) if st.store_token_sign_socket else None)
+            sig = base64.b64decode(env.get("sig", ""), validate=True)
+            if len(sig) != 64:
+                raise RuntimeError("the sign proxy returned no Ed25519 signature")
+            return sig
+        signer = store_token.StoreTokenSigner(st.store_admin_token_kid, key, st.store_token_issuer,
+                                              st.store_token_audience, signer="admin")
+    else:
+        signer = store_token.StoreTokenSigner.from_seed(st.store_admin_token_kid, key, st.store_token_issuer,
+                                                        st.store_token_audience, signer="admin")
+    jti, now = secrets.token_urlsafe(16), int(time.time())
+    tok = signer.sign(sub, "admin", caps, ttl, now=now, jti=jti)
+    audit.record("store_token", user=sub, group="admin", jti=jti, exp=now + ttl, principal="worker")
+    return tok, jti
+
+
+def problems(settings, since, sub="admin:bits-orchestrator"):
+    """bits-store's problems last seen at or after *since* (ms), oldest first (at
+    most 1000: ask again from the last one's); Unreachable when it does not answer."""
+    tok, _ = admin_token(settings, sub, [("GET", "/_admin/problems")])
+    code, body = get(settings.store_admin_url, "problems", [("since", str(int(since))), ("limit", "1000")], tok)
+    if code != 200:
+        raise Unreachable("bits-store's problems answered %d (no index?)" % code)
+    return body.get("problems") or []

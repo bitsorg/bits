@@ -29,10 +29,10 @@ import signal
 import threading
 import time
 
-from .. import config
+from .. import config, store_admin
 from . import (actions, approvals, authority, build_queue, certifier, chat, cvmfs_status, db, events,
                failures, kinds, mirror, nightlies, outside, phases, reconcile, sbom_history,
-               sbom_scan, schedules, shadow, trace, watches)
+               sbom_scan, schedules, shadow, store_problems, trace, watches)
 
 log = logging.getLogger("bits_orchestrator")
 
@@ -71,6 +71,11 @@ class Worker:
             ("chat_kept", lambda: chat.expire(self.conn)),
             ("backup", self._backup),
         ]
+        if settings.store_admin_configured():
+            # bits-store's warnings and errors, as issues beside the builds' (store_problems.py).
+            self.steps.insert(self.steps.index(next(s for s in self.steps if s[0] == "backfill")) + 1,
+                              ("store_problems", lambda: store_problems.collect(
+                                  self.conn, lambda since: store_admin.problems(settings, since))))
         if settings.orch_certify:
             # Request the certifications of new builds, after they are
             # recorded; the certifier thread runs them.

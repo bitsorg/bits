@@ -248,6 +248,16 @@ SEEDS = [
      "The package is already published at that path, and the ingest path cannot add files over it",
      "Update bits (it then skips packages already published), or give the community a"
      " cvmfs_packages_template in its cvmfs.yaml", 0),
+    # bits-store's problems (store_problems.py): "reason:store:<kind>"
+    (r"reason:store:disk_low",
+     "bits-store's local disk (-data: its index and git mirrors) is nearly full",
+     "Free space on the store's host, or give -data a larger volume", 0),
+    (r"reason:store:volume_unreachable",
+     "bits-store cannot reach one of its storage volumes (S3)",
+     "Check the volume's endpoint and the store's keys for it", 0),
+    (r"reason:store:tag_moved",
+     "A tag moved upstream; bits-store keeps the commit it had, which builds go on using",
+     "Nothing for builds; tell the upstream project, or pin the recipe to the commit", 0),
 ]
 # New seeds go at the end: a database has had the first *n* of them ("1": the first four).
 FIRST_SEEDS = 4
@@ -414,8 +424,11 @@ def rematch(conn):
     signatures = _compiled(conn)
     named = 0
     for issue in conn.execute("SELECT id FROM issues WHERE signature_id IS NULL").fetchall():
-        for f in conn.execute("SELECT excerpt, failure_reason FROM failures WHERE issue_id = ?"
-                              " ORDER BY id DESC LIMIT 5", (issue["id"],)).fetchall():
+        for f in conn.execute(  # a build issue's last failures, a store issue's last problems
+                "SELECT * FROM (SELECT excerpt, failure_reason FROM failures WHERE issue_id = ?"
+                " ORDER BY id DESC LIMIT 5) UNION ALL SELECT * FROM (SELECT message, 'store:' || kind"
+                " FROM store_problems WHERE issue_id = ? ORDER BY id DESC LIMIT 5)",
+                (issue["id"], issue["id"])).fetchall():
             sid = match(signatures, f["excerpt"], f["failure_reason"])
             if sid:
                 with db.transaction(conn):
@@ -472,7 +485,7 @@ def backfill(conn, reader, days, lookback_days=7.0, budget=BACKFILL_PER_PASS):
 # --- reads for the API ----------------------------------------------------------
 
 def _issue_public(r, sig=None):
-    out = {"issue": r["id"], "package": r["package"], "title": r["title"],
+    out = {"issue": r["id"], "source": r["source"], "package": r["package"], "title": r["title"],
            "excerpt": r["excerpt"], "first_seen": r["first_seen"], "last_seen": r["last_seen"],
            "count": r["count"], "communities": json.loads(r["communities"]),
            "platforms": json.loads(r["platforms"]), "status": r["status"]}
@@ -558,6 +571,11 @@ def get_issue(conn, issue_id, communities=None, limit=50):
         occ = conn.execute("SELECT * FROM failures WHERE issue_id = ? ORDER BY id DESC LIMIT ?",
                            (r["id"], int(limit))).fetchall()
     out["failures"] = [_failure_public(f) for f in occ]
+    if r["source"] == "store":   # overall callers only: no community has its failures
+        out["problems"] = [{k: p[k] for k in ("level", "kind", "subject", "message", "count")}
+                           | {"first_seen": p["first_ms"], "last_seen": p["last_ms"]}
+                           for p in conn.execute("SELECT * FROM store_problems WHERE issue_id = ?"
+                                                 " ORDER BY last_ms DESC LIMIT ?", (r["id"], int(limit)))]
     return out
 
 

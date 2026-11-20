@@ -182,6 +182,18 @@ issue seen in several shows a community admin only their own occurrences,
 counts and excerpt). A pipeline whose logs cannot be read is tried again every
 10 minutes for a day.
 
+bits-store's **problems** (its warnings and errors, `GET /_admin/problems`) are
+issues too (`orch/store_problems.py`): with bits-store's admin API configured
+(`BITS_STORE_ADMIN_URL` and its admin key), the worker reads them every 5
+minutes with a minute's admin token allowed that view alone. An issue's `source`
+is `build` or `store` (package `bits-store`); a store issue's fingerprint is the
+problem's kind and its message without the subject (the key, volume or
+repository), so one fault on many objects is one issue, and signatures read the
+message and `reason:store:<kind>`. Store issues have no community: overall
+admins and read tokens of all communities see them, with their problems
+(`/ops/issues/{id}`: `problems`). Three are seeded (`disk_low`,
+`volume_unreachable`, `tag_moved`).
+
 **Approvals** are kept in the same database when `BITS_ORCH_DB` is set
 (`orch/approvals.py`): an approved pre-approval (console or CLI) is stored with
 the passkey assertion that approved it, survives a restart, expires 24 hours
