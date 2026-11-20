@@ -2244,6 +2244,24 @@ def container_mounts(work_dir, container_work_dir, ro_sources, config_dir, scrip
              quote(script_dir + "/build.sh"), quote(bits_dir)))
 
 
+def host_dirs_read_only(work_dir, container_work_dir, reference_sources):
+  """Read-only overlays of what the host uses in the work dir after a build: its git
+  repositories (the mirrors, REPOS/, a CI job's recipe clones in jobs/), where it
+  writes LOGS/ and MANIFESTS/. Made first, so a build cannot make them itself."""
+  made = ["REPOS", "LOGS", "MANIFESTS"] + ([abspath(reference_sources)] if reference_sources else [])
+  out = ""
+  for d in dict.fromkeys([os.path.join(work_dir, m) for m in made] + [os.path.join(work_dir, "jobs")]):
+    rel = os.path.relpath(d, work_dir)
+    if rel == "." or rel.startswith(".."):
+      continue                                   # a mirror elsewhere: /mirror, read-only
+    dieOnError(os.path.islink(d), "%s is a symlink: a build may have made it; remove it" % d)
+    if not d.endswith("/jobs"):
+      call_ignoring_oserrors(os.makedirs, d, exist_ok=True)
+    if os.path.isdir(d):
+      out += "-v %s:%s:ro " % (quote(d), quote(container_work_dir + "/" + rel))
+  return out
+
+
 def build_one_package(p, ctx):
   """Process one package from the build order: hash, resolve reuse, set up
   the build command, and register its scheduler download/build tasks. A bare
@@ -3221,6 +3239,10 @@ def build_one_package(p, ctx):
     _ro_sources = ("-v %s:%s/SOURCES:ro " % (quote(_src_dir), container_workDir)
                    if _ro_enabled and os.path.isdir(_src_dir)
                    else "")
+    # What the host uses later (its git repositories, LOGS/, MANIFESTS/): read-only
+    # too, or a recipe's hook, config or symlink there acts on the host.
+    _ro_sources += host_dirs_read_only(abspath(args.workDir), container_workDir,
+                                       getattr(args, "referenceSources", None))
     # Run as the host uid so files in the mounted workdir stay the user's. Rootless
     # podman cannot setresuid to the host uid (unmapped in its user namespace);
     # --userns=keep-id maps it and runs as it.
@@ -3280,7 +3302,7 @@ def build_one_package(p, ctx):
       additionalVolumes=" ".join(
         "-v %s" % quote(volume) for volume in
         list(args.volumes) + [v for v in [crates_registry.container_volume(args.workDir)] if v]),
-      mirrorVolume=("-v %s:/mirror" % quote(dirname(spec["reference"]))
+      mirrorVolume=("-v %s:/mirror:ro" % quote(dirname(spec["reference"]))
                     if "reference" in spec else ""),
     )
   else:
