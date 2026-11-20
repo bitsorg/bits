@@ -465,10 +465,11 @@ def _with_phases(conn, rows):
 
 @router.get("/ops/builds")
 async def list_builds(request: Request, community: str = "", outcome: str = "",
-                      pipelines: str = "", limit: int = 50):
+                      pipelines: str = "", limit: int = 50, build: str = None):
     """Build pipelines newest first, with the builds they published (see _reads).
     *pipelines* is a comma-separated list of ids (the console asks for the rows
-    it shows)."""
+    it shows); *build* a build id, for those that published it, newest first (the
+    Store page; an empty one names none)."""
     data = await _caller(request)
     mine = await _scope(data)
     overall = mine is None
@@ -485,7 +486,8 @@ async def list_builds(request: Request, community: str = "", outcome: str = "",
     def read():
         with _open() as conn:
             return _with_phases(conn, _with_certify(conn, reconcile.list_builds(
-                conn, communities=mine, outcome=outcome or None, pipelines=ids, limit=limit),
+                conn, communities=mine, outcome=outcome or None, pipelines=ids, limit=limit,
+                build=build),
                 reasons=overall, approver=admin))
     return JSONResponse({"builds": await run_in_threadpool(read)},
                         headers={"Cache-Control": "no-store"})

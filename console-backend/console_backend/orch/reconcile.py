@@ -496,9 +496,9 @@ def _pipeline_public(r, builds):
                         "published_at": b["published_at"]} for b in builds]}
 
 
-def list_builds(conn, communities=None, outcome=None, pipelines=None, limit=50):
+def list_builds(conn, communities=None, outcome=None, pipelines=None, limit=50, build=None):
     """Build pipelines newest first, with their builds. *communities* (lowercase)
-    None = all; *pipelines* restricts to those ids."""
+    None = all; *pipelines* restricts to those ids, *build* to those that published it."""
     q, args = "SELECT * FROM pipelines WHERE is_build = 1", []
     if communities is not None:
         names = sorted(communities)
@@ -515,6 +515,9 @@ def list_builds(conn, communities=None, outcome=None, pipelines=None, limit=50):
             return []
         q += " AND id IN (%s)" % ",".join("?" * len(ids))
         args.extend(ids)
+    if build is not None:
+        q += " AND id IN (SELECT pipeline_id FROM builds WHERE build_id = ?)"
+        args.append(build)
     q += " ORDER BY id DESC LIMIT ?"
     args.append(max(1, min(int(limit), 200)))
     rows = conn.execute(q, args).fetchall()

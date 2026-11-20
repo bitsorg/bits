@@ -478,6 +478,11 @@ class ReconcileTest(_DB):
         self.assertEqual(ids(communities=set()), [])
         self.assertEqual(ids(outcome="failed"), [3])
         self.assertEqual(ids(pipelines=[1, 2]), [2, 1])
+        for pid in (1, 3):                             # a build published by two pipelines (a retry)
+            self.conn.execute("INSERT INTO builds (pipeline_id, build_id, recorded_ms) VALUES (?, 'b-x', 1)", (pid,))
+        self.assertEqual(ids(build="b-x"), [3, 1])
+        self.assertEqual(ids(build="b-x", communities={"other"}), [])
+        self.assertEqual(ids(build="b-y"), [])
         detail = reconcile.get_build(self.conn, 3)
         self.assertEqual((detail["jobs"][0]["status"], detail["variables"]["PACKAGE"]),
                          ("failed", "ROOT"))
@@ -663,6 +668,12 @@ class ApiTest(_DB):
         self.assertEqual(ids("alice", "?community=other"), [2])
         self.assertEqual(ids("carol", "?community=OTHER"), [2])
         self.assertEqual(ids("carol", "?pipelines=1,99"), [1])
+        self.conn.execute("INSERT INTO builds (pipeline_id, build_id, recorded_ms) VALUES (2, 'b-2', 1)")
+        self.conn.commit()
+        self.assertEqual(ids("carol", "?build=b-2"), [2])       # the Store page's way to a build's report
+        self.assertEqual(ids("alice", "?build=b-2"), [])         # not alice's community
+        self.assertEqual(ids("carol", "?build=nothing"), [])
+        self.assertEqual(ids("carol", "?build="), [])            # not every build
         self.assertEqual(self._get("alice", "/ops/builds?pipelines=x").status_code, 400)
         self.assertEqual(self._get("alice", "/ops/builds?outcome=weird").status_code, 400)
         self.assertEqual(self.client.get("/ops/builds").status_code, 401)
