@@ -81,6 +81,8 @@ class StoreTokenTest(unittest.TestCase):
         # bits-store's rule: admin:<user> exactly from an admin key (its vectors' cases)
         a, b = signer(signer="admin"), signer(signer="build")
         self.assertTrue(a.sign("admin:alice", "site", [("GET", "/_admin/**")], 60))
+        tok = a.sign("admin:alice", "site", [("POST", "/_admin/where")], 60)   # a question (bits-store 0.8.8)
+        self.assertEqual(jwt.decode(tok, options={"verify_signature": False})["cap"], [{"m": "POST", "p": "/_admin/where"}])
         for s, sub in ((a, "alice"), (a, "build:1"), (signer(), "admin:alice"), (b, "admin:1")):
             with self.assertRaises(ValueError, msg=(s.signer, sub)):
                 s.sign(sub, "site", [("GET", "/_admin/**")], 60)
@@ -96,7 +98,7 @@ class StoreTokenTest(unittest.TestCase):
     def test_refusals(self):
         s = signer()
         for args in (("", "lhcb", CAPS, 60), ("alice", "", CAPS, 60), ("alice", "lhcb", [], 60),
-                     ("alice", "lhcb", [("POST", "/a")], 60), ("alice", "lhcb", [("GET", "a")], 60),
+                     ("alice", "lhcb", [("DELETE", "/a")], 60), ("alice", "lhcb", [("GET", "a")], 60),
                      ("alice", "lhcb", CAPS, 0), ("alice", "lhcb", CAPS, 7 * 86400 + 1),
                      ("alice", "lhcb", CAPS, 60.5),
                      ("alice", "lhcb", [("GET", "/a/" + "b" * 200 + "/%d" % i) for i in range(20)], 60)):

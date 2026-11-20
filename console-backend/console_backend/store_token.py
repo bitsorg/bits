@@ -17,7 +17,7 @@ TYP = "bits-store+jwt"
 MAX_LEN = 4000
 MAX_LIFETIME = 7 * 86400  # the verifier's default maximum
 MAX_TIME = 2**53 - 1
-METHODS = ("GET", "PUT")
+METHODS = ("GET", "PUT", "POST")  # POST: the admin API's questions (bits-store 0.8.8)
 _SEGMENT = re.compile(r"[A-Za-z0-9._~+!@=,:*-]{1,255}")
 _SEED = re.compile(r"[A-Za-z0-9_-]{43}")
 # The prefix a token's sub has exactly when its key's signer is that one (bits-store's).
@@ -84,7 +84,7 @@ class StoreTokenSigner:
             raise ValueError("no capabilities")
         for m, p in caps:
             if m not in METHODS:
-                raise ValueError("method %r: GET or PUT" % (m,))
+                raise ValueError("method %r: GET, PUT or POST" % (m,))
             check_pattern(p)
         if not (isinstance(lifetime, int) and 0 < lifetime <= self.max_lifetime):
             raise ValueError("lifetime: 1 to %d seconds" % self.max_lifetime)
@@ -124,7 +124,7 @@ def admin_capabilities(group):
     if not isinstance(group, str) or not _GROUP.fullmatch(group):
         raise ValueError("group %r: a lower-case community name" % (group,))
     return [(m, p) for p in ("/store/**", "/restricted/**", "/MANIFESTS/rev-index/**", "/manifests/%s/**" % group)
-            for m in METHODS] + [("GET", "/sources/**"), ("PUT", "/sources/**"), ("GET", "/pypi/**")]
+            for m in ("GET", "PUT")] + [("GET", "/sources/**"), ("PUT", "/sources/**"), ("GET", "/pypi/**")]
 
 
 def build_capabilities(platform, pipeline=None, arch=None):
