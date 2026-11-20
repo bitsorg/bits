@@ -22,7 +22,8 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from starlette.concurrency import run_in_threadpool
 
 from . import (audit, auth_oidc, authz, catalog, ci_auth, config, credentials, credproxy,
-               forge_ops, identity, session, signproxy, store_admin, store_token, webauthn_rp)
+               forge_ops, identity, session, signproxy, store_admin, store_series, store_token,
+               webauthn_rp)
 from fastapi.responses import RedirectResponse
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
@@ -797,6 +798,28 @@ async def store_token_issue(request: Request):
         audit.record("store_token_denied", user=user, group=group, principal="human")
         raise HTTPException(403, "%s is not an admin for community %s" % (user, group))
     out = await run_in_threadpool(_sign_store_token, user, group, caps, settings.store_token_ttl)
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/store-admin/series")
+async def store_admin_series(request: Request, window: str = "1w"):
+    """bits-store's history for the Store page, overall admins only: fixed queries
+    over *window* to VictoriaMetrics (BITS_METRICS_URL)."""
+    if not settings.metrics_url:
+        raise HTTPException(503, "the store's history is not configured (BITS_METRICS_URL)")
+    data = await _current_async(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    overall, _ = authz.admin_groups(data["user"], await run_in_threadpool(_resolved_policy, data["token"]))
+    if not overall:
+        audit.record("store_admin_denied", user=data["user"], view="series", principal="human")
+        raise HTTPException(403, "only a bits admin may see the store's admin views")
+    if window not in store_series.WINDOWS:
+        raise HTTPException(400, "window: one of %s" % ", ".join(store_series.WINDOWS))
+    try:
+        out = await run_in_threadpool(store_series.series, settings.metrics_url, window)
+    except store_series.Unreachable as exc:
+        raise HTTPException(502, str(exc))
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 

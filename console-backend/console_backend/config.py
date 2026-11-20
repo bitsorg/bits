@@ -310,6 +310,10 @@ class Settings:
         if self.store_admin_token_kid and self.store_admin_token_kid in (self.store_token_kid,
                                                                        self.store_build_token_kid):
             raise ValueError("BITS_STORE_ADMIN_TOKEN_KID: the admin key is neither the user nor the build key")
+        # ... and VictoriaMetrics (the Store page's history): its address on an internal network.
+        self.metrics_url = e.get("BITS_METRICS_URL", "")
+        if self.metrics_url and not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?", self.metrics_url):
+            raise ValueError("BITS_METRICS_URL: http(s)://host[:port], VictoriaMetrics")
         # ... and a token `bits login` gets (approved with a passkey): a day.
         self.store_cli_token_ttl = int(e.get("BITS_STORE_CLI_TOKEN_TTL", "86400") or "86400")
         if self.store_build_token_kid and self.store_build_token_kid == self.store_token_kid:

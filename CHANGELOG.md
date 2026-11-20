@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** The console backend gives overall admins bits-store's history for the Store page (`GET /store-admin/series?window=1h|6h|1d|1w|30d|90d|1y`): what each content type holds over the window, git's disk, requests and fills from upstream per bucket by format, and the window's p95 latency and answered share, from VictoriaMetrics (`BITS_METRICS_URL`, an internal network) by a fixed set of queries. Off until set.
 - **[Change]** At CERN (`10-CERN.yaml`) cargo in build containers reads crates through bits-store's `/crates` (`store.crates: https://bits.cern.ch:8444/crates`); off-site, where it does not answer, crates.io as before.
 - **[Feature]** A site's bits-store `crates` binding (`store.crates`, or `$BITS_CRATES_REGISTRY`) is cargo's registry in build containers: bits mounts `/.cargo/config.toml` replacing crates.io with it, which cargo reads whatever `CARGO_HOME` a recipe sets, so the crates a build downloads are kept in the store. Asked once per run; when it does not answer, and outside a container, cargo reads crates.io as before.
 - **[Change]** At CERN (`10-CERN.yaml`) archives that may not be passed on come through bits-store's `/sources/restricted` (`store.sources_restricted`), for build jobs and community admins.
