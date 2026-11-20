@@ -90,6 +90,9 @@ class GitMirrorTest(unittest.TestCase):
       self.assertIn("insteadOf", calls[0])
       self.assertNotIn("insteadOf", calls[1])
       calls.clear()
+      bits_git.git(("checkout", "-f", "v1"), "/tmp")                     # fetches a partial clone's files
+      self.assertIn("insteadOf", calls[0])
+      calls.clear()
       bits_git.git(("rev-parse", "HEAD"), "/tmp")                       # not a network command
       self.assertNotIn("insteadOf", calls[0])
 

@@ -88,8 +88,9 @@ class Git(SCM):
 
 
 def git(args, directory=".", check=True, prompt=True):
-  # https sources through the site's git mirror (git_mirror), upstream when it fails
-  mirror = git_mirror.config() if args and args[0] in ("clone", "fetch", "ls-remote") else []
+  # https sources through the site's git mirror (git_mirror), upstream when it fails;
+  # a checkout's too: git fetches the files of a partial clone then
+  mirror = git_mirror.config() if args and args[0] in ("clone", "fetch", "ls-remote", "checkout") else []
   err, output = _git(args, directory, prompt, mirror)
   if mirror and err != 0:
     git_mirror.failed(args, output)

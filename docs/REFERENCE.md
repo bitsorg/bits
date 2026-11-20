@@ -4275,7 +4275,7 @@ An archive from the sources store is not uploaded to the write store: it is alre
 
 #### The site's git mirror (bits-store)
 
-A site running bits-store names its `git` binding in the site configuration (`store.git`, e.g. `https://store.example.org/git`) or in `$BITS_GIT_MIRROR` (CERN's: `https://bits.cern.ch:8444/git`; `BITS_GIT_MIRROR=` set empty turns it off). bits' clones, fetches and `ls-remote` of https sources then go through it (git's `url.<mirror>/.insteadOf=https://`, also for the recipe repositories and submodules bits fetches), so each tag built is kept in the store and stays available when upstream moves it, deletes it or is down:
+A site running bits-store names its `git` binding in the site configuration (`store.git`, e.g. `https://store.example.org/git`) or in `$BITS_GIT_MIRROR` (CERN's: `https://bits.cern.ch:8444/git`; `BITS_GIT_MIRROR=` set empty turns it off). bits' clones, fetches and `ls-remote` of https sources, and the files its checkouts of partial clones fetch, then go through it (git's `url.<mirror>/.insteadOf=https://`, also for the recipe repositories and submodules bits fetches), so each tag built is kept in the store and stays available when upstream moves it, deletes it or is down:
 
 - bits asks the store once per run (`/health`); when it does not answer, sources come from upstream, as before.
 - A git command that fails through the mirror is run again upstream, and bits says so once.

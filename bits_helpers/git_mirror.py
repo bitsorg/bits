@@ -3,8 +3,9 @@
 """bits-store's git binding as the mirror of git sources (bits-store README: git).
 
 The site key store.git (or $BITS_GIT_MIRROR; set empty: no mirror) names it, e.g.
-https://store.example.org/git: bits' clones, fetches and ls-remote of https sources
-go there (url.<mirror>/.insteadOf=https://), through the store's partial mirrors.
+https://store.example.org/git: bits' clones, fetches, ls-remote and checkouts (a
+partial clone's fetch of files) of https sources go there
+(url.<mirror>/.insteadOf=https://), through the store's partial mirrors.
 Unset, or the store not answering, git reads upstream; a command that fails through
 the mirror is run again upstream.
 """
