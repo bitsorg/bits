@@ -4,16 +4,17 @@
 
 A release is a community's top-level package (the pipeline's PACKAGE, else
 the first package the build asked for): its compiler and build-type variants
-are built from the same sources, so its newest scanned build stands for it (of
-two published on one day, the higher build id). Its open findings (not
+are built from the same sources, so one scanned build stands for it: of its
+latest day's builds, the one with the lowest risk (of equals, the higher id; a
+build no scanner can read only when there is no other). Its open findings (not
 triaged, in shipped packages) count by severity, and their risk is grype's (by
 severity alone where the scan has none, as in the upgrade plans).
 
 Once a day the worker records each release's counts and risk (sbom_history),
 so a build grows riskier as new vulnerabilities are published. A day with no
 record but a build of the release (before the first record, or the worker
-down) gets that build's counts as they are when it is recorded, BACKFILL
-builds a pass. Today's point is computed afresh."""
+down) gets that build's counts as they are when it is recorded, the days of
+about BACKFILL builds a pass. Today's point is computed afresh."""
 
 import datetime
 import json
@@ -23,7 +24,7 @@ from .sbom_plan import SEVERITY_RISK
 from .sbom_scan import FINDINGS_INDEX, SEVERITIES
 
 DAY_KEY = "sbom.history.day"       # kv: the day whose records are complete
-BACKFILL = 50                      # earlier builds recorded in one pass, at most
+BACKFILL = 50                      # earlier days' builds counted in one pass (one day at least)
 
 
 def _day(ms):
@@ -79,17 +80,33 @@ def counts(conn, builds, now=None):
     return out
 
 
-def _newest(builds, before=None):
-    """{(community, top): build_id}: each release's newest build (of a day
-    before *before*, if given: {(community, top, day): build_id} then)."""
-    newest = {}
+def _latest(builds, before=None):
+    """{(community, top): [build_id]}: each release's builds of its latest day;
+    with *before*, those of each day before it: {(community, top, day): [build_id]}."""
+    out = {}
     for bid, (community, top, day) in builds.items():
-        key = (community, top) if before is None else (community, top, day)
-        if before is not None and day >= before:
+        if before is not None:
+            if day < before:
+                out.setdefault((community, top, day), []).append(bid)
             continue
-        if key not in newest or (day, bid) > (builds[newest[key]][2], newest[key]):
-            newest[key] = bid
-    return newest
+        cur = out.get((community, top))
+        if cur is None or day > builds[cur[0]][2]:
+            out[(community, top)] = [bid]
+        elif day == builds[cur[0]][2]:
+            cur.append(bid)
+    return out
+
+
+def _best(builds, got, blind):
+    """Of a day's *builds*, the one with the lowest risk in *got* (of equals, the higher
+    id); one in *blind* (no package a scanner identifies: no risk found) only if all are."""
+    return max(builds, key=lambda b: (b not in blind, -got[b]["risk"], b))
+
+
+def _blind(conn):
+    """The scanned builds none of whose packages a scanner identifies."""
+    return {r[0] for r in conn.execute(
+        "SELECT build_id FROM sbom_scans WHERE components > 0 AND identified = 0")}
 
 
 def _record(conn, rows, got, replace):
@@ -115,18 +132,27 @@ def snapshot(conn, now=None):
     builds = _builds(conn)
     have = {(r["community"], r["top"], r["day"]) for r in conn.execute(
         "SELECT community, top, day FROM sbom_history")}
-    rows = [((c, t, today), bid) for (c, t), bid in _newest(builds).items()]
-    missing = sorted((key, bid) for key, bid in _newest(builds, before=today).items()
+    latest = _latest(builds)
+    missing = sorted((key, bids) for key, bids in _latest(builds, before=today).items()
                      if key not in have)
+    todo, n = [], 0                                 # the days of about BACKFILL builds
+    for key, bids in missing:
+        if todo and n + len(bids) > BACKFILL:
+            break
+        todo.append((key, bids))
+        n += len(bids)
     # Counted before the write lock is taken (today's again each pass of a backfill).
-    got = counts(conn, {bid: key[0] for key, bid in rows + missing[:BACKFILL]}, now=now)
+    got = counts(conn, {b: builds[b][0] for _, bids in list(latest.items()) + todo for b in bids}, now=now)
+    blind = _blind(conn)
+    rows = [((c, t, today), _best(bids, got, blind)) for (c, t), bids in latest.items()]
+    back = [(key, _best(bids, got, blind)) for key, bids in todo]
     with db.transaction(conn):
         _record(conn, rows, got, replace=True)
-        _record(conn, missing[:BACKFILL], got, replace=False)
-        if len(missing) <= BACKFILL:
+        _record(conn, back, got, replace=False)
+        if len(todo) == len(missing):
             conn.execute("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key)"
                          " DO UPDATE SET value = excluded.value", (DAY_KEY, today))
-    return len(rows) + len(missing[:BACKFILL])
+    return len(rows) + len(back)
 
 
 def history(conn, communities=None, days=90, now=None):
@@ -144,9 +170,11 @@ def history(conn, communities=None, days=90, now=None):
             points.setdefault((r["community"], r["top"]), {})[r["day"]] = dict(
                 {k: r[k] for k in SEVERITIES}, day=r["day"], build_id=r["build_id"], risk=r["risk"],
                 risks=json.loads(r["risks"] or "{}"))
-    newest = _newest(builds)
-    got = counts(conn, {b: builds[b][0] for b in newest.values()}, now=now)
-    for key, bid in newest.items():
+    latest = _latest(builds)
+    got = counts(conn, {b: builds[b][0] for bids in latest.values() for b in bids}, now=now)
+    blind = _blind(conn)
+    for key, bids in latest.items():
+        bid = _best(bids, got, blind)
         points.setdefault(key, {})[today] = dict(got[bid], day=today, build_id=bid)
     releases = [{"community": c, "top": t, "points": [p[d] for d in sorted(p)]}
                 for (c, t), p in sorted(points.items())]

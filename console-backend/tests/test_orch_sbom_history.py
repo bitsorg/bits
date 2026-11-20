@@ -119,6 +119,38 @@ class HistoryTest(unittest.TestCase):
         got = sbom_history._builds(self.conn)["lcg_opt-aaaaaaaaaaaa"]
         self.assertEqual(got, ("alice", "O2", "2026-09-01"))      # the day it was first published
 
+    def _build(self, pid, bid, day, risk):
+        self.conn.execute("INSERT INTO builds (pipeline_id, build_id, community, published_at,"
+                          " recorded_ms) VALUES (?, ?, 'lcg', ?, 0)", (pid, bid, day + "T23:00:00Z"))
+        self.conn.execute("INSERT INTO sbom_scans (build_id, db_built, scanned_ms, index_version)"
+                          " VALUES (?, 'd', 1, ?)", (bid, sbom_scan.INDEX_VERSION))
+        self.conn.execute("INSERT INTO sbom_packages (build_id, ref, name, version, not_shipped)"
+                          " VALUES (?, 'ref-x', 'zlib', '1.3', '')", (bid,))
+        self.conn.execute("INSERT INTO sbom_findings (build_id, vuln_id, ref, severity, risk)"
+                          " VALUES (?, 'CVE-X', 'ref-x', 'high', ?)", (bid, risk))
+        self.conn.commit()
+
+    def test_of_a_days_builds_the_lowest_risk_stands_for_the_release(self):
+        self._build(1, "lcg_new-dddddddddddd", "2026-10-01", 50.0)   # beside lcg_dbg's 30, later
+        sbom_history.snapshot(self.conn, now=_ms("2026-10-03"))   # 10-01 backfilled, 10-03 today
+        out = sbom_history.history(self.conn, now=_ms("2026-10-03"))
+        self.assertEqual(self._points(out, "LCG"), [
+            ("2026-09-01", "lcg_opt", 1, 1, 0, 105.0),
+            ("2026-10-01", "lcg_dbg", 0, 1, 0, 30.0),        # not lcg_new's 50: the lower
+            ("2026-10-03", "lcg_dbg", 0, 1, 0, 30.0)])       # held on a day without a build
+        self._build(2, "lcg_low-eeeeeeeeeeee", "2026-10-04", 5.0)
+        out = sbom_history.history(self.conn, now=_ms("2026-10-05"))
+        self.assertEqual(self._points(out, "LCG")[-1], ("2026-10-05", "lcg_low", 0, 1, 0, 5.0))
+        # A build no scanner can read finds nothing: it does not stand for the day while
+        # another can; of equals, the higher id.
+        self._build(1, "lcg_zzz-ffffffffffff", "2026-10-04", 5.0)
+        self._build(2, "lcg_nil-gggggggggggg", "2026-10-04", 0.0)
+        self.conn.execute("UPDATE sbom_scans SET components = 9, identified = 0 WHERE build_id = 'lcg_nil-gggggggggggg'")
+        self.conn.execute("DELETE FROM sbom_findings WHERE build_id = 'lcg_nil-gggggggggggg'")    # none found
+        self.conn.commit()
+        out = sbom_history.history(self.conn, now=_ms("2026-10-05"))
+        self.assertEqual(self._points(out, "LCG")[-1], ("2026-10-05", "lcg_zzz", 0, 1, 0, 5.0))
+
     def test_communities_and_days_narrow_it(self):
         sbom_history.snapshot(self.conn, now=_ms("2026-10-10"))
         out = sbom_history.history(self.conn, communities={"alice"}, days=30, now=_ms("2026-10-10"))
