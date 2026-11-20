@@ -135,9 +135,12 @@ class TestOpsBuild(unittest.TestCase):
             self.assertIn(says, r.json()["detail"], bad)
         self.assertEqual(post.call_count, 1)
         r = self._post("alice", extra={"variables": [{"key": "COMMUNITY", "value": "testbed"},
-                                                     {"key": "GIT_THROUGH_STORE", "value": "true"}]})
-        self.assertEqual(r.status_code, 200, r.text)                    # an older build's switch: dropped
-        self.assertNotIn("GIT_THROUGH_STORE", [v["key"] for v in post.call_args.kwargs["json"]["variables"]])
+                                                     {"key": "GIT_THROUGH_STORE", "value": "true"},
+                                                     {"key": "BITS_STRATUM0_URL", "value": "http://evil"}]})
+        self.assertEqual(r.status_code, 200, r.text)                    # an older build's: dropped
+        sent = [v["key"] for v in post.call_args.kwargs["json"]["variables"]]
+        self.assertNotIn("GIT_THROUGH_STORE", sent)
+        self.assertNotIn("BITS_STRATUM0_URL", sent)
 
     def test_503_when_forge_unconfigured(self):
         main.settings = config.Settings(env={"GITLAB_API_URL": "https://gl/api/v4",

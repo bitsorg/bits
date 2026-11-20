@@ -185,11 +185,12 @@ BUILD_VARIABLES = frozenset((
     "PACKAGE", "VERSION", "PLATFORM", "RUNNER_ARCH", "RUNNER_GROUP", "COMMUNITY", "DEFAULTS",
     "BITS_PRIMARY_RECIPES", "BITS_BUILD_ARGS", "BITS_EXTRA_REPOS", "BITS_RUNNER_TAG",
     "CVMFS_INSTALL_DIR", "CVMFS_RELEASE_VIEW", "PUBLISH_CVMFS", "CERTIFY", "REFRESH_IMAGES",
-    "REPUBLISH", "CERTIFY_MANIFEST", "NIGHTLY_SUFFIX", "BITS_STRATUM0_URL", "PREPUB_URL_OVERRIDE",
+    "REPUBLISH", "CERTIFY_MANIFEST", "NIGHTLY_SUFFIX", "PREPUB_URL_OVERRIDE",
     "PREPUB_PUBLISH_PATH", "PREPUB_DIRECT_S3", "PREPUB_OBJECT_LIST", "PREPUB_NO_STATS_DB",
     "PREPUB_NO_PREPARE_LOCK", "PREPUB_PREPARE_FANOUT", "PREPUB_PREWARM"))
-# Switches the pipeline no longer reads: dropped, as a re-publish of an older build carries them.
-RETIRED_VARIABLES = frozenset(("GIT_THROUGH_STORE", "PIP_THROUGH_STORE"))
+# What the pipeline no longer reads from a trigger (BITS_STRATUM0_URL: the community's
+# config): dropped, as a re-publish of an older build carries them.
+RETIRED_VARIABLES = frozenset(("GIT_THROUGH_STORE", "PIP_THROUGH_STORE", "BITS_STRATUM0_URL"))
 _RUNNER_TAG = re.compile(r"bits-(build|host)-[A-Za-z0-9._-]{1,100}")
 
 
