@@ -103,7 +103,10 @@ def git(args, directory=".", check=True, prompt=True):
 def _git(args, directory, prompt, extra):
   lastGitOverride = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
   debug("Executing git %s (in directory %s)", " ".join(args), directory)
+  # Nothing a repository's own config or hooks name runs: bits fetches and checks
+  # out in mirrors and sources a build could have written to.
   overrides = ([("safe.directory", "$PWD"), ("gc.auto", "0")] if directory else []) + \
+    [("core.hooksPath", "/dev/null"), ("core.fsmonitor", "false"), ("protocol.ext.allow", "never")] + \
     [(k, quote(v)) for k, v in extra]
   config = "GIT_CONFIG_COUNT=%d " % (lastGitOverride + len(overrides)) + " ".join(
     "GIT_CONFIG_KEY_{n}={k} GIT_CONFIG_VALUE_{n}={v}".format(n=lastGitOverride + i, k=quote(k), v=v)

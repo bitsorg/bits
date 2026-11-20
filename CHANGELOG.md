@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** bits' own git commands (fetches and checkouts in the mirrors and sources) run no hooks (`core.hooksPath=/dev/null`), no fsmonitor and no `ext::` transport, whatever the repository's config says.
 - **[Fix]** A build's container mounts read-only what the host uses in the work dir after it: its git repositories (the mirrors, `--reference-sources` and `/mirror`, `REPOS/`, a CI job's `jobs/`), and `LOGS/` and `MANIFESTS/`, which it writes. A recipe could otherwise leave a hook or config there that the host's next `git fetch` ran, or a symlink it wrote through. They are made before the container starts.
 - **[Fix]** A build's container mounts bits itself read-only (`/bits`), as its recipes and `build.sh` already were: a recipe could change the bits the host runs for the next build.
 - **[Change]** A build started through the console backend may carry `CERTIFY_MANIFEST` only with `REPUBLISH=true`: the build pipeline then checks that it is one of the host's manifests a build of the same community wrote.
