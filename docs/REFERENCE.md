@@ -3694,6 +3694,7 @@ A file in a later directory replaces the one of the same name, so an empty `10-C
 | `store.sources` | bits-store's `sources` binding, asked first for source archives (after `$BITS_SOURCE_STORE`; set empty, none); see [The site's sources store](#the-sites-sources-store-bits-store). |
 | `store.sources_restricted` | bits-store's restricted `sources` binding: archives that may not be passed on, read with a store token only (after `$BITS_SOURCE_STORE_RESTRICTED`; set empty, none); same section. |
 | `store.pypi` | bits-store's public `pypi` binding, the pip index of builds (after `$BITS_PYPI_INDEX`); see [The site's pip index](#the-sites-pip-index-bits-store). |
+| `store.crates` | bits-store's `crates` binding, cargo's registry in build containers (after `$BITS_CRATES_REGISTRY`; set empty, none); see [The site's crates registry](#the-sites-crates-registry-bits-store). |
 | `store.git` | bits-store's `git` binding, the mirror of git sources (after `$BITS_GIT_MIRROR`; set empty, none); see [The site's git mirror](#the-sites-git-mirror-bits-store). |
 | `containers.registry`, `containers.tag`, `containers.legacy_image` | The default `--docker` image; see [§22](#22-docker-support). |
 | `providers.url` | The always-on providers repository (after `$BITS_PROVIDERS`). |
@@ -4276,6 +4277,15 @@ A site running bits-store names its `sources` binding in the [site configuration
 An archive no build can download itself (behind a licence page, or without a direct link) is added by hand: `bits store add-source URL FILE`, the URL as the recipe's `sources:` line has it, with its checksum (`URL,sha256:HEX`) when the recipe gives one, the file then checked against it. It is uploaded with your store token (`bits login`; a community admin's may), under the key bits reads it by, and the first upload for a URL stays. Builds then take it from the store, checked against the recipe's checksum as any download. What the sources store holds is public: an archive whose licence forbids passing it on does not go there, but to the site's restricted sources store (`store.sources_restricted`, CERN's `https://bits.cern.ch:8444/sources/restricted`, or `$BITS_SOURCE_STORE_RESTRICTED`; `add-source --restricted`), a binding that is not public: only store tokens read it (build jobs, community admins with `bits login`). For a recipe whose sources may not be passed on (`redistributable: binaries` or `none`) bits asks it first, with the URL, so it may fetch one it lacks and keep it there; such an archive never goes to the public one, nor to the write store. Without a token bits does not ask it.
 
 An archive from the sources store is not uploaded to the write store: it is already stored. The recipe's checksum is checked on it as on any download (see [Checksum verification](#checksum-verification)).
+
+#### The site's crates registry (bits-store)
+
+A site running bits-store names its `crates` binding in the site configuration (`store.crates`, e.g. `https://store.example.org/crates`) or in `$BITS_CRATES_REGISTRY` (set empty: none). A build in a container then has `/.cargo/config.toml`, which replaces crates.io with it (`sparse+<url>/index/`), so each crate cargo downloads, for a Rust package or a pip package built from its sdist, is kept in the store, checked against the checksum crates.io's index lists, and stays available when crates.io drops it or is down:
+
+- cargo reads that file whatever `CARGO_HOME` a recipe sets; there is no environment variable for it.
+- bits asks the store once per run (`/health`); when it does not answer, cargo reads crates.io as before.
+- Outside a container nothing changes.
+- The bits-containers images trust the CERN CA; another image needs the store's CA.
 
 #### The site's git mirror (bits-store)
 

@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** A site's bits-store `crates` binding (`store.crates`, or `$BITS_CRATES_REGISTRY`) is cargo's registry in build containers: bits mounts `/.cargo/config.toml` replacing crates.io with it, which cargo reads whatever `CARGO_HOME` a recipe sets, so the crates a build downloads are kept in the store. Asked once per run; when it does not answer, and outside a container, cargo reads crates.io as before.
 - **[Change]** At CERN (`10-CERN.yaml`) archives that may not be passed on come through bits-store's `/sources/restricted` (`store.sources_restricted`), for build jobs and community admins.
 - **[Feature]** A site's restricted sources store (`store.sources_restricted`, or `$BITS_SOURCE_STORE_RESTRICTED`): a bits-store `sources` binding that is not public, read with a store token only (build jobs, community admins). bits asks it first for the archives of recipes whose sources may not be passed on (`redistributable: binaries` or `none`), with their URL, so it may fetch and keep them; `bits store add-source --restricted` adds one by hand.
 - **[Feature]** `bits store add-source URL FILE`: an archive no build can download itself (a licence page, no direct link) put in the site's sources store by hand, under the URL its recipe names and checked first against the recipe's checksum (`URL,sha256:HEX`); uploaded with the `bits login` token, the first upload for a URL stays. Builds then take it from the store.

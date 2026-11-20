@@ -7,7 +7,7 @@ from pathlib import Path
 from bits_helpers import __version__
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
-from bits_helpers import pip_pins, pypi_index, site
+from bits_helpers import crates_registry, pip_pins, pypi_index, site
 from bits_helpers.manifest import pip_recipe
 from bits_helpers.repo_provider import (fetch_repo_providers_iteratively, load_always_on_providers,
                                         announce_providers, MAX_PROVIDER_ITERATIONS,
@@ -3267,8 +3267,10 @@ def build_one_package(p, ctx):
       develVolumes=" ".join(
         '-v "$PWD/$(readlink {pkg} || echo {pkg})":/{pkg}:rw'.format(pkg=quote(spec["package"]))
         for spec in specs.values() if spec["is_devel_pkg"]),
+      # cargo's registry: the site's bits-store, by /.cargo/config.toml (crates_registry)
       additionalVolumes=" ".join(
-        "-v %s" % quote(volume) for volume in args.volumes),
+        "-v %s" % quote(volume) for volume in
+        list(args.volumes) + [v for v in [crates_registry.container_volume(args.workDir)] if v]),
       mirrorVolume=("-v %s:/mirror" % quote(dirname(spec["reference"]))
                     if "reference" in spec else ""),
     )
