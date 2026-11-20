@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** `bits store add-source URL FILE`: an archive no build can download itself (a licence page, no direct link) put in the site's sources store by hand, under the URL its recipe names and checked first against the recipe's checksum (`URL,sha256:HEX`); uploaded with the `bits login` token, the first upload for a URL stays. Builds then take it from the store.
 - **[Change]** A community admin's store token (`bits login`) may also write `/sources/**`: the sources store takes archives added by hand (`bits store add-source`), the first upload for a URL kept.
 - **[Change]** At CERN (`10-CERN.yaml`) source archives come through bits-store's `/sources` (`store.sources: https://bits.cern.ch:8444/sources/archives`): each archive a build uses is kept there on first use, with a build's or an admin's token; off-site, where it does not answer, from their URLs as before.
 - **[Change]** The site's sources store (`store.sources`) is asked once per run whether it answers (`/health`); when it does not (off-site, say), archives come from their URLs without asking it for each. `BITS_SOURCE_STORE=` set empty turns it off.

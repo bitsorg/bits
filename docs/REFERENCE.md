@@ -2370,6 +2370,7 @@ bits store stats                      # per-arch/per-build usage report (was `bi
 bits store upload <PKG>               # upload one built package to the store (was `publish --to s3`)
 bits store rm <selection>             # delete objects (narrowed selection required)
 bits store cat <key>                  # dump a store object's bytes to stdout
+bits store add-source <URL> <FILE>    # an archive no build can download, by hand (sources store)
 bits store ls|rm --stale-boms [--manifests-dir DIR]  # BOMs the store no longer backs
 ```
 
@@ -4270,6 +4271,8 @@ A site running bits-store names its `sources` binding in the [site configuration
 - Without a token the read is anyone's: a missing archive is downloaded from the upstream URL as before.
 - bits never passes the URL of a recipe whose `redistributable` forbids sources (what the store fetches, it serves), nor a URL with credentials or of another scheme than http(s). An archive whose file name the store cannot hold (outside `A-Z a-z 0-9 . _ - ~ + ! @ = , :`, e.g. a URL with a query) is not asked for.
 - Any other answer, or an unreachable store, leaves the download to the remote store and the upstream URL.
+
+An archive no build can download itself (behind a licence page, or without a direct link) is added by hand: `bits store add-source URL FILE`, the URL as the recipe's `sources:` line has it, with its checksum (`URL,sha256:HEX`) when the recipe gives one, the file then checked against it. It is uploaded with your store token (`bits login`; a community admin's may), under the key bits reads it by, and the first upload for a URL stays. Builds then take it from the store, checked against the recipe's checksum as any download. What the sources store holds is public: an archive whose licence forbids passing it on does not go there.
 
 An archive from the sources store is not uploaded to the write store: it is already stored. The recipe's checksum is checked on it as on any download (see [Checksum verification](#checksum-verification)).
 
