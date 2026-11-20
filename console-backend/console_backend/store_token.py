@@ -118,12 +118,13 @@ _PLATFORM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 def admin_capabilities(group):
     """What a group's admin may do in the store (ADR 0004 B): read and write the site's
     packages (first writer per hash), the group's restricted ones (/restricted, as its
-    CI) and revision markers, and the group's manifests; read the sources and the
-    Python package index (pip)."""
+    CI) and revision markers, and the group's manifests; read the sources, and add
+    those no build can download (bits store add-source: the first upload stays); read
+    the Python package index (pip)."""
     if not isinstance(group, str) or not _GROUP.fullmatch(group):
         raise ValueError("group %r: a lower-case community name" % (group,))
     return [(m, p) for p in ("/store/**", "/restricted/**", "/MANIFESTS/rev-index/**", "/manifests/%s/**" % group)
-            for m in METHODS] + [("GET", "/sources/**"), ("GET", "/pypi/**")]
+            for m in METHODS] + [("GET", "/sources/**"), ("PUT", "/sources/**"), ("GET", "/pypi/**")]
 
 
 def build_capabilities(platform, pipeline=None, arch=None):
