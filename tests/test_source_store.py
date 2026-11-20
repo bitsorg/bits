@@ -323,6 +323,7 @@ class ConfiguredTest(unittest.TestCase):
   def test_cern_default(self):
     from bits_helpers import site
     self.assertEqual(site.get("store.sources"), "https://bits.cern.ch:8444/sources/archives")
+    self.assertEqual(site.get("store.sources_restricted"), "https://bits.cern.ch:8444/sources/restricted")
 
   def test_asked_once_whether_it_answers(self):
     with patch.dict(os.environ, {"BITS_SOURCE_STORE": "https://s.example.org/sources/archives"}), \
