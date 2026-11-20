@@ -4264,7 +4264,7 @@ Signed reuse reads the signed common manifests from the service's root: `https:/
 
 #### The site's sources store (bits-store)
 
-A site running bits-store names its `sources` binding in the [site configuration](#site-configuration) (`store.sources`, e.g. `https://store.example.org/sources/archives`) or in `$BITS_SOURCE_STORE` (set empty: none). bits asks it once per run whether it answers (`/health`; when it does not, off-site say, archives come from their URLs), then asks it for each archive before the remote store and the upstream URL:
+A site running bits-store names its `sources` binding in the [site configuration](#site-configuration) (`store.sources`, e.g. `https://store.example.org/sources/archives`) or in `$BITS_SOURCE_STORE` (CERN's: `https://bits.cern.ch:8444/sources/archives`; set empty: none). bits asks it once per run whether it answers (`/health`; when it does not, off-site say, archives come from their URLs), then asks it for each archive before the remote store and the upstream URL:
 
 - With a store token (`bits login`, `~/.bits/token`, sent over https only) bits passes the archive's URL, and the store fetches a missing archive itself. The download waits while the store answers `202` (up to 8 minutes), then takes the archive from it. A token the store does not take reads as anyone (said once).
 - Without a token the read is anyone's: a missing archive is downloaded from the upstream URL as before.

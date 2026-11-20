@@ -295,6 +295,10 @@ class ConfiguredTest(unittest.TestCase):
       with patch.dict(os.environ, env, clear=True):
         self.assertEqual(source_store.configured().base, "https://s.example.org/sources/archives")
 
+  def test_cern_default(self):
+    from bits_helpers import site
+    self.assertEqual(site.get("store.sources"), "https://bits.cern.ch:8444/sources/archives")
+
   def test_asked_once_whether_it_answers(self):
     with patch.dict(os.environ, {"BITS_SOURCE_STORE": "https://s.example.org/sources/archives"}), \
          patch.object(source_store.requests, "get", side_effect=source_store.requests.ConnectionError) as get:

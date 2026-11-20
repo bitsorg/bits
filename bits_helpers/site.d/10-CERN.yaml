@@ -18,6 +18,8 @@ store:
   pypi: https://bits.cern.ch:8444/pypi/simple
   # git sources: bits-store's public /git; off-site git reads upstream
   git: https://bits.cern.ch:8444/git
+  # source archives: bits-store's /sources, kept on first use; off-site, their URLs
+  sources: https://bits.cern.ch:8444/sources/archives
 containers:
   registry: gitlab-registry.cern.ch/bits/containers
   legacy_image: registry.cern.ch/alisw/{distro}-builder
