@@ -28,6 +28,10 @@ class CratesRegistryTest(unittest.TestCase):
       with patch.dict(os.environ, {"BITS_CRATES_REGISTRY": ""}):
         self.assertEqual(crates_registry.configured(), "")                   # set empty: none
 
+  def test_cern_default(self):
+    from bits_helpers import site
+    self.assertEqual(site.get("store.crates"), "https://bits.cern.ch:8444/crates")
+
   def test_the_container_reads_it_at_the_filesystem_root(self):
     with patch.dict(os.environ, {"BITS_CRATES_REGISTRY": URL}), \
          patch.object(crates_registry, "_up", lambda url: True):

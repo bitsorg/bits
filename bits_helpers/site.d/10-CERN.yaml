@@ -22,6 +22,8 @@ store:
   sources: https://bits.cern.ch:8444/sources/archives
   # those that may not be passed on: build jobs and admins (store token) only
   sources_restricted: https://bits.cern.ch:8444/sources/restricted
+  # cargo's registry in build containers: bits-store's /crates; off-site crates.io
+  crates: https://bits.cern.ch:8444/crates
 containers:
   registry: gitlab-registry.cern.ch/bits/containers
   legacy_image: registry.cern.ch/alisw/{distro}-builder

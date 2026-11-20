@@ -4280,7 +4280,7 @@ An archive from the sources store is not uploaded to the write store: it is alre
 
 #### The site's crates registry (bits-store)
 
-A site running bits-store names its `crates` binding in the site configuration (`store.crates`, e.g. `https://store.example.org/crates`) or in `$BITS_CRATES_REGISTRY` (set empty: none). A build in a container then has `/.cargo/config.toml`, which replaces crates.io with it (`sparse+<url>/index/`), so each crate cargo downloads, for a Rust package or a pip package built from its sdist, is kept in the store, checked against the checksum crates.io's index lists, and stays available when crates.io drops it or is down:
+A site running bits-store names its `crates` binding in the site configuration (`store.crates`, e.g. `https://store.example.org/crates`) or in `$BITS_CRATES_REGISTRY` (CERN's: `https://bits.cern.ch:8444/crates`; set empty: none). A build in a container then has `/.cargo/config.toml`, which replaces crates.io with it (`sparse+<url>/index/`), so each crate cargo downloads, for a Rust package or a pip package built from its sdist, is kept in the store, checked against the checksum crates.io's index lists, and stays available when crates.io drops it or is down:
 
 - cargo reads that file whatever `CARGO_HOME` a recipe sets; there is no environment variable for it.
 - bits asks the store once per run (`/health`); when it does not answer, cargo reads crates.io as before.
