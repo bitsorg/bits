@@ -2235,6 +2235,15 @@ class _BuildLoopCtx:
   full_order: list = field(default_factory=list)
 
 
+def container_mounts(work_dir, container_work_dir, ro_sources, config_dir, script_dir, bits_dir):
+  """The volumes of a build's container: its work dir read-write (the build writes
+  there), the rest read-only: the recipes, its build.sh and bits itself, which the
+  host runs again for the next build."""
+  return ("-v %s:%s %s-v %s:/pkgdist.bits:ro -v %s:/build.sh:ro -v %s:/bits:ro "
+          % (quote(work_dir), container_work_dir, ro_sources, quote(config_dir),
+             quote(script_dir + "/build.sh"), quote(bits_dir)))
+
+
 def build_one_package(p, ctx):
   """Process one package from the build order: hash, resolve reuse, set up
   the build command, and register its scheduler download/build tasks. A bare
@@ -3235,9 +3244,7 @@ def build_one_package(p, ctx):
     build_command = (
       "docker run --rm --entrypoint= {userArg}{jobLabel}"
       "{platformArg}"
-      "-v {workdir}:{container_workDir} {roSources}-v{configDir}:/pkgdist.bits:ro "
-      "-v {scriptDir}/build.sh:/build.sh:ro "
-      "-v {bits_dir}:/bits "
+      "{mounts}"
       "{cvmfsMount}"
       "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
       "-e HOME=/tmp -e SHELL=/bin/bash -e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
@@ -3258,13 +3265,10 @@ def build_one_package(p, ctx):
                     if cfg.symlink_packages_from and root and root.rstrip("/") != "/cvmfs"
                     and not root.startswith("/cvmfs/"))),
       platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
-      roSources=_ro_sources,
       image=quote(args.dockerImage),
-      workdir=quote(abspath(args.workDir)),
+      mounts=container_mounts(abspath(args.workDir), container_workDir, _ro_sources,
+                              abspath(args.configDir), scriptDir, bits_dir),
       container_workDir=container_workDir,
-      bits_dir=bits_dir,
-      configDir=quote(abspath(args.configDir)),
-      scriptDir=quote(scriptDir),
       extraArgs=" ".join(map(quote, args.docker_extra_args)),
       additionalEnv=" ".join(
         f"-e {var}={quote(value)}" for var, value in buildEnvironment),
