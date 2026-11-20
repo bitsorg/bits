@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Change]** The site's sources store (`store.sources`) is asked once per run whether it answers (`/health`); when it does not (off-site, say), archives come from their URLs without asking it for each. `BITS_SOURCE_STORE=` set empty turns it off.
 - **[Feature]** bits-store's problems (its warnings and errors, bits-store v0.8.5) are issues beside the builds' failures: the orchestrator reads them every 5 minutes through the store's admin API (a minute's admin token, `GET /_admin/problems` only), folds the same fault on many objects into one issue (`source: store`, package `bits-store`), and signatures name causes (`reason:store:<kind>`; three seeded). Overall admins and all-community read tokens see them in `/ops/issues`; the console's `/store-admin/problems` passes the store's list on.
 - **[Change]** bits' checkouts of git sources also go through the site's git mirror (`store.git`): the files a partial clone fetches when checked out come from bits-store, which keeps them.
 - **[Change]** At CERN (`10-CERN.yaml`) bits' git sources go through bits-store's public `/git` (`store.git: https://bits.cern.ch:8444/git`); off-site, where it does not answer, upstream as before. `BITS_GIT_MIRROR=` set empty turns the mirror off.

@@ -46,6 +46,8 @@ class Store(BaseHTTPRequestHandler):
       self.end_headers()
       self.wfile.write(body)
       return
+    if u.path == "/health":
+      return self._answer(200)
     key = u.path[len("/s/"):]
     Store.asked.append((auth, q.get("url")))
     if Store.status:
@@ -277,11 +279,29 @@ class SourceSyncTest(unittest.TestCase):
 
 
 class ConfiguredTest(unittest.TestCase):
+  def setUp(self):
+    source_store._answers.clear()
+    self.addCleanup(source_store._answers.clear)
+
   def test_from_the_environment(self):
-    with patch.dict(os.environ, {"BITS_SOURCE_STORE": "https://s.example.org/sources/archives/"}):
+    with patch.dict(os.environ, {"BITS_SOURCE_STORE": "https://s.example.org/sources/archives/"}), \
+         patch.object(source_store, "_up", lambda url: True):
       self.assertEqual(source_store.configured().base, "https://s.example.org/sources/archives")
-    with patch.dict(os.environ, {"BITS_SOURCE_STORE": ""}):
-      self.assertIsNone(source_store.configured())   # bits' own site configuration has none
+    with patch.object(source_store.site, "get", lambda k, d=None: "https://s.example.org/sources/archives"), \
+         patch.object(source_store, "_up", lambda url: True):
+      with patch.dict(os.environ, {"BITS_SOURCE_STORE": ""}):
+        self.assertIsNone(source_store.configured())                    # set empty: none
+      env = {k: v for k, v in os.environ.items() if k != "BITS_SOURCE_STORE"}
+      with patch.dict(os.environ, env, clear=True):
+        self.assertEqual(source_store.configured().base, "https://s.example.org/sources/archives")
+
+  def test_asked_once_whether_it_answers(self):
+    with patch.dict(os.environ, {"BITS_SOURCE_STORE": "https://s.example.org/sources/archives"}), \
+         patch.object(source_store.requests, "get", side_effect=source_store.requests.ConnectionError) as get:
+      self.assertIsNone(source_store.configured())                      # off-site: from the URLs
+      self.assertIsNone(source_store.configured())
+    self.assertEqual(get.call_count, 1)
+    self.assertEqual(get.call_args[0][0], "https://s.example.org/health")
 
 
 class TokenFileTest(unittest.TestCase):

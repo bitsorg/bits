@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """bits-store's sources binding: a source archive by the MD5 of its URL.
 
-The site key store.sources (or $BITS_SOURCE_STORE) names it, e.g.
-https://store.example.org/sources/archives. With a store token (bits login,
+The site key store.sources (or $BITS_SOURCE_STORE; set empty: none) names it, e.g.
+https://store.example.org/sources/archives; it is asked once per run whether it
+answers (/health), else archives come from their URLs. With a store token (bits login,
 ~/.bits/token) bits may ask the store to fetch a missing archive (?url=): it
 answers 202 while it fetches, then 302. Without one, or for a token the store does
 not take, the read is anyone's. Any other answer leaves the download to the
@@ -28,12 +29,30 @@ WAIT = 480           # seconds to wait for the store's fetch: under download()'s
 _REDIRECTS = (301, 302, 303, 307, 308)
 _SEGMENT = re.compile(r"[A-Za-z0-9._~+!@=,:-]{1,255}")   # bits-store's path rules
 _told = set()
+_answers = {}        # store root -> answers /health, asked once per run
 
 
 def configured():
-  """The sources store of this site, or None."""
-  url = os.environ.get("BITS_SOURCE_STORE") or str(site.get("store.sources") or "")
-  return SourceStore(url) if url.strip() else None
+  """The sources store of this site, or None: $BITS_SOURCE_STORE when set, even empty
+  (none), else store.sources; None too when it does not answer (off-site, say)."""
+  url = os.environ.get("BITS_SOURCE_STORE")
+  if url is None:
+    url = str(site.get("store.sources") or "")
+  url = url.strip()
+  return SourceStore(url) if url and _up(url) else None
+
+
+def _up(url):
+  u = urllib.parse.urlsplit(url)
+  root = "%s://%s" % (u.scheme, u.netloc)
+  if root not in _answers:
+    try:
+      _answers[root] = requests.get(root + "/health", timeout=(5, 15)).status_code == 200
+    except requests.RequestException:
+      _answers[root] = False
+    if not _answers[root]:
+      info("sources store %s does not answer: archives from their URLs", root)
+  return _answers[root]
 
 
 def _once(message, *args):

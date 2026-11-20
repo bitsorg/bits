@@ -3690,7 +3690,7 @@ A file in a later directory replaces the one of the same name, so an empty `10-C
 | `store.read_by_arch` | Architecture → read store, before `store.read` (the architecture itself, or followed by `-` qualifiers such as `-gcc13`). |
 | `store.operations` | Store of `certify`, `compliance`, `gc`, `store-stats`, `publish` and `bits store` (after `$BITS_S3_STORE`). |
 | `store.s3_endpoint` | Endpoint of `b3://` stores (after `--s3-endpoint` and the environment); unset: boto3's default. |
-| `store.sources` | bits-store's `sources` binding, asked first for source archives (after `$BITS_SOURCE_STORE`); see [The site's sources store](#the-sites-sources-store-bits-store). |
+| `store.sources` | bits-store's `sources` binding, asked first for source archives (after `$BITS_SOURCE_STORE`; set empty, none); see [The site's sources store](#the-sites-sources-store-bits-store). |
 | `store.pypi` | bits-store's public `pypi` binding, the pip index of builds (after `$BITS_PYPI_INDEX`); see [The site's pip index](#the-sites-pip-index-bits-store). |
 | `store.git` | bits-store's `git` binding, the mirror of git sources (after `$BITS_GIT_MIRROR`; set empty, none); see [The site's git mirror](#the-sites-git-mirror-bits-store). |
 | `containers.registry`, `containers.tag`, `containers.legacy_image` | The default `--docker` image; see [§22](#22-docker-support). |
@@ -4264,7 +4264,7 @@ Signed reuse reads the signed common manifests from the service's root: `https:/
 
 #### The site's sources store (bits-store)
 
-A site running bits-store names its `sources` binding in the [site configuration](#site-configuration) (`store.sources`, e.g. `https://store.example.org/sources/archives`) or in `$BITS_SOURCE_STORE`. bits asks it for an archive before the remote store and the upstream URL:
+A site running bits-store names its `sources` binding in the [site configuration](#site-configuration) (`store.sources`, e.g. `https://store.example.org/sources/archives`) or in `$BITS_SOURCE_STORE` (set empty: none). bits asks it once per run whether it answers (`/health`; when it does not, off-site say, archives come from their URLs), then asks it for each archive before the remote store and the upstream URL:
 
 - With a store token (`bits login`, `~/.bits/token`, sent over https only) bits passes the archive's URL, and the store fetches a missing archive itself. The download waits while the store answers `202` (up to 8 minutes), then takes the archive from it. A token the store does not take reads as anyone (said once).
 - Without a token the read is anyone's: a missing archive is downloaded from the upstream URL as before.
