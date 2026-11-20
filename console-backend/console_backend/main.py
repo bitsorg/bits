@@ -178,6 +178,21 @@ def _build_payload(payload):
     return community, ref, name, variables
 
 
+# The variables a build started for a person may carry: what the console's Build
+# dialog, re-publish and re-run send. A pipeline variable outranks the project's, so
+# any other could point the job at other code, prepub, store or backend.
+BUILD_VARIABLES = frozenset((
+    "PACKAGE", "VERSION", "PLATFORM", "RUNNER_ARCH", "RUNNER_GROUP", "COMMUNITY", "DEFAULTS",
+    "BITS_PRIMARY_RECIPES", "BITS_BUILD_ARGS", "BITS_EXTRA_REPOS", "BITS_RUNNER_TAG",
+    "CVMFS_INSTALL_DIR", "CVMFS_RELEASE_VIEW", "PUBLISH_CVMFS", "CERTIFY", "REFRESH_IMAGES",
+    "REPUBLISH", "CERTIFY_MANIFEST", "NIGHTLY_SUFFIX", "BITS_STRATUM0_URL", "PREPUB_URL_OVERRIDE",
+    "PREPUB_PUBLISH_PATH", "PREPUB_DIRECT_S3", "PREPUB_OBJECT_LIST", "PREPUB_NO_STATS_DB",
+    "PREPUB_NO_PREPARE_LOCK", "PREPUB_PREPARE_FANOUT", "PREPUB_PREWARM"))
+# Switches the pipeline no longer reads: dropped, as a re-publish of an older build carries them.
+RETIRED_VARIABLES = frozenset(("GIT_THROUGH_STORE", "PIP_THROUGH_STORE"))
+_RUNNER_TAG = re.compile(r"bits-(build|host)-[A-Za-z0-9._-]{1,100}")
+
+
 def _checked_build(data, community, ref, variables, op="build"):
     """The variables of a build *data*'s user may start for *community*, with
     BITS_CERTIFIER set to that user; else an HTTPException. Shared by /ops/build
@@ -188,16 +203,25 @@ def _checked_build(data, community, ref, variables, op="build"):
     #     ref whose committed CI config could publish elsewhere; and
     #   * the build must carry exactly one COMMUNITY variable equal to the community
     #     we authorize, so a community-A admin cannot build/publish as B.
-    # NOTE (Phase 1 residual): other build variables are NOT individually reconciled
-    # against `community`; full isolation also relies on the certify/sign step, which
-    # re-authorizes publishing against the manifest's actual groups (M1). A complete
-    # per-variable audit of the shared pipeline is a pre-production follow-up.
+    #   * only BUILD_VARIABLES pass, the runner tag a build host's.
     if ref not in settings.forge_refs:
         raise HTTPException(400, "ref %r is not allowed for builds" % ref)
     comm_vars = [v for v in variables if isinstance(v, dict)
                  and str(v.get("key", "")).upper() == "COMMUNITY"]
     if len(comm_vars) != 1 or str(comm_vars[0].get("value", "")).strip().lower() != community:
         raise HTTPException(400, "exactly one COMMUNITY variable equal to the authorized community is required")
+    variables = [v for v in variables if not (isinstance(v, dict) and (str(v.get("key", "")).strip().upper()
+                                              in ("BITS_CERTIFIER", "BITS_QUEUE_ENTRY")   # set here
+                                              or str(v.get("key")) in RETIRED_VARIABLES))]
+    other = sorted({str(v.get("key"))[:64] if isinstance(v, dict) else "?" for v in variables
+                    if not isinstance(v, dict) or not isinstance(v.get("key"), str) or v["key"] not in BUILD_VARIABLES
+                    or not isinstance(v.get("value"), str) or set(v) - {"key", "value", "variable_type"}
+                    or v.get("variable_type", "env_var") != "env_var"})
+    if other:
+        raise HTTPException(400, "variables a build may not set: %s" % ", ".join(other)[:500])
+    tags = [v["value"] for v in variables if v["key"] == "BITS_RUNNER_TAG"]
+    if any(not _RUNNER_TAG.fullmatch(t) for t in tags):
+        raise HTTPException(400, "BITS_RUNNER_TAG: a build host's tag, bits-build-<arch> or bits-host-<name>")
     user = data["user"]
     resolved = _resolved_policy(data["token"])
     if not authz.is_admin_for(user, community, resolved):
@@ -213,9 +237,6 @@ def _checked_build(data, community, ref, variables, op="build"):
     # is always server-verified and a caller cannot certify as someone else. (The
     # signature itself remains separately gated by that human's passkey pre-approval.)
     # BITS_QUEUE_ENTRY is the build queue's own mark of the pipelines it starts.
-    variables = [v for v in variables
-                 if not (isinstance(v, dict) and str(v.get("key", "")).strip().upper()
-                         in ("BITS_CERTIFIER", "BITS_QUEUE_ENTRY"))]
     variables.append({"key": "BITS_CERTIFIER", "value": user})
     return variables
 

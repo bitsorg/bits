@@ -107,6 +107,36 @@ class TestOpsBuild(unittest.TestCase):
                        extra={"variables": [{"key": "COMMUNITY", "value": "Testbed"}]})
         self.assertEqual(r.status_code, 200)   # case-insensitive match
 
+    @patch("console_backend.forge_ops.requests.post")
+    def test_only_the_builds_variables(self, post):
+        post.return_value = FakeResp(201, {"id": 5, "web_url": "u", "status": "created"})
+        ok = [{"key": k, "value": "x"} for k in sorted(main.BUILD_VARIABLES - {"COMMUNITY", "BITS_RUNNER_TAG"})]
+        ok += [{"key": "COMMUNITY", "value": "testbed"}, {"key": "BITS_RUNNER_TAG", "value": "bits-host-mac01"},
+               {"key": "BITS_CERTIFIER", "value": "mallory"},
+               {"key": "PUBLISH_CVMFS", "value": "true", "variable_type": "env_var"}]
+        r = self._post("alice", extra={"variables": ok})
+        self.assertEqual(r.status_code, 200, r.text)
+        sent = post.call_args.kwargs["json"]["variables"]
+        self.assertEqual([v["value"] for v in sent if v["key"] == "BITS_CERTIFIER"], ["alice"])
+        for bad, says in (({"key": "PREPUB_URL", "value": "https://evil"}, "PREPUB_URL"),
+                          ({"key": "BITS_REPO", "value": "https://evil/bits.git"}, "BITS_REPO"),
+                          ({"key": "BITS_ORCH_URL", "value": "https://evil"}, "BITS_ORCH_URL"),
+                          ({"key": "package", "value": "ROOT"}, "package"),          # names are exact
+                          ({"key": "VERSION", "value": "1", "variable_type": "file"}, "VERSION"),
+                          ({"key": "VERSION", "value": 1}, "VERSION"),
+                          ({"key": "VERSION", "value": "1", "protected": True}, "VERSION"),
+                          ("VERSION=1", "?"),
+                          ({"key": ["VERSION"], "value": "1"}, "VERSION"),
+                          ({"key": "BITS_RUNNER_TAG", "value": "shared-docker"}, "BITS_RUNNER_TAG")):
+            r = self._post("alice", extra={"variables": [{"key": "COMMUNITY", "value": "testbed"}, bad]})
+            self.assertEqual(r.status_code, 400, bad)
+            self.assertIn(says, r.json()["detail"], bad)
+        self.assertEqual(post.call_count, 1)
+        r = self._post("alice", extra={"variables": [{"key": "COMMUNITY", "value": "testbed"},
+                                                     {"key": "GIT_THROUGH_STORE", "value": "true"}]})
+        self.assertEqual(r.status_code, 200, r.text)                    # an older build's switch: dropped
+        self.assertNotIn("GIT_THROUGH_STORE", [v["key"] for v in post.call_args.kwargs["json"]["variables"]])
+
     def test_503_when_forge_unconfigured(self):
         main.settings = config.Settings(env={"GITLAB_API_URL": "https://gl/api/v4",
                                              "BITS_ADMINS_POLICY": "testbed @alice"})
