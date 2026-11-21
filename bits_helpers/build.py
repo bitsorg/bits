@@ -3199,7 +3199,8 @@ def build_one_package(p, ctx):
     buildEnvironment.append((hook_name + "_HOOKS", hook_value))
 
   # pip's index: the site's bits-store /pypi when it answers (before -e, which wins)
-  buildEnvironment += pypi_index.build_environment(bool(getattr(args, "docker", False)))
+  buildEnvironment += pypi_index.build_environment(bool(getattr(args, "docker", False)),
+                                                   getattr(args, "dockerImage", None))
   if spec.get("pip_build"):
     buildEnvironment.append(("BITS_PIP_BUILD", spec["pip_build"]))   # PythonPipRecipe reads it
   if pip_recipe(spec.get("recipe")) and not cachedTarball:   # the file the first build installed (pip_pins)

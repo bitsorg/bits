@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A containerised build gets bits-store's pip index (`store.pypi`) only when its image sets `PIP_CERT` (bits-containers: the CERN CA bundle); an image without it, such as one cached on a host before the CA was added, keeps pip's own index instead of failing on the store's certificate.
 - **[Fix]** bits' own git commands (fetches and checkouts in the mirrors and sources) run no hooks (`core.hooksPath=/dev/null`), no fsmonitor and no `ext::` transport, whatever the repository's config says.
 - **[Fix]** A build's container mounts read-only what the host uses in the work dir after it: its git repositories (the mirrors, `--reference-sources` and `/mirror`, `REPOS/`, a CI job's `jobs/`), and `LOGS/` and `MANIFESTS/`, which it writes. A recipe could otherwise leave a hook or config there that the host's next `git fetch` ran, or a symlink it wrote through. They are made before the container starts.
 - **[Fix]** A build's container mounts bits itself read-only (`/bits`), as its recipes and `build.sh` already were: a recipe could change the bits the host runs for the next build.
