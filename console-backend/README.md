@@ -84,7 +84,14 @@ redacted, to the build's community's admins; GitLab must still have the job. A b
 send a hint (`POST /ops/ci/published|failed {pipeline}`) with a CI ID token for
 the audience `BITS_ORCH_CI_AUDIENCE` (default `bits-orchestrator`), from the
 build project on a protected ref; the worker then looks at that pipeline on
-its next pass.
+its next pass. With the same token it sends its host's journal (`POST /ops/ci/logs`,
+`journalctl -o json --all` lines, at most 8 MiB and 20000 lines a request, 64 MiB a job),
+which the backend writes to VictoriaLogs (`BITS_LOGS_URL`, off when empty) in the ops
+tenant (overall admins): each message redacted (audit records, which hold command lines,
+left out) and cut to 32 KiB, a few journal fields (host, unit, priority, process) and the
+job, pipeline, runner and community from the token and the records. Only those four are
+proven: host, unit and time are what the job's host says. Also while the job is being
+canceled: no per-host setup.
 
 **The build queue** (`orch/build_queue.py`, with `BITS_ORCH_QUEUE=1`): the
 console queues its builds (`POST /ops/queue {community, ref?, builds[]}`, each

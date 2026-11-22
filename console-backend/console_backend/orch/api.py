@@ -37,6 +37,8 @@
     GET  /ops/trace?repo=&path=&build_id=   who built and approved a CVMFS path (bits trace)
     POST /ops/ci/published, /ops/ci/failed   {pipeline}: a CI job's hint to look
                                        at its pipeline now (GitLab CI ID token)
+    POST /ops/ci/logs                  the build job's host journal (journalctl -o json lines,
+                                       its CI ID token) into VictoriaLogs (BITS_LOGS_URL)
     POST /ops/ci/store-token           a store token for the build job (its CI ID token):
                                        its pipeline's group and platform, until its ID token expires
     GET  /ops/issues?community=&package=&limit=   deduplicated failures, last seen first
@@ -107,10 +109,10 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session, store_token
-from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
-               failures, hosts, kinds, nightlies, outside, phases, read_tokens, reconcile, replay,
-               sbom_history, sbom_licences, sbom_plan, sbom_scan, schedules, shadow, trace,
-               vuln_triage, watches)
+from . import (actions, approvals, build_queue, canary, certified, certifier, ci_logs, db,
+               events, failures, hosts, kinds, nightlies, outside, phases, read_tokens,
+               reconcile, replay, sbom_history, sbom_licences, sbom_plan, sbom_scan, schedules,
+               shadow, trace, vuln_triage, watches)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -940,6 +942,62 @@ async def ci_published(request: Request):
 @router.post("/ops/ci/failed")
 async def ci_failed(request: Request):
     return await _hint(request, "failed")
+
+
+_logs_sent = {}   # job id → bytes taken (one backend process), for ci_logs.JOB_BYTES
+
+
+@router.post("/ops/ci/logs")
+async def ci_logs_post(request: Request):
+    """A build job's host journal, into VictoriaLogs' ops tenant (see orch/ci_logs.py):
+    any job of the build project with its CI ID token, also while it is being canceled
+    (after_script), so the job and pipeline each line carries are the token's."""
+    settings = _m().settings
+    if not settings.logs_url:
+        raise HTTPException(503, "logs are off (BITS_LOGS_URL)")
+    claims = await _ci_claims(request, settings)
+    try:
+        pid, job = int(str(claims["pipeline_id"])), int(str(claims["job_id"]))
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(403, "the CI ID token names no pipeline or job")
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > ci_logs.MAX_BYTES:
+            raise HTTPException(413, "at most %d bytes a request" % ci_logs.MAX_BYTES)
+    if body.count(b"\n") > ci_logs.MAX_LINES:
+        raise HTTPException(413, "at most %d lines a request" % ci_logs.MAX_LINES)
+    sent = _logs_sent.pop(job, 0)                    # reserved now, before any await
+    if sent + len(body) > ci_logs.JOB_BYTES:
+        _logs_sent[job] = sent
+        raise HTTPException(429, "this job has sent its %d bytes" % ci_logs.JOB_BYTES)
+    _logs_sent[job] = sent + len(body)               # last: the most recent jobs are kept
+    if len(_logs_sent) > 10000:
+        for old in list(_logs_sent)[:5000]:
+            del _logs_sent[old]
+
+    def community():
+        with _open() as conn:
+            row = conn.execute("SELECT community FROM pipelines WHERE id = ?", (pid,)).fetchone()
+        return (row["community"] if row else "") or ""
+    stamp = {"job_id": str(job), "pipeline": str(pid), "runner_id": str(claims.get("runner_id", "")),
+             "community": await run_in_threadpool(community)}
+
+    def refund():
+        _logs_sent[job] = max(0, _logs_sent.get(job, 0) - len(body))
+    try:
+        lines = ci_logs.rows(body.decode("utf-8", "replace"), stamp)
+    except ValueError as e:
+        refund()
+        raise HTTPException(400, "not journal JSON lines: %s" % str(e)[:200])
+    if lines:
+        try:
+            await run_in_threadpool(ci_logs.write, settings.logs_url, lines)
+        except Exception as e:                       # VictoriaLogs: the job sends it again
+            refund()
+            log.warning("logs of job %d not written: %s", job, e)
+            raise HTTPException(502, "the logs were not written")
+    return {"accepted": len(lines)}
 
 
 class _Refused(Exception):

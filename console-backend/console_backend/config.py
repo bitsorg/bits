@@ -314,6 +314,10 @@ class Settings:
         self.metrics_url = e.get("BITS_METRICS_URL", "")
         if self.metrics_url and not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?", self.metrics_url):
             raise ValueError("BITS_METRICS_URL: http(s)://host[:port], VictoriaMetrics")
+        # ... and VictoriaLogs (the host journals build jobs send): its internal address.
+        self.logs_url = e.get("BITS_LOGS_URL", "")
+        if self.logs_url and not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?", self.logs_url):
+            raise ValueError("BITS_LOGS_URL: http(s)://host[:port], VictoriaLogs")
         # ... and a token `bits login` gets (approved with a passkey): a day.
         self.store_cli_token_ttl = int(e.get("BITS_STORE_CLI_TOKEN_TTL", "86400") or "86400")
         if self.store_build_token_kid and self.store_build_token_kid == self.store_token_kid:
