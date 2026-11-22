@@ -85,7 +85,8 @@ publishing to CVMFS) in
 (read_api) when set. `GET /ops/builds` and `GET /ops/builds/{pipeline}` serve
 what it recorded: to admins for their communities, and to any signed-in user,
 read-only, for the community named (`?community=`; without who approved a
-certification, a build without its variables and events). A running build also
+certification, a build without its variables and events; who queued it, `queued_by`, to
+its admins). A running build also
 carries its `progress` (`/ops/builds?progress=1`; packages `started` of `total`, the last
 `package` started, `ended` once bits is done, and `at`, when its job last reported), from
 the metrics its job pushes with `--monitor` (`BITS_METRICS_URL`; none when that is off or

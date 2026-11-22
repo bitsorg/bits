@@ -691,6 +691,21 @@ class ApiTest(_DB):
         self.assertEqual(got("dave"), [])
         self.assertIs(self._get("alice", "/ops/certify").json()["owns_set"], False)
 
+    def test_who_queued_a_build_for_its_admins(self):
+        from console_backend.orch import build_queue
+        with db.transaction(self.conn):
+            _, (qid,) = build_queue.add_in(self.conn, "testbed", "zoe", "main",
+                                           [("", [{"key": "BITS_RUNNER_TAG", "value": "bits-build-x86_64"}])],
+                                           events.Actor("person", "zoe"))
+            self.conn.execute("UPDATE build_queue SET pipeline_id = 1 WHERE id = ?", (qid,))
+        by = lambda u, q: {b["pipeline"]: b.get("queued_by") for b in self._get(u, q).json()["builds"]}
+        self.assertEqual(by("alice", "/ops/builds"), {1: "zoe"})
+        self.assertEqual(by("carol", "/ops/builds"), {1: "zoe", 2: None})
+        self.assertEqual(by("dave", "/ops/builds?community=testbed"), {1: None})       # not its admin
+        self.assertEqual(by("bob", "/ops/builds?community=testbed"), {1: None})
+        self.assertEqual(self._get("alice", "/ops/builds/1").json()["queued_by"], "zoe")
+        self.assertNotIn("queued_by", self._get("dave", "/ops/builds/1").json())
+
     def test_builds_are_those_of_ones_communities(self):
         ids = lambda u, q="": [b["pipeline"] for b in self._get(u, "/ops/builds" + q).json()["builds"]]
         self.assertEqual(ids("alice"), [1])

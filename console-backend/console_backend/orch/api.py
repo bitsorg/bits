@@ -471,6 +471,17 @@ def _with_certify(conn, rows, reasons=False, approver=True):
     return rows
 
 
+def _with_requester(conn, rows):
+    """Each row the build queue started with who queued it (queued_by): for admins."""
+    ids = [int(r["pipeline"]) for r in rows]
+    found = dict(conn.execute("SELECT pipeline_id, requested_by FROM build_queue WHERE pipeline_id"
+                              " IN (%s)" % ",".join("?" * len(ids)), ids).fetchall()) if ids else {}
+    for r in rows:
+        if r["pipeline"] in found:
+            r["queued_by"] = found[r["pipeline"]]
+    return rows
+
+
 def _with_phases(conn, rows):
     """Each row with what its build job spent its time on, when recorded."""
     found = phases.for_pipelines(conn, [r["pipeline"] for r in rows])
@@ -521,10 +532,11 @@ async def list_builds(request: Request, community: str = "", outcome: str = "",
 
     def read():
         with _open() as conn:
-            return _with_phases(conn, _with_certify(conn, reconcile.list_builds(
+            rows = _with_phases(conn, _with_certify(conn, reconcile.list_builds(
                 conn, communities=mine, outcome=outcome or None, pipelines=ids, limit=limit,
                 build=build),
                 reasons=overall, approver=admin))
+            return _with_requester(conn, rows) if admin else rows
     rows = await run_in_threadpool(read)
     return JSONResponse({"builds": await _with_progress(rows) if progress else rows},
                         headers={"Cache-Control": "no-store"})
@@ -547,8 +559,9 @@ async def get_build(pipeline: int, request: Request):
             if not admin:
                 b.pop("variables", None)
                 b.pop("events", None)
-            return _with_phases(conn, _with_certify(conn, [b], reasons=mine is None,
-                                                    approver=admin))[0]
+            rows = _with_phases(conn, _with_certify(conn, [b], reasons=mine is None,
+                                                    approver=admin))
+            return (_with_requester(conn, rows) if admin else rows)[0]
     b = await run_in_threadpool(read)
     if b is None:
         raise HTTPException(404, "no such build")
