@@ -9,10 +9,11 @@
     POST /ops/actions/{id}/approve
     POST /ops/actions/{id}/reject      {reason?}
     GET  /ops/events?after=&limit=&wait=   the event log (overall admins), long-polled
-    GET  /ops/builds?community=&outcome=&pipelines=&limit=
+    GET  /ops/builds?community=&outcome=&pipelines=&limit=&progress=
                                        build pipelines and their builds (and phases:
-                                       what each job spent its time on); any signed-in
-                                       user, of the community named (_reads)
+                                       what each job spent its time on; with progress=1,
+                                       running ones' progress); any signed-in user, of
+                                       the community named (_reads)
     GET  /ops/builds/{pipeline}        one, with its jobs (variables and events: admins)
     GET  /ops/builds/{pipeline}/sbom?format=&build=&vulnerabilities=   the SBOM a build
                                        published (CycloneDX or SPDX): any signed-in user;
@@ -108,9 +109,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from .. import audit, authz, ci_auth, session, store_token
-from . import (actions, approvals, build_queue, canary, certified, certifier, ci_logs, db,
-               events, failures, hosts, kinds, nightlies, outside, phases, read_tokens,
+from .. import audit, authz, ci_auth, session, store_series, store_token
+from . import (actions, approvals, build_progress, build_queue, canary, certified, certifier,
+               ci_logs, db, events, failures, hosts, kinds, nightlies, outside, phases, read_tokens,
                reconcile, replay, sbom_history, sbom_licences, sbom_plan, sbom_scan, schedules,
                shadow, trace, vuln_triage, watches)
 
@@ -465,13 +466,32 @@ def _with_phases(conn, rows):
     return rows
 
 
+async def _with_progress(rows):
+    """Each running build of *rows* with its progress, as its job pushes it
+    (build_progress.py); without, when that is off or does not answer."""
+    url = _m().settings.metrics_url
+    running = [r["pipeline"] for r in rows if r.get("outcome") in ("running", None)]
+    if not (url and running):
+        return rows
+    try:
+        found = await run_in_threadpool(build_progress.for_pipelines, url, running)
+    except store_series.Unreachable as e:
+        log.info("builds' progress not read: %s", e)
+        return rows
+    for r in rows:
+        if r["pipeline"] in found:
+            r["progress"] = found[r["pipeline"]]
+    return rows
+
+
 @router.get("/ops/builds")
 async def list_builds(request: Request, community: str = "", outcome: str = "",
-                      pipelines: str = "", limit: int = 50, build: str = None):
+                      pipelines: str = "", limit: int = 50, build: str = None,
+                      progress: bool = False):
     """Build pipelines newest first, with the builds they published (see _reads).
     *pipelines* is a comma-separated list of ids (the console asks for the rows
     it shows); *build* a build id, for those that published it, newest first (the
-    Store page; an empty one names none)."""
+    Store page; an empty one names none); with *progress*, running ones' progress."""
     data = await _caller(request)
     mine = await _scope(data)
     overall = mine is None
@@ -491,7 +511,8 @@ async def list_builds(request: Request, community: str = "", outcome: str = "",
                 conn, communities=mine, outcome=outcome or None, pipelines=ids, limit=limit,
                 build=build),
                 reasons=overall, approver=admin))
-    return JSONResponse({"builds": await run_in_threadpool(read)},
+    rows = await run_in_threadpool(read)
+    return JSONResponse({"builds": await _with_progress(rows) if progress else rows},
                         headers={"Cache-Control": "no-store"})
 
 
@@ -517,7 +538,7 @@ async def get_build(pipeline: int, request: Request):
     b = await run_in_threadpool(read)
     if b is None:
         raise HTTPException(404, "no such build")
-    return JSONResponse(b, headers={"Cache-Control": "no-store"})
+    return JSONResponse((await _with_progress([b]))[0], headers={"Cache-Control": "no-store"})
 
 
 LOG_FILES = ("trace", "bits-build.log", "bits-publish.log")

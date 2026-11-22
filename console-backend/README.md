@@ -77,7 +77,11 @@ publishing to CVMFS) in
 (read_api) when set. `GET /ops/builds` and `GET /ops/builds/{pipeline}` serve
 what it recorded: to admins for their communities, and to any signed-in user,
 read-only, for the community named (`?community=`; without who approved a
-certification, a build without its variables and events). `GET
+certification, a build without its variables and events). A running build also
+carries its `progress` (`/ops/builds?progress=1`; packages `started` of `total`, the last
+`package` started, `ended` once bits is done, and `at`, when its job last reported), from
+the metrics its job pushes with `--monitor` (`BITS_METRICS_URL`; none when that is off or
+does not answer). `GET
 /ops/builds/{pipeline}/jobs/{job}/log?file=trace|bits-build.log|bits-publish.log&bytes=`
 gives the end (1 MiB, at most 4 MiB) of one of its jobs' log or bits logs, cleaned and
 redacted, to the build's community's admins; GitLab must still have the job. A build job may
