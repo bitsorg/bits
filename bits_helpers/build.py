@@ -4720,6 +4720,13 @@ def doBuild(args, parser):
     for _f in _prefetch_futures:
       _f.cancel()
 
+  # Every package built or reused: the build's progress says it is done (monitor.py).
+  try:
+    from bits_helpers import progress as _progress
+    _progress.finish()
+  except Exception:
+    pass
+
   # ── Post-build checksum phase ──────────────────────────────────────────────
   # Runs after all packages have been built (or confirmed up-to-date) so that
   # output is consolidated and so that already-cached packages are covered.

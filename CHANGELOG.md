@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** With `--monitor`, a CI build also pushes its progress to VictoriaMetrics: `bits_build_packages_total`, `bits_build_packages_started`, `bits_build_package_started{package}` (the last one started) and, once every package is built or reused, `bits_build_packages_ended`, by `pipeline` and `ci_job`, for the console backend to show running builds' progress.
 - **[Feature]** `POST /ops/ci/logs`: a build job sends its host's journal (`journalctl -o json --all`) with its CI ID token, and the console backend writes it to VictoriaLogs (`BITS_LOGS_URL`) for overall admins, each line redacted (audit records left out) and named by the token (job, pipeline, runner) and the orchestrator's records (community); 64 MiB a job at most. Runners started on demand need no setup of their own.
 - **[Change]** Failures are for the admins of their community (overall admins: all): `/ops/failures` refuses another community named (403), it was readable by any signed-in user, and the help chat explains a build only to its community's admins (403 for anyone else, who got a failed build's recorded excerpts).
 - **[Fix]** The `aliBuild` wrapper takes aliBuild's `ALIBUILD_WORK_DIR` (else `ALICE_WORK_DIR`, which it ignored) and `ALIBUILD_BUILD_WORK_DIR` as `BITS_WORK_DIR` and `BITS_BUILD_WORK_DIR` when those are not set, so ALICE's scripts and sites that set them keep their work and build dirs. An empty `BITS_BUILD_WORK_DIR` counts as unset, as in the build script.

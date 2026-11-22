@@ -64,6 +64,43 @@ class ActiveLinesTests(unittest.TestCase):
         self.assertIn('bits_build_active_count{instance="h",job="bits"} 1', m._active_lines())
 
 
+class ProgressLinesTests(unittest.TestCase):
+    def setUp(self):
+        from bits_helpers import progress
+        self.progress = progress
+        progress._state["ready"] = False          # no commit status: only the counters
+        self.addCleanup(progress._state.update, {"ready": None})
+        progress.set_total(3)
+        self.addCleanup(progress.set_total, 0)
+
+    def test_progress_by_pipeline_and_job(self):
+        m = BuildMonitor("http://x", instance="h")
+        with patch.dict(os.environ, {"CI_PIPELINE_ID": "16469296", "CI_JOB_ID": "87"}):
+            self.progress.tick("ROOT")
+            self.progress.tick("Geant4")
+            lines = m._progress_lines()
+            fast = m._fast_lines()
+        lbl = 'instance="h",job="bits",pipeline="16469296",ci_job="87"'
+        self.assertEqual(lines, ["bits_build_packages_total{%s} 3" % lbl,
+                                 "bits_build_packages_started{%s} 2" % lbl,
+                                 'bits_build_package_started{%s,package="Geant4"} 2' % lbl])
+        self.assertIn(lines[1], fast)
+        self.progress.finish()
+        with patch.dict(os.environ, {"CI_PIPELINE_ID": "16469296", "CI_JOB_ID": "87"}):
+            lines = m._progress_lines()
+        self.assertEqual(lines[1:], ["bits_build_packages_started{%s} 3" % lbl,
+                                     'bits_build_package_started{%s,package="Geant4"} 3' % lbl,
+                                     "bits_build_packages_ended{%s} 1" % lbl])
+
+    def test_nothing_outside_ci_or_before_the_plan(self):
+        m = BuildMonitor("http://x", instance="h")
+        with patch.dict(os.environ, {"CI_PIPELINE_ID": ""}):
+            self.assertEqual(m._progress_lines(), [])
+        self.progress.set_total(0)
+        with patch.dict(os.environ, {"CI_PIPELINE_ID": "1"}):
+            self.assertEqual(m._progress_lines(), [])
+
+
 class PushTests(unittest.TestCase):
     def test_empty_lines_never_posts(self):
         m = BuildMonitor("http://x", instance="h")

@@ -151,6 +151,8 @@ def set_total(total):
     with _lock:
         _state["total"] = int(total or 0)
         _state["done"] = 0
+        _state["package"] = None
+        _state["ended"] = False
         _state["posted"] = False
         _state["last_pct"] = None
         _state["last_ts"] = 0.0
@@ -182,10 +184,12 @@ def tick(package):
     name in the description) and allow at most one post per 2 s (reused
     packages tick in bursts). The final tick is never skipped.
     """
-    if not _probe():
-        return
-    with _lock:
+    ready = _probe()
+    with _lock:                              # counted also for the monitor (current())
         _state["done"] += 1
+        _state["package"] = package
+        if not ready:
+            return
         done = _state["done"]
         total = _state["total"] or done
         pct = max(0, min(100, round(done * 100.0 / total))) if total else 0
@@ -206,3 +210,17 @@ def tick(package):
     _post("running", pct, desc)
 
 
+
+
+def finish():
+    """The build is done, every package built or reused (those never tick)."""
+    with _lock:
+        _state["done"] = max(_state["done"], _state["total"])
+        _state["ended"] = True
+
+
+def current():
+    """(packages started, planned, the last one started, whether the build is done)
+    for the monitor."""
+    with _lock:
+        return _state["done"], _state["total"], _state.get("package"), _state.get("ended", False)

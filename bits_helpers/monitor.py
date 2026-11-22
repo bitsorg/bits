@@ -142,7 +142,8 @@ class BuildMonitor:
 
     def _fast_lines(self):
         """Everything cheap enough to sample on every host tick (no du/docker)."""
-        out = self._host_lines() + self._active_lines() + self._fs_lines()
+        out = (self._host_lines() + self._active_lines() + self._fs_lines()
+               + self._progress_lines())
         if self._sw_bytes is not None:
             out.append("bits_sw_dir_bytes{%s} %d" % (self._lbl(), self._sw_bytes))
         return out
@@ -212,6 +213,24 @@ class BuildMonitor:
         for package, arch in active:
             lbl = self._lbl('package="%s",arch="%s"' % (_q(package), _q(arch)))
             out.append("bits_build_active{%s} 1" % lbl)
+        return out
+
+    def _progress_lines(self):
+        """The CI build's progress (progress.py) by pipeline and CI job, for the console
+        backend: packages planned and started, the last started (its value: its number),
+        and once the build is done, bits_build_packages_ended."""
+        pipeline = os.environ.get("CI_PIPELINE_ID", "").strip()
+        from bits_helpers import progress
+        started, total, package, ended = progress.current()
+        if not pipeline or not total:
+            return []
+        lbl = self._lbl('pipeline="%s",ci_job="%s"' % (_q(pipeline), _q(os.environ.get("CI_JOB_ID", ""))))
+        out = ["bits_build_packages_total{%s} %d" % (lbl, total),
+               "bits_build_packages_started{%s} %d" % (lbl, started)]
+        if package:
+            out.append('bits_build_package_started{%s,package="%s"} %d' % (lbl, _q(package), started))
+        if ended:
+            out.append("bits_build_packages_ended{%s} 1" % lbl)
         return out
 
     def _container_lines(self):
