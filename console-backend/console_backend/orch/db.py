@@ -741,6 +741,10 @@ MIGRATIONS = [
         )""",
         "CREATE INDEX store_problems_issue ON store_problems(issue_id, id)",
     ],
+    # 32: a pipeline GitLab no longer has (deleted): kept, out of the builds' list.
+    [
+        "ALTER TABLE pipelines ADD COLUMN deleted_ms INTEGER NOT NULL DEFAULT 0",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

@@ -364,6 +364,33 @@ class ReconcileTest(_DB):
             reconcile.apply_hints(self.conn, self.gl)
         self.assertEqual(self.conn.execute("SELECT count(*) FROM hints").fetchone()[0], 0)
 
+    def test_a_finished_pipeline_deleted_on_gitlab_leaves_the_list_within_a_day(self):
+        self.gl.add(1, status="success", jobs=[_job(10, "build", "success")])
+        self._pass()
+        self.assertEqual(self._row(1)["outcome"], "success")
+        self.gl.jobs[1] = [_job(10, "build", "failed")]                    # the daily look: only gone?
+        self.conn.execute("UPDATE pipelines SET checked_ms = 1")
+        self._pass()
+        self.assertEqual((self._row(1)["outcome"], self._row(1)["deleted_ms"]), ("success", 0))
+        self.assertGreater(self._row(1)["checked_ms"], 1)
+        del self.gl.pipelines[1]
+        self._pass()
+        self.assertEqual(self._row(1)["deleted_ms"], 0)                   # looked at recently
+        self.conn.execute("UPDATE pipelines SET checked_ms = 1")          # a day later
+        self._pass()
+        self.assertGreater(self._row(1)["deleted_ms"], 0)
+        self.assertEqual(self._row(1)["outcome"], "success")             # what it was
+        self.assertEqual(reconcile.list_builds(self.conn), [])
+        reconcile.add_hint(self.conn, 1, "deleted")                       # and once is enough
+        self._pass()
+        self.assertGreater(self._row(1)["checked_ms"], 1)
+        self.assertEqual([e["kind"] for e in events.since(self.conn) if e["subject"] == "pipeline:1"],
+                         ["pipeline.seen", "pipeline.success"])
+        self.gl.add(1, status="success", updated=DAY + "T13:00:00Z",     # GitLab has it after all
+                    jobs=[_job(10, "build", "success")])
+        self._pass()
+        self.assertEqual(self._row(1)["deleted_ms"], 0)
+
     def test_one_pipeline_gitlab_cannot_answer_for_does_not_hold_up_the_others(self):
         self.gl.add(1)
         self.gl.add(2, updated=DAY + "T10:01:00Z")
@@ -375,6 +402,12 @@ class ReconcileTest(_DB):
         self.assertEqual((self._row(1)["outcome"], self._row(2)["outcome"]), ("canceled", "success"))
         gone = [e for e in events.since(self.conn) if e["subject"] == "pipeline:1"][-1]
         self.assertTrue(gone["payload"]["gone"])
+        self.assertGreater(self._row(1)["deleted_ms"], 0)                 # out of the list
+        self.assertEqual([b["pipeline"] for b in reconcile.list_builds(self.conn)], [2])
+        self.conn.execute("INSERT INTO builds (pipeline_id, build_id, community, arches, bom_keys,"
+                          " top_level, packages, published_at, recorded_ms) VALUES"
+                          " (1, 'b1', 'testbed', '[]', '[]', '[]', 0, '', 0)")
+        self.assertEqual([b["pipeline"] for b in reconcile.list_builds(self.conn, build="b1")], [1])
         self.gl.add(3, updated=DAY + "T10:02:00Z")
         self.gl.jobs[3] = forge_ops.ForgeError(502, "bad gateway")
         with self.assertLogs("bits_orchestrator", "WARNING"):

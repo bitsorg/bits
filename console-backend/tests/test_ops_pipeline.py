@@ -106,6 +106,28 @@ class TestOpsPipeline(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(req.call_args.args[0], "DELETE")
 
+    @patch("console_backend.forge_ops.requests.request")
+    @patch("console_backend.forge_ops.requests.get")
+    def test_the_orchestrator_looks_again(self, get, req):
+        import os
+        import shutil
+        import tempfile
+        from console_backend.orch import db
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        main.settings.orch_db = os.path.join(d, "orch.db")
+        conn = db.connect(main.settings.orch_db)
+        self.addCleanup(conn.close)
+        db.migrate(conn)
+        get.return_value, req.return_value = _vars("testbed"), FakeResp(200, {})
+        hints = lambda: conn.execute("SELECT pipeline_id, kind FROM hints").fetchall()
+        self.assertEqual(self.client.post("/ops/pipeline/15/cancel", headers=self._hdr("alice")).status_code, 200)
+        self.assertEqual([tuple(h) for h in hints()], [(15, "canceled")])
+        self.assertEqual(self.client.delete("/ops/pipeline/15", headers=self._hdr("alice")).status_code, 200)
+        self.assertEqual([tuple(h) for h in hints()], [(15, "deleted")])
+        main.settings.orch_db = os.path.join(d, "none", "orch.db")             # no orchestrator: still done
+        self.assertEqual(self.client.post("/ops/pipeline/15/retry", headers=self._hdr("alice")).status_code, 200)
+
     @patch("console_backend.forge_ops.requests.get")
     def test_unresolvable_community_needs_overall_admin(self, get):
         get.return_value = FakeResp(200, [])         # no COMMUNITY var

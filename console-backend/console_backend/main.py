@@ -12,6 +12,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -59,6 +60,7 @@ app = FastAPI(title="bits-console backend", version="0.1.0")
 
 from .orch import api as orch_api   # noqa: E402  (the orchestrator's routes)
 from .orch import chat as orch_chat  # noqa: E402  (the help chat's)
+from .orch import reconcile as orch_reconcile  # noqa: E402
 app.include_router(orch_api.router)
 app.include_router(orch_chat.router)
 
@@ -321,6 +323,21 @@ async def _ops_pipeline_ctx(request, pid):
     return forge, user, community
 
 
+log = logging.getLogger("console_backend.main")
+
+
+async def _look_again(pid, kind):
+    """The orchestrator looks at the pipeline on its next pass (its builds' list
+    follows a cancel, retry or delete then); best effort."""
+    def write():
+        with orch_api._open() as conn:
+            orch_reconcile.add_hint(conn, int(pid), kind)
+    try:
+        await run_in_threadpool(write)
+    except Exception as e:                       # no orchestrator: nothing to tell
+        log.info("pipeline %s: no hint (%s)", pid, e)
+
+
 @app.post("/ops/pipeline/{pid}/cancel")
 async def ops_cancel(pid: str, request: Request):
     forge, user, community = await _ops_pipeline_ctx(request, pid)
@@ -328,6 +345,7 @@ async def ops_cancel(pid: str, request: Request):
         await run_in_threadpool(forge.cancel_pipeline, pid)
     except forge_ops.ForgeError as e:
         raise HTTPException(502, "forge: %s" % e.message)
+    await _look_again(pid, "canceled")
     audit.record("ops_cancel", user=user, community=community, pipeline=pid, principal="human")
     return {"status": "canceled"}
 
@@ -339,6 +357,7 @@ async def ops_retry(pid: str, request: Request):
         await run_in_threadpool(forge.retry_pipeline, pid)
     except forge_ops.ForgeError as e:
         raise HTTPException(502, "forge: %s" % e.message)
+    await _look_again(pid, "retried")
     audit.record("ops_retry", user=user, community=community, pipeline=pid, principal="human")
     return {"status": "retried"}
 
@@ -369,6 +388,7 @@ async def ops_delete(pid: str, request: Request):
         await run_in_threadpool(forge.delete_pipeline, pid)
     except forge_ops.ForgeError as e:
         raise HTTPException(502, "forge: %s" % e.message)
+    await _look_again(pid, "deleted")
     audit.record("ops_delete", user=user, community=community, pipeline=pid, principal="human")
     return {"status": "deleted"}
 

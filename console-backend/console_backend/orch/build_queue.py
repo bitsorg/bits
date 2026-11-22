@@ -475,6 +475,12 @@ def _start(conn, forge, r, host, then):
                 forge.delete_pipeline(res["id"])
             except forge_ops.ForgeError as e:
                 log.warning("cannot delete pipeline %s: %s", res["id"], e)
+            else:
+                try:
+                    from .reconcile import add_hint  # out of the builds' list, if recorded
+                    add_hint(conn, res["id"], "deleted")
+                except Exception as e:               # a hint never holds up the queue
+                    log.warning("pipeline %s: no hint: %s", res["id"], e)
         _requeue(conn, r, why, count=False)
         _pause(conn, why)
         raise Stop(why)

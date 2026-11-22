@@ -280,6 +280,8 @@ class QueueTest(_Queue):
         with self.assertRaises(bq.Stop):
             bq.dispatch(self.conn, self.forge, self.hosts)
         self.assertEqual((bq.get(self.conn, a)["state"], self.forge.deleted), ("queued", [7]))
+        self.assertEqual([tuple(h) for h in self.conn.execute("SELECT pipeline_id, kind FROM hints")],
+                         [(7, "deleted")])                     # out of the builds' list
         self._unpause()
         # Refused for this build: counted, the others go on; refused in the end.
         for n in range(bq.MAX_ATTEMPTS):

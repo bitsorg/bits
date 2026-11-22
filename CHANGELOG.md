@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A pipeline deleted on GitLab leaves `/ops/builds` (the record stays: a build it published still names it): the worker asks GitLab again about each finished pipeline at most daily, and at once after a cancel, retry or delete through the backend.
 - **[Change]** `GET /ops/builds` lists each build's jobs (as `/ops/builds/{pipeline}` does) and commit, so the console's Build Runs can come from the backend alone.
 - **[Feature]** A community's **developers** read its jobs' logs, failures and issues, and explain its failed builds in the help chat, as its admins do, without its variables, actions or approvals: the members of a `developers` subgroup of the community's admin subgroup, or `BITS_DEVELOPERS_POLICY`; `/me` lists them as `developer_groups`.
 - **[Feature]** `GET /ops/builds?progress=1` and `/ops/builds/{pipeline}`: a running build carries its `progress` (packages started of total, the last one started, whether bits is done, when its job last reported), from the metrics its job pushes (`BITS_METRICS_URL`), so the console no longer needs GitLab commit statuses for it.

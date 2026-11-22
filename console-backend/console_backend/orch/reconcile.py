@@ -49,6 +49,9 @@ INDEX_GIVE_UP_MS = 6 * 3600 * 1000
 STALE_AFTER = datetime.timedelta(days=3)   # a build job times out after 24 h
 HINT_MAX_AGE_MS = 24 * 3600 * 1000
 MAX_PER_STEP = 50                  # pipelines settled or indexed per pass
+# A finished one, again at most daily and a few per pass: whether GitLab still has it.
+RECHECK_DONE_MS = 24 * 3600 * 1000
+RECHECK_DONE_PER_STEP = 5
 CLI_PIPELINE = 0                   # the builds made with the CLI (db migration 18)
 
 
@@ -179,8 +182,9 @@ def record_pipeline(conn, reader, p):
              "finished_at": "finished_at"}
     fields = {col: str(p.get(key) or "") for key, col in names.items() if key in p}
     if old is not None:
-        if all(old[k] == v for k, v in fields.items()):
+        if all(old[k] == v for k, v in fields.items()) and not old["deleted_ms"]:
             return old
+        fields["deleted_ms"] = 0                     # GitLab has it (a 404 was not a delete)
         # Changed on GitLab: its jobs are looked at again on this pass (a retry
         # makes it running again; a wedged status job after a failed build does not).
         sets = ", ".join("%s = :%s" % (c, c) for c in sorted(fields))
@@ -327,6 +331,10 @@ def settle(conn, reader):
         "SELECT * FROM pipelines WHERE is_build = 1 AND (checked_ms = 0 OR"
         " (outcome = 'running' AND checked_ms <= ?)) ORDER BY checked_ms, id LIMIT ?",
         (now - RECHECK_MS, MAX_PER_STEP)).fetchall()
+    rows += conn.execute(
+        "SELECT * FROM pipelines WHERE is_build = 1 AND outcome != 'running' AND deleted_ms = 0"
+        " AND checked_ms > 0 AND checked_ms <= ? ORDER BY checked_ms, id LIMIT ?",
+        (now - RECHECK_DONE_MS, RECHECK_DONE_PER_STEP)).fetchall()
     stale_before = datetime.datetime.now(datetime.timezone.utc) - STALE_AFTER
     changed = 0
     for r in rows:
@@ -334,14 +342,23 @@ def settle(conn, reader):
             jobs = reader.pipeline_jobs(r["id"])
         except Exception as exc:
             if _gone(exc):
-                out = outcome_from_jobs(r["gl_status"], [])
-                changed += _set_outcome(conn, r, "canceled" if out == "running" else out,
-                                        r["jobs"], {"gone": True})
+                if r["outcome"] == "running":            # a finished one keeps its outcome
+                    out = outcome_from_jobs(r["gl_status"], [])
+                    changed += _set_outcome(conn, r, "canceled" if out == "running" else out,
+                                            r["jobs"], {"gone": True})
+                with db.transaction(conn):
+                    conn.execute("UPDATE pipelines SET checked_ms = :now, deleted_ms ="
+                                 " CASE deleted_ms WHEN 0 THEN :now ELSE deleted_ms END WHERE id = :id",
+                                 {"now": db.now_ms(), "id": r["id"]})
             else:
                 log.warning("jobs of pipeline %s: %s", r["id"], exc)
                 with db.transaction(conn):
                     conn.execute("UPDATE pipelines SET checked_ms = ? WHERE id = ?",
                                  (db.now_ms(), r["id"]))
+            continue
+        if r["outcome"] != "running" and r["checked_ms"]:   # the daily look: only whether it is gone
+            with db.transaction(conn):
+                conn.execute("UPDATE pipelines SET checked_ms = ? WHERE id = ?", (db.now_ms(), r["id"]))
             continue
         outcome = outcome_from_jobs(r["gl_status"], jobs)
         summary = job_summary(jobs)
@@ -498,8 +515,11 @@ def _pipeline_public(r, builds):
 
 def list_builds(conn, communities=None, outcome=None, pipelines=None, limit=50, build=None):
     """Build pipelines newest first, with their builds and jobs. *communities* (lowercase)
-    None = all; *pipelines* restricts to those ids, *build* to those that published it."""
+    None = all; *pipelines* restricts to those ids, *build* to those that published it
+    (also when GitLab no longer has them: only then)."""
     q, args = "SELECT * FROM pipelines WHERE is_build = 1", []
+    if build is None:
+        q += " AND deleted_ms = 0"
     if communities is not None:
         names = sorted(communities)
         if not names:
