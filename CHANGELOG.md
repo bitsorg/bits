@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** Deleting a pipeline GitLab no longer has (one deleted before the orchestrator noticed) succeeds for its recorded community's admins, and it leaves the builds' list; it answered 502 "forge: 404".
 - **[Fix]** A pipeline deleted on GitLab leaves `/ops/builds` (the record stays: a build it published still names it): the worker asks GitLab again about each finished pipeline at most daily, and at once after a cancel, retry or delete through the backend.
 - **[Change]** `GET /ops/builds` lists each build's jobs (as `/ops/builds/{pipeline}` does) and commit, so the console's Build Runs can come from the backend alone.
 - **[Feature]** A community's **developers** read its jobs' logs, failures and issues, and explain its failed builds in the help chat, as its admins do, without its variables, actions or approvals: the members of a `developers` subgroup of the community's admin subgroup, or `BITS_DEVELOPERS_POLICY`; `/me` lists them as `developer_groups`.

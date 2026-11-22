@@ -289,11 +289,22 @@ async def ops_build(request: Request):
     return result
 
 
-async def _ops_pipeline_ctx(request, pid):
+def _recorded_community(pid):
+    """The community the orchestrator recorded for pipeline *pid*, None if none."""
+    try:
+        with orch_api._open() as conn:
+            row = conn.execute("SELECT community FROM pipelines WHERE id = ?", (int(pid),)).fetchone()
+    except Exception:                            # no orchestrator
+        return None
+    return None if row is None else str(row["community"] or "").strip().lower()
+
+
+async def _ops_pipeline_ctx(request, pid, gone_ok=False):
     """Shared gate for pipeline lifecycle ops: authenticate, resolve the pipeline's
     OWN community (its COMMUNITY variable), and require the caller be an admin for it
     (group-admin of that community, or an overall/bits-admin via '*'). A pipeline
-    whose community can't be resolved authorizes only for an overall admin."""
+    whose community can't be resolved authorizes only for an overall admin. With
+    *gone_ok*, one GitLab no longer has is authorized by its recorded community."""
     data = await _current_async(request)
     if not data:
         raise HTTPException(401, "not authenticated")
@@ -305,7 +316,10 @@ async def _ops_pipeline_ctx(request, pid):
     try:
         community = await run_in_threadpool(forge.pipeline_community, pid)
     except forge_ops.ForgeError as e:
-        raise HTTPException(502, "forge: %s" % e.message)
+        community = (await run_in_threadpool(_recorded_community, pid)
+                     if gone_ok and e.status == 404 else None)
+        if community is None:
+            raise HTTPException(502, "forge: %s" % e.message)
     user = data["user"]
     resolved = _resolved_policy(data["token"])
     # A pipeline whose community can't be resolved (no COMMUNITY var — a Pages/push
@@ -383,11 +397,14 @@ async def ops_variables(pid: str, request: Request):
 
 @app.delete("/ops/pipeline/{pid}")
 async def ops_delete(pid: str, request: Request):
-    forge, user, community = await _ops_pipeline_ctx(request, pid)
+    """Delete the pipeline on GitLab; one GitLab no longer has is deleted already
+    (it leaves the builds' list once the worker has looked)."""
+    forge, user, community = await _ops_pipeline_ctx(request, pid, gone_ok=True)
     try:
         await run_in_threadpool(forge.delete_pipeline, pid)
     except forge_ops.ForgeError as e:
-        raise HTTPException(502, "forge: %s" % e.message)
+        if e.status != 404:
+            raise HTTPException(502, "forge: %s" % e.message)
     await _look_again(pid, "deleted")
     audit.record("ops_delete", user=user, community=community, pipeline=pid, principal="human")
     return {"status": "deleted"}

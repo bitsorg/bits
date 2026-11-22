@@ -125,6 +125,18 @@ class TestOpsPipeline(unittest.TestCase):
         self.assertEqual([tuple(h) for h in hints()], [(15, "canceled")])
         self.assertEqual(self.client.delete("/ops/pipeline/15", headers=self._hdr("alice")).status_code, 200)
         self.assertEqual([tuple(h) for h in hints()], [(15, "deleted")])
+        # One GitLab no longer has: deleted already, for its recorded community's admins.
+        with db.transaction(conn):
+            conn.execute("INSERT INTO pipelines (id, is_build, community, first_seen_ms)"
+                         " VALUES (16, 1, 'testbed', 0)")
+        get.return_value = FakeResp(404, {"message": "404 Not Found"})
+        req.return_value = FakeResp(404, {"message": "404 Not Found"})
+        self.assertEqual(self.client.delete("/ops/pipeline/16", headers=self._hdr("dave")).status_code, 403)
+        self.assertEqual(self.client.delete("/ops/pipeline/16", headers=self._hdr("alice")).status_code, 200)
+        self.assertIn((16, "deleted"), [tuple(h) for h in hints()])
+        self.assertEqual(self.client.delete("/ops/pipeline/17", headers=self._hdr("carol")).status_code, 502)
+        self.assertEqual(self.client.post("/ops/pipeline/16/cancel", headers=self._hdr("alice")).status_code, 502)
+        get.return_value, req.return_value = _vars("testbed"), FakeResp(200, {})
         main.settings.orch_db = os.path.join(d, "none", "orch.db")             # no orchestrator: still done
         self.assertEqual(self.client.post("/ops/pipeline/15/retry", headers=self._hdr("alice")).status_code, 200)
 
