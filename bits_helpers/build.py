@@ -1864,6 +1864,10 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   except BaseException:
     progress.end(error=True)
     raise
+  # Built and synced: its build trees go now, not when a later run finds it installed
+  # (its SOURCES stay: the post-build checksum phase reads them).
+  remove_build_dirs(spec, args, workDir, args.workDir if spec["is_devel_pkg"]
+                    else os.environ.get("BITS_BUILD_WORK_DIR", args.workDir))
   progress.end()
 
 
@@ -1925,6 +1929,37 @@ def _rebuild_reason(spec, sync_helper):
     return "no remote store"
   # (Absent, or the fetch failed: either way nothing came from the store.)
   return "not found in the store"
+
+
+def remove_build_dirs(spec, args, workDir, buildWorkDir, sources=False):
+  """Delete a built package's BUILD/<hash>, INSTALLROOT/<hash> (SOURCES/<pkg> too
+  with *sources*) and its BUILD/<pkg>-latest link when it points there; a devel
+  package's and with --no-auto-cleanup, keep. Read-only directories are made writable."""
+  if spec["is_devel_pkg"] or not getattr(args, "autoCleanup", False):
+    return
+  dirs = [join(buildWorkDir, "BUILD", spec["hash"]), join(workDir, "INSTALLROOT", spec["hash"])]
+  if sources:
+    dirs.append(join(workDir, "SOURCES", spec["package"]))
+  debug("Cleaning up:\n%s", "\n".join(dirs))
+  writable = lambda q: os.chmod(q, os.stat(q).st_mode | 0o700)
+  for d in dirs:
+    shutil.rmtree(d, ignore_errors=True)
+    if os.path.isdir(d) and not os.path.islink(d):   # read-only directories (Go)
+      call_ignoring_oserrors(writable, d)
+      for root, subdirs, _ in os.walk(d):
+        for name in subdirs:
+          if not os.path.islink(join(root, name)):
+            call_ignoring_oserrors(writable, join(root, name))
+      shutil.rmtree(d, ignore_errors=True)
+    if os.path.lexists(d):
+      warning("%s: could not remove %s", spec["package"], d)
+  links = [spec["package"] + "-latest"]
+  if "develPrefix" in args:
+    links.append(spec["package"] + "-latest-" + args.develPrefix)
+  for link in links:   # another run of the work dir may have pointed it at its build
+    link = join(buildWorkDir, "BUILD", link)
+    if call_ignoring_oserrors(readlink, link) == spec["hash"]:
+      call_ignoring_oserrors(unlink, link)
 
 
 def doFinalSync(spec, specs, args, syncHelper):
@@ -2734,20 +2769,7 @@ def build_one_package(p, ctx):
       # assuming the package is not a development one. We also can
       # delete the SOURCES in case we have aggressive-cleanup enabled.
       if not spec["is_devel_pkg"] and args.autoCleanup:
-        cleanupDirs = [buildRoot,
-                       join(workDir, "INSTALLROOT", spec["hash"])]
-        if args.aggressiveCleanup:
-          cleanupDirs.append(join(workDir, "SOURCES", spec["package"]))
-        debug("Cleaning up:\n%s", "\n".join(cleanupDirs))
-
-        for d in cleanupDirs:
-          shutil.rmtree(d.encode("utf8"), True)
-        try:
-          unlink(join(buildWorkDir, "BUILD", spec["package"] + "-latest"))
-          if "develPrefix" in args:
-            unlink(join(buildWorkDir, "BUILD", spec["package"] + "-latest-" + args.develPrefix))
-        except Exception:
-          pass
+        remove_build_dirs(spec, args, workDir, buildWorkDir, sources=args.aggressiveCleanup)
         try:
           rmdir(join(buildWorkDir, "BUILD"))
           rmdir(join(workDir, "INSTALLROOT"))
