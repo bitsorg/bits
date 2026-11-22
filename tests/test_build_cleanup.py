@@ -161,6 +161,8 @@ class BuildWorkDirTest(unittest.TestCase):
                                             Namespace(workDir="sw", docker=False)), "sw")
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(build_work_dir(SPEC, Namespace(workDir="sw")), "sw")
+        with patch.dict(os.environ, {"BITS_BUILD_WORK_DIR": ""}):   # as build_template.sh: unset
+            self.assertEqual(build_work_dir(SPEC, Namespace(workDir="sw")), "sw")
 
 
 if __name__ == "__main__":

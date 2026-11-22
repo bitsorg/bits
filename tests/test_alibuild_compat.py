@@ -14,7 +14,10 @@ covered by test_hashing.py / test_legacy_initdotsh.py / test_initdotsh_diff.py;
 this file is the CLI/env-contract half of the guardrail.
 """
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -95,6 +98,45 @@ class AliBuildMinimalWrapperTest(unittest.TestCase):
             self.assertEqual(args.bits_providers, "https://example.com/p")
         finally:
             os.environ.pop("BITS_PROVIDERS", None)
+
+
+class AliBuildWorkDirVariablesTest(unittest.TestCase):
+    """The wrapper passes aliBuild's ALIBUILD_WORK_DIR and ALIBUILD_BUILD_WORK_DIR on
+    as bits' own variables, unless those are set."""
+
+    def run_wrapper(self, env):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        shutil.copy(os.path.join(os.path.dirname(__file__), "..", "aliBuild"), d)
+        with open(os.path.join(d, "bits"), "w") as stub:   # prints what bits would get
+            stub.write('#!/bin/bash\necho "${BITS_WORK_DIR:-unset} ${BITS_BUILD_WORK_DIR:-unset}"\n')
+        os.chmod(os.path.join(d, "bits"), 0o755)
+        base = {k: v for k, v in os.environ.items()
+                if not k.startswith(("BITS_", "ALIBUILD_", "ALICE_WORK_DIR"))}
+        return subprocess.run(["bash", os.path.join(d, "aliBuild"), "version"],
+                              env=dict(base, **env), capture_output=True, text=True,
+                              check=True).stdout.split()
+
+    def test_aliBuild_names_are_taken(self):
+        self.assertEqual(self.run_wrapper({"ALIBUILD_WORK_DIR": "/w",
+                                           "ALIBUILD_BUILD_WORK_DIR": "/fast"}), ["/w", "/fast"])
+
+    def test_bits_names_win(self):
+        self.assertEqual(self.run_wrapper({"ALIBUILD_WORK_DIR": "/w", "BITS_WORK_DIR": "/b",
+                                           "ALIBUILD_BUILD_WORK_DIR": "/fast",
+                                           "BITS_BUILD_WORK_DIR": "/bfast"}), ["/b", "/bfast"])
+
+    def test_alice_work_dir_after_alibuild_work_dir(self):
+        self.assertEqual(self.run_wrapper({"ALICE_WORK_DIR": "/a"})[0], "/a")
+        self.assertEqual(self.run_wrapper({"ALICE_WORK_DIR": "/a", "ALIBUILD_WORK_DIR": "/w"})[0], "/w")
+
+    def test_empty_counts_as_unset(self):
+        self.assertEqual(self.run_wrapper({"BITS_WORK_DIR": "", "ALIBUILD_WORK_DIR": "/w",
+                                           "BITS_BUILD_WORK_DIR": "", "ALIBUILD_BUILD_WORK_DIR": "/f"}),
+                         ["/w", "/f"])
+
+    def test_neither_set(self):
+        self.assertEqual(self.run_wrapper({}), ["unset", "unset"])
 
 
 if __name__ == "__main__":

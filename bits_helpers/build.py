@@ -1932,7 +1932,7 @@ def build_work_dir(spec, args):
   devel package and a --docker build (its container builds in the work dir) ignore it."""
   if spec["is_devel_pkg"] or getattr(args, "docker", False):
     return args.workDir
-  return os.environ.get("BITS_BUILD_WORK_DIR", args.workDir)
+  return os.environ.get("BITS_BUILD_WORK_DIR") or args.workDir
 
 
 def remove_build_dirs(spec, args, workDir, buildWorkDir, sources=False):

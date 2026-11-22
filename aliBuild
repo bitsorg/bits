@@ -34,4 +34,12 @@ export BITS_LEGACY_ARCH="${BITS_LEGACY_ARCH:-1}"
 # directory (you are normally inside a recipe repo). BITS_REPO_DIR seeds the
 # --config-dir default in args.py; an explicit --config-dir still overrides it.
 export BITS_REPO_DIR="${BITS_REPO_DIR:-alidist}"
+# aliBuild's names for the work dir and the build dir (BUILD/ on another disk), as
+# ALICE's scripts and sites set them; the BITS_ ones, when set, win.
+if [[ -z "${BITS_WORK_DIR:-}" && -n "${ALIBUILD_WORK_DIR:-${ALICE_WORK_DIR:-}}" ]]; then
+  export BITS_WORK_DIR="${ALIBUILD_WORK_DIR:-$ALICE_WORK_DIR}"
+fi
+if [[ -z "${BITS_BUILD_WORK_DIR:-}" && -n "${ALIBUILD_BUILD_WORK_DIR:-}" ]]; then
+  export BITS_BUILD_WORK_DIR="$ALIBUILD_BUILD_WORK_DIR"
+fi
 exec "$(dirname "$0")/bits" "$@"
