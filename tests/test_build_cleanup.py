@@ -11,7 +11,7 @@ import unittest
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
-from bits_helpers.build import remove_build_dirs, runBuildCommand
+from bits_helpers.build import build_work_dir, remove_build_dirs, runBuildCommand
 
 ARCH = "slc7_x86-64"
 HASH = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
@@ -147,6 +147,20 @@ class BuiltPackageCleanupTest(unittest.TestCase):
         self.run_build(7, 2)
         self.assertTrue(os.path.isdir(os.path.join(self.dir, "BUILD", HASH)))
         self.assertTrue(os.path.isdir(os.path.join(self.dir, "INSTALLROOT", HASH)))
+
+
+class BuildWorkDirTest(unittest.TestCase):
+    """$BITS_BUILD_WORK_DIR moves BUILD/ off the work dir, except where the build
+    script runs in a container (it is not passed in) or for a devel package."""
+
+    def test_where(self):
+        with patch.dict(os.environ, {"BITS_BUILD_WORK_DIR": "/fast"}):
+            self.assertEqual(build_work_dir(SPEC, Namespace(workDir="sw", docker=False)), "/fast")
+            self.assertEqual(build_work_dir(SPEC, Namespace(workDir="sw", docker=True)), "sw")
+            self.assertEqual(build_work_dir(dict(SPEC, is_devel_pkg=True),
+                                            Namespace(workDir="sw", docker=False)), "sw")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(build_work_dir(SPEC, Namespace(workDir="sw")), "sw")
 
 
 if __name__ == "__main__":

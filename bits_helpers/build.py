@@ -1642,16 +1642,13 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   if err:
     progress.end(error=True)
   if _cache and not err:
-    _bwd = args.workDir if spec["is_devel_pkg"] else os.environ.get("BITS_BUILD_WORK_DIR", args.workDir)
+    _bwd = build_work_dir(spec, args)
     fetch_cache.save(spec, syncHelper, workDir, _cache, _arch, _cache_state,
                      os.path.join(_bwd, "BUILD", spec["hash"], fetch_cache.LISTING))
 
   # We do not use the override for devel packages, because we
   # want to avoid having to rebuild things when the /tmp gets cleaned.
-  if spec["is_devel_pkg"]:
-      buildWorkDir = args.workDir
-  else:
-      buildWorkDir = os.environ.get("BITS_BUILD_WORK_DIR", args.workDir)
+  buildWorkDir = build_work_dir(spec, args)
 
   # Determine paths
   devSuffix = "-" + args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else ""
@@ -1866,8 +1863,7 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
     raise
   # Built and synced: its build trees go now, not when a later run finds it installed
   # (its SOURCES stay: the post-build checksum phase reads them).
-  remove_build_dirs(spec, args, workDir, args.workDir if spec["is_devel_pkg"]
-                    else os.environ.get("BITS_BUILD_WORK_DIR", args.workDir))
+  remove_build_dirs(spec, args, workDir, build_work_dir(spec, args))
   progress.end()
 
 
@@ -1929,6 +1925,14 @@ def _rebuild_reason(spec, sync_helper):
     return "no remote store"
   # (Absent, or the fetch failed: either way nothing came from the store.)
   return "not found in the store"
+
+
+def build_work_dir(spec, args):
+  """Where a package's BUILD/ tree is: $BITS_BUILD_WORK_DIR, else the work dir. A
+  devel package and a --docker build (its container builds in the work dir) ignore it."""
+  if spec["is_devel_pkg"] or getattr(args, "docker", False):
+    return args.workDir
+  return os.environ.get("BITS_BUILD_WORK_DIR", args.workDir)
 
 
 def remove_build_dirs(spec, args, workDir, buildWorkDir, sources=False):
@@ -2665,10 +2669,7 @@ def build_one_package(p, ctx):
 
   # We do not use the override for devel packages, because we
   # want to avoid having to rebuild things when the /tmp gets cleaned.
-  if spec["is_devel_pkg"]:
-      buildWorkDir = ctx.build_work_dir = args.workDir
-  else:
-      buildWorkDir = ctx.build_work_dir = os.environ.get("BITS_BUILD_WORK_DIR", args.workDir)
+  buildWorkDir = ctx.build_work_dir = build_work_dir(spec, args)
 
   buildRoot = join(buildWorkDir, "BUILD", spec["hash"])
 
@@ -3359,8 +3360,7 @@ def build_one_package(p, ctx):
       container_workdir=container_workDir if getattr(args, "docker", False) else None,
       docker_image=getattr(args, "dockerImage", None),
       pkg_env=_pkg_env,
-      build_workdir=abspath(args.workDir if spec["is_devel_pkg"]
-                            else os.environ.get("BITS_BUILD_WORK_DIR", args.workDir)),
+      build_workdir=abspath(build_work_dir(spec, args)),
       script_dir=abspath(scriptDir),
   )
 
@@ -3884,6 +3884,8 @@ def doBuild(args, parser):
     _tm = _system_opt("trust_manifest", None)
     if _tm:
       args.trustManifest = str(_tm).strip()
+  if getattr(args, "docker", False) and os.environ.get("BITS_BUILD_WORK_DIR"):
+    warning("BITS_BUILD_WORK_DIR is ignored with --docker: the container builds in the work dir")
   # Signed reuse is ON by default: reusing an untrusted remote store is unsafe.
   # Precedence: explicit CLI flag (--require-signed-reuse / --no-require-signed-reuse,
   # True/False) > system: require_signed_reuse > built-in default (True). When on
