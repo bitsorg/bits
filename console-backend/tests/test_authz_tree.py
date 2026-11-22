@@ -98,7 +98,7 @@ class TestTreePolicy(unittest.TestCase):
         s = _settings()
         with patch("console_backend.authz.forge.gitlab_subgroups", _subgroups):
             authz.resolved_admin_policy(s, None)             # populates _STALE
-        key = (s.admin_policy_source, s.admins_group)
+        key = (s.admin_policy_source, s.developer_policy_source, s.admins_group)
         pol, _exp = authz._STALE[key]
         authz._STALE[key] = (pol, 0)                          # age it past the bound
         authz._CACHE.clear()
@@ -106,6 +106,23 @@ class TestTreePolicy(unittest.TestCase):
                    side_effect=RuntimeError("still down")):
             with self.assertRaises(RuntimeError):             # stale too old -> deny
                 authz.resolved_admin_policy(s, None)
+
+    def test_developers_subgroup_and_policy(self):
+        members = {**_MEMBERS, 201: {"dev1"}, 202: {"dev2"}}
+        subs = {"bits-admins": _SUBGROUPS, 101: [{"id": 201, "path": "developers"}],
+                102: [{"id": 202, "path": "other"}]}
+        with patch("console_backend.authz.forge.gitlab_group_members",
+                   lambda a, t, ref, *x, **k: set(members[ref])), \
+             patch("console_backend.authz.forge.gitlab_subgroups", lambda a, t, ref, *x, **k: subs[ref]):
+            s = _settings()
+            s.developer_policy_source = "lhcb @dev3\n* @dev4\n@dev5"
+            admins = authz.resolved_admin_policy(s, None)
+            devs = authz.resolved_developer_policy(s, None)
+        self.assertEqual(devs, {"alice": {"dev1"}, "lhcb": {"dev3"}})   # not lhcb's 'other'
+        self.assertEqual(authz.developer_groups("dev1", devs), ["alice"])
+        self.assertEqual(authz.developer_groups("DEV3", devs), ["lhcb"])
+        self.assertFalse(authz.is_admin_for("dev1", "alice", admins))     # a developer is no admin
+        self.assertNotIn("developers", admins)
 
     def test_group_set_but_no_resolve_token_disables_tree(self):
         # B1 guard: with a group but NO resolve token the tree is off and the

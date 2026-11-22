@@ -671,16 +671,19 @@ async def chat(request: Request):
         b, stopped = await run_in_threadpool(read)
         if b is None:
             raise HTTPException(404, "no such build")
+        comm = str(b["community"]).lower()
+        reads = await api._debug_scope(data)
+        if not (reads is None or comm in reads):   # its failures, as /ops/failures
+            raise HTTPException(403, "explaining a build is for its community's admins and developers")
         mine = await api._scope(data)
-        admin = mine is None or str(b["community"]).lower() in mine
-        if not admin:   # its failures are its community's admins', as /ops/failures
-            raise HTTPException(403, "explaining a build is for the admins of its community")
+        admin = mine is None or comm in mine       # its build variables: admins only
     asked_in = community.strip().lower()
     seen = {"community": asked_in}
 
     def prepare():
-        # The logs as read now, for its community's admins (no one else explains a build).
-        logs = fetch_logs(settings, b, stopped) if b and admin and b.get("outcome") == "failed" else None
+        # The logs as read now, for its community's admins and developers (no one else
+        # explains a build).
+        logs = fetch_logs(settings, b, stopped) if b and b.get("outcome") == "failed" else None
         with api._open() as conn:
             ctx = build_context(conn, pipeline, record_chars, admin, logs) if pipeline else None
             if pipeline and ctx is None:

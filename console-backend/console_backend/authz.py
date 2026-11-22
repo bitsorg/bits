@@ -31,8 +31,8 @@ _CACHE_TTL = 60
 _STALE_TTL = 900
 
 
-def load_policy(settings) -> dict:
-    src = settings.admin_policy_source
+def load_policy(settings, src=None) -> dict:
+    src = settings.admin_policy_source if src is None else src
     return forge.load_admin_policy(src) if src else {}
 
 
@@ -46,6 +46,11 @@ def _merge(*policies) -> dict:
 
 
 def tree_policy(settings) -> dict:
+    """The admins of the group tree (tree_policies)."""
+    return tree_policies(settings)[0]
+
+
+def tree_policies(settings):
     """Derive the policy from the bits-admins GROUP TREE by convention: the root
     group's DIRECT members are overall admins ('*'); each direct subgroup is a
     community (its path, lowercased) whose DIRECT members are that community's
@@ -53,20 +58,27 @@ def tree_policy(settings) -> dict:
     group's members, and overall coverage comes from the '*' bucket rather than
     inheritance. A subgroup named like a reserved policy group (e.g. 'common')
     simply populates that group — legitimate in the ADMINS format.
+    A community subgroup's own subgroup `developers` holds its developers (direct
+    members): (admins, developers), both {group: {users}}.
     Empty unless both admins_group and a resolve token are set. Raises on API
     failure so the caller can serve a stale policy rather than lock everyone out."""
     from . import credproxy
     root = settings.admins_group
     if not (root and credproxy.has(settings, "groups")):
-        return {}
+        return {}, {}
     api, token = credproxy.gitlab(settings, "groups")
     pol = {"*": _humans(forge.gitlab_group_members(api, token, credproxy.segment(settings, root),
                                                    inherited=False))}
+    devs = {}
     for sub in forge.gitlab_subgroups(api, token, credproxy.segment(settings, root)):
         name = str(sub.get("path", "")).strip().lower()
         if name:
             pol[name] = _humans(forge.gitlab_group_members(api, token, sub["id"], inherited=False))
-    return pol
+            for d in forge.gitlab_subgroups(api, token, sub["id"]):
+                if str(d.get("path", "")).strip().lower() == "developers":
+                    devs[name] = _humans(forge.gitlab_group_members(api, token, d["id"],
+                                                                    inherited=False))
+    return pol, devs
 
 
 def resolve_policy(policy, settings, user_token) -> dict:
@@ -90,7 +102,18 @@ def resolve_policy(policy, settings, user_token) -> dict:
 
 
 def resolved_admin_policy(settings, user_token) -> dict:
-    """Cached load+resolve used per request. With a service (resolve) token the
+    """The admins: {group: {users}} (resolved_policies)."""
+    return resolved_policies(settings, user_token)[0]
+
+
+def resolved_developer_policy(settings, user_token) -> dict:
+    """The developers, who read their communities' logs and failures: {group: {users}},
+    a community each (a `*` or bare `@user` line names none)."""
+    return {g: m for g, m in resolved_policies(settings, user_token)[1].items() if g != "*"}
+
+
+def resolved_policies(settings, user_token):
+    """(admins, developers): cached load+resolve used per request. With a service (resolve) token the
     result is deterministic and shared across users, so it is cached and, on a
     later GitLab failure, the last good policy is served stale rather than locking
     everyone out. Without one, per-user resolution runs uncached (dev/no-token)."""
@@ -99,15 +122,17 @@ def resolved_admin_policy(settings, user_token) -> dict:
     # would cache a per-user (&ref-via-caller-token) resolution and leak it — and
     # the tree contributes nothing without the token anyway.
     from . import credproxy
+    texts = (settings.admin_policy_source, settings.developer_policy_source)
     if credproxy.has(settings, "groups"):
-        key = (settings.admin_policy_source, settings.admins_group)
+        key = texts + (settings.admins_group,)
         hit = _CACHE.get(key)
         if hit and hit[1] > time.time():
             return hit[0]
         try:
-            # Explicit policy (supplement/override) merged with the group tree.
-            merged = _merge(resolve_policy(load_policy(settings), settings, user_token),
-                            tree_policy(settings))
+            # Explicit policies (supplement/override) merged with the group tree.
+            admins, devs = tree_policies(settings)
+            merged = tuple(_merge(resolve_policy(load_policy(settings, src), settings, user_token), tree)
+                           for src, tree in zip(texts, (admins, devs)))
         except Exception:
             st = _STALE.get(key)   # GitLab blip mid-refresh — serve the last good set
             if st and st[1] > time.time():
@@ -116,7 +141,7 @@ def resolved_admin_policy(settings, user_token) -> dict:
         _CACHE[key] = (merged, time.time() + _CACHE_TTL)
         _STALE[key] = (merged, time.time() + _STALE_TTL)
         return merged
-    return resolve_policy(load_policy(settings), settings, user_token)
+    return tuple(resolve_policy(load_policy(settings, src), settings, user_token) for src in texts)
 
 
 def is_admin_for(user, group, resolved_policy) -> bool:
@@ -132,3 +157,10 @@ def admin_groups(user, resolved_policy):
     groups = sorted(g for g, members in resolved_policy.items()
                     if g != "*" and u in {str(m).lower() for m in members})
     return overall, groups
+
+
+def developer_groups(user, resolved_developers):
+    """The groups *user* is a developer of."""
+    u = str(user).lower()
+    return sorted(g for g, members in resolved_developers.items()
+                  if u in {str(m).lower() for m in members})

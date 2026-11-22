@@ -46,6 +46,11 @@ class TestBearerAuth(unittest.TestCase):
         self.assertEqual(body["admin_groups"], ["lcg"])
         self.assertFalse(body["overall_admin"])
 
+    def test_me_names_the_communities_one_develops(self):
+        main.settings.developer_policy_source = "lcg @dave\ncms @dave"
+        body = self.client.get("/me", headers=self._bearer("dave")).json()
+        self.assertEqual((body["admin_groups"], body["developer_groups"]), ([], ["cms", "lcg"]))
+
     def test_me_overall_admin(self):
         r = self.client.get("/me", headers=self._bearer("root"))
         self.assertTrue(r.json()["overall_admin"])

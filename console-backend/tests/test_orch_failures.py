@@ -419,7 +419,7 @@ class ApiTest(_DB):
         super().setUp()
         main.settings = config.Settings(env={
             "GITLAB_API_URL": "https://gl/api/v4",
-            "BITS_ADMINS_POLICY": "lcg @alice\natlas @bob\n* @carol",
+            "BITS_ADMINS_POLICY": "lcg @alice\natlas @bob\n* @carol", "BITS_DEVELOPERS_POLICY": "atlas @erin",
             "BITS_FORGE_PROJECT": "42", "BITS_ORCH_DB": self.path})
         p = patch.object(main.identity, "verify_gitlab_token", lambda a, t, *x, **k: t or None)
         p.start()
@@ -463,6 +463,16 @@ class ApiTest(_DB):
                           .json()["failures"]], [2])
         self.assertEqual([f["pipeline"] for f in self._get("carol", "/ops/failures?pipeline=3")
                           .json()["failures"]], [3])
+        # atlas's developer reads atlas's, as its admin does
+        self.assertEqual([f["pipeline"] for f in self._get("erin", "/ops/failures").json()["failures"]], [2])
+        self.assertEqual(self._get("erin", "/ops/failures?community=lcg").status_code, 403)
+        self.assertEqual([i["communities"] for i in self._get("erin", "/ops/issues").json()["issues"]],
+                         [["atlas"]])
+        asked = []                                                             # not its SBOM findings
+        with patch("console_backend.orch.sbom_scan.names", lambda conn, communities: asked.append(communities) or []):
+            for u in ("erin", "bob"):
+                self.assertEqual(self._get(u, "/ops/sbom/names").status_code, 200)
+        self.assertEqual(asked, [set(), {"atlas"}])
         sigs = self._get("dave", "/ops/signatures").json()["signatures"]
         self.assertEqual(len(sigs), len(failures.SEEDS))
         self.assertEqual(self.client.get("/ops/issues").status_code, 401)

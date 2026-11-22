@@ -17,7 +17,7 @@ KEY = "k" * 40
 
 class _Tokens(_DB):
     ENV = {"GITLAB_API_URL": "https://gl/api/v4", "BITS_ADMINS_POLICY": "lcg @alice\n* @carol",
-           "BITS_FORGE_PROJECT": "42", "BITS_READ_TOKEN_KEY": KEY}
+           "BITS_DEVELOPERS_POLICY": "lcg @erin", "BITS_FORGE_PROJECT": "42", "BITS_READ_TOKEN_KEY": KEY}
 
     def setUp(self):
         super().setUp()
@@ -134,6 +134,9 @@ class JobLogTest(_Tokens):
         self.assertEqual(self._get("carol", "/ops/builds/2/jobs/20/log").status_code, 200)
         self.assertEqual(self._get("alice", "/ops/builds/2/jobs/20/log").status_code, 403)
         self.assertEqual(self._get("dave", "/ops/builds/1/jobs/10/log").status_code, 403)
+        self.assertEqual(self._get("erin", "/ops/builds/1/jobs/10/log").status_code, 200)   # lcg's developer
+        self.assertEqual(self._get("erin", "/ops/builds/2/jobs/20/log").status_code, 403)
+        self.assertNotIn("variables", self._get("erin", "/ops/builds/1").json())           # still admins'
 
     def test_the_bits_logs_and_what_is_not_there(self):
         r = self._get("carol", "/ops/builds/1/jobs/10/log?file=bits-build.log")

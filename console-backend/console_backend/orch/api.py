@@ -418,6 +418,17 @@ async def _scope(data):
     return None if overall else {g.lower() for g in groups}
 
 
+async def _debug_scope(data):
+    """What a debugging read (logs, failures, issues, explaining a build) covers: as
+    _scope, and also the communities the caller is a developer of."""
+    mine = await _scope(data)
+    if mine is None or data.get("read_token"):
+        return mine
+    devs = await run_in_threadpool(lambda: authz.developer_groups(
+        data["user"], _m()._resolved_developers(data["token"])))
+    return mine | {g.lower() for g in devs}
+
+
 def _reads(mine, community):
     """What a read of builds or the queue covers, and whether as an admin.
     Admins read their communities (*mine*; None = all), narrowed to *community*;
@@ -550,12 +561,12 @@ async def get_job_log(pipeline: int, job_id: int, request: Request, file: str = 
                       size: int = Query(LOG_BYTES, alias="bytes")):
     """The end of one of the build's jobs' log, or of a bits log it kept
     (bits-build.log, bits-publish.log), cleaned and redacted, as text: for the
-    admins of the build's community (a read token: of its communities)."""
+    admins and developers of the build's community (a read token: of its communities)."""
     data = await _caller(request)
     if file not in LOG_FILES:
         raise HTTPException(400, "file is one of %s" % ", ".join(LOG_FILES))
     size = max(1024, min(int(size), LOG_BYTES_MAX))
-    mine = await _scope(data)
+    mine = await _debug_scope(data)
 
     def build():
         with _open() as conn:
@@ -566,7 +577,7 @@ async def get_job_log(pipeline: int, job_id: int, request: Request, file: str = 
     if not (mine is None or str(b["community"]).lower() in mine):
         if data.get("read_token"):
             raise HTTPException(404, "no such build")
-        raise HTTPException(403, "a build's logs are for its community's admins")
+        raise HTTPException(403, "a build's logs are for its community's admins and developers")
     if not any(str(j.get("id")) == str(job_id) for j in b.get("jobs") or ()):
         raise HTTPException(404, "no such job in pipeline %d" % pipeline)
 
@@ -1115,10 +1126,10 @@ def _build_arch(reader, row):
 
 # --- failures -------------------------------------------------------------------
 
-async def _communities(data, community):
+async def _communities(data, community, debug=False):
     """The communities a read covers: the caller's (None = all, for an overall
-    admin), narrowed to *community* when given."""
-    mine = await _scope(data)
+    admin; with *debug*, also those they develop), narrowed to *community* when given."""
+    mine = await (_debug_scope(data) if debug else _scope(data))
     if community:
         c = community.strip().lower()
         if mine is not None and c not in mine:
@@ -1137,7 +1148,7 @@ async def list_issues(request: Request, community: str = "", package: str = "", 
     """Issues seen in the caller's communities. An issue seen in several shows
     its full counts; its occurrences (GET /ops/issues/{id}) are only theirs."""
     data = await _caller(request)
-    mine = await _communities(data, community)
+    mine = await _communities(data, community, debug=True)
     out = await run_in_threadpool(_read, failures.list_issues, communities=mine,
                                   package=package or None, limit=limit)
     return JSONResponse({"issues": out}, headers={"Cache-Control": "no-store"})
@@ -1146,7 +1157,7 @@ async def list_issues(request: Request, community: str = "", package: str = "", 
 @router.get("/ops/issues/{issue_id}")
 async def get_issue(issue_id: int, request: Request):
     data = await _caller(request)
-    mine = await _scope(data)
+    mine = await _debug_scope(data)
     out = await run_in_threadpool(_read, failures.get_issue, issue_id, communities=mine)
     if out is None:
         raise HTTPException(404, "no such issue")
@@ -1156,12 +1167,13 @@ async def get_issue(issue_id: int, request: Request):
 @router.get("/ops/failures")
 async def list_failures(request: Request, pipeline: int = 0, community: str = "",
                         limit: int = 100):
-    """Failed jobs' records: of the communities the caller administers (all, for an
-    overall admin); another community named is refused, not read."""
+    """Failed jobs' records: of the communities the caller administers or is a
+    developer of (all, for an overall admin); another community named is refused."""
     data = await _caller(request)
-    mine, admin = _reads(await _scope(data), community)
+    mine, admin = _reads(await _debug_scope(data), community)
     if community.strip() and not admin:
-        raise HTTPException(403, "%s is not an admin of %s" % (data["user"], community.strip()))
+        raise HTTPException(403, "%s is neither an admin nor a developer of %s"
+                            % (data["user"], community.strip()))
     out = await run_in_threadpool(_read, failures.list_failures, communities=mine,
                                   pipeline=pipeline or None, limit=limit)
     return JSONResponse({"failures": out}, headers={"Cache-Control": "no-store"})

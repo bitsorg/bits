@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** A community's **developers** read its jobs' logs, failures and issues, and explain its failed builds in the help chat, as its admins do, without its variables, actions or approvals: the members of a `developers` subgroup of the community's admin subgroup, or `BITS_DEVELOPERS_POLICY`; `/me` lists them as `developer_groups`.
 - **[Feature]** `GET /ops/builds?progress=1` and `/ops/builds/{pipeline}`: a running build carries its `progress` (packages started of total, the last one started, whether bits is done, when its job last reported), from the metrics its job pushes (`BITS_METRICS_URL`), so the console no longer needs GitLab commit statuses for it.
 - **[Feature]** With `--monitor`, a CI build also pushes its progress to VictoriaMetrics: `bits_build_packages_total`, `bits_build_packages_started`, `bits_build_package_started{package}` (the last one started) and, once every package is built or reused, `bits_build_packages_ended`, by `pipeline` and `ci_job`, for the console backend to show running builds' progress.
 - **[Feature]** `POST /ops/ci/logs`: a build job sends its host's journal (`journalctl -o json --all`) with its CI ID token, and the console backend writes it to VictoriaLogs (`BITS_LOGS_URL`) for overall admins, each line redacted (audit records left out) and named by the token (job, pipeline, runner) and the orchestrator's records (community); 64 MiB a job at most. Runners started on demand need no setup of their own.

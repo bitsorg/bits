@@ -51,6 +51,14 @@ has created and migrated the database. The worker has no user token, so when
 the admin policy names GitLab groups (`&group` lines or `BITS_ADMINS_GROUP`) it
 needs `BITS_ADMIN_RESOLVE_TOKEN`, and refuses to start without it.
 
+A community's **developers** read what debugging a build needs, as its admins do:
+its jobs' logs and bits logs, its failure records and issues, and explaining a failed
+build in the help chat (with the logs, without the build's variables). Nothing else:
+no actions, approvals, variables or vulnerability findings. They are the direct
+members of a `developers` subgroup of the community's subgroup in `BITS_ADMINS_GROUP`
+(`bits-admins/lcg/developers`), and `BITS_DEVELOPERS_POLICY` in the admins' format
+(`lcg @alice`, `lcg &group`); `GET /me` names their communities (`developer_groups`).
+
 Every change of state is an **action**, of a kind with a JSON schema
 (`GET /ops/actions/catalogue`). A person who administers the action's community
 requests it (`POST /ops/actions`); kinds marked `requester` are approved by

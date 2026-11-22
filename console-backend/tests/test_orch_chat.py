@@ -626,6 +626,7 @@ def _events(text):
 
 class ApiTest(_DB):
     ENV = {"GITLAB_API_URL": "https://gl/api/v4", "BITS_ADMINS_POLICY": "lcg @alice\n* @carol",
+           "BITS_DEVELOPERS_POLICY": "lcg @frank",
            "BITS_FORGE_PROJECT": "42", "BITS_CHAT_URL": "http://127.0.0.1:11434"}
 
     def setUp(self):
@@ -711,6 +712,11 @@ class ApiTest(_DB):
         self.assertIn("Non-compatible flatbuffers", self.sent[0][-1]["content"])
         self.assertEqual(self._post("dave", {"pipeline": 1}).status_code, 403)   # anyone else
         self.assertEqual(self.fetched, [1])
+        seen = []
+        real = chat.what_changed
+        with patch.object(chat, "what_changed", lambda c, b, admin: seen.append(admin) or real(c, b, admin)):
+            self.assertEqual(self._post("frank", {"pipeline": 1}).status_code, 200)   # lcg's developer
+        self.assertEqual((self.fetched, seen), ([1, 1], [False]))   # the logs, not the variables
         main.settings = config.Settings(env=dict(self.ENV, BITS_ORCH_DB=self.path,
                                                  BITS_CHAT_EXPLAIN_THINK="0"))
         self._post("carol", {"pipeline": 1})                  # an overall admin

@@ -676,16 +676,21 @@ def _resolved_policy(token):
     return authz.resolved_admin_policy(settings, token)
 
 
+def _resolved_developers(token):
+    return authz.resolved_developer_policy(settings, token)
+
+
 @app.get("/me")
 def me(request: Request):
-    """The authenticated user and their community-admin roles. 401 when there is
-    no valid session. The GitLab access token stays server-side and is never
-    returned."""
+    """The authenticated user, the communities they administer and those they are a
+    developer of. 401 when there is no valid session. The GitLab access token stays
+    server-side and is never returned."""
     data = _current(request)
     if not data:
         raise HTTPException(401, "not authenticated")
     overall, groups = authz.admin_groups(data["user"], _resolved_policy(data["token"]))
-    return {"user": data["user"], "overall_admin": overall, "admin_groups": groups}
+    return {"user": data["user"], "overall_admin": overall, "admin_groups": groups,
+            "developer_groups": authz.developer_groups(data["user"], _resolved_developers(data["token"]))}
 
 
 _MAX_BODY = 32 * 1024 * 1024   # 32 MiB cap on a submitted manifest
