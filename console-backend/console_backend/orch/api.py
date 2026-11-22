@@ -42,7 +42,7 @@
     GET  /ops/issues?community=&package=&limit=   deduplicated failures, last seen first
     GET  /ops/issues/{id}              one, with its occurrences
     GET  /ops/failures?pipeline=&community=&limit=   failed jobs' records, with excerpts
-                                       (any signed-in user, as /ops/builds)
+                                       (the admins of their community; overall admins all)
     GET  /ops/signatures               the reviewed patterns that name a cause
     GET  /ops/certifications?state=&limit=   bits-manifests certifications and their
                                        sign runs: the worker's shadow comparison
@@ -416,7 +416,7 @@ async def _scope(data):
 
 
 def _reads(mine, community):
-    """What a read of builds, failures or the queue covers, and whether as an admin.
+    """What a read of builds or the queue covers, and whether as an admin.
     Admins read their communities (*mine*; None = all), narrowed to *community*;
     any signed-in user reads the *community* named, read-only, and none without one."""
     c = community.strip().lower()
@@ -1077,9 +1077,12 @@ async def get_issue(issue_id: int, request: Request):
 @router.get("/ops/failures")
 async def list_failures(request: Request, pipeline: int = 0, community: str = "",
                         limit: int = 100):
-    """Failed jobs' records (see _reads)."""
+    """Failed jobs' records: of the communities the caller administers (all, for an
+    overall admin); another community named is refused, not read."""
     data = await _caller(request)
-    mine, _ = _reads(await _scope(data), community)
+    mine, admin = _reads(await _scope(data), community)
+    if community.strip() and not admin:
+        raise HTTPException(403, "%s is not an admin of %s" % (data["user"], community.strip()))
     out = await run_in_threadpool(_read, failures.list_failures, communities=mine,
                                   pipeline=pipeline or None, limit=limit)
     return JSONResponse({"failures": out}, headers={"Cache-Control": "no-store"})

@@ -177,10 +177,11 @@ action. Four signatures are seeded once. `BITS_ORCH_BACKFILL_DAYS` (default 0)
 reads that many days of older failed pipelines from GitLab, a page per pass,
 once. `GET /ops/issues`, `/ops/issues/{id}`, `/ops/failures` and
 `/ops/signatures` serve the record, limited to the caller's communities
-(`/ops/failures` also to any signed-in user for the community named; an
-issue seen in several shows a community admin only their own occurrences,
-counts and excerpt). A pipeline whose logs cannot be read is tried again every
-10 minutes for a day.
+(overall admins: all; another community named is refused; explaining a build
+in the help chat is for its community's admins too; an issue seen in several
+shows a community admin only their own occurrences, counts and excerpt). A
+pipeline whose logs cannot be read is tried again every 10 minutes for a day.
+Where a build failed (the job, its phase) stays on /ops/builds and the nightlies.
 
 bits-store's **problems** (its warnings and errors, `GET /_admin/problems`) are
 issues too (`orch/store_problems.py`): with bits-store's admin API configured

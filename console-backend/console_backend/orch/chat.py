@@ -673,12 +673,13 @@ async def chat(request: Request):
             raise HTTPException(404, "no such build")
         mine = await api._scope(data)
         admin = mine is None or str(b["community"]).lower() in mine
+        if not admin:   # its failures are its community's admins', as /ops/failures
+            raise HTTPException(403, "explaining a build is for the admins of its community")
     asked_in = community.strip().lower()
     seen = {"community": asked_in}
 
     def prepare():
-        # The logs as read now are for its community's admins, as its variables are:
-        # anyone else has the excerpts the orchestrator recorded.
+        # The logs as read now, for its community's admins (no one else explains a build).
         logs = fetch_logs(settings, b, stopped) if b and admin and b.get("outcome") == "failed" else None
         with api._open() as conn:
             ctx = build_context(conn, pipeline, record_chars, admin, logs) if pipeline else None
