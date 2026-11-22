@@ -677,6 +677,8 @@ class ApiTest(_DB):
         self.assertEqual(self._get("alice", "/ops/builds?pipelines=x").status_code, 400)
         self.assertEqual(self._get("alice", "/ops/builds?outcome=weird").status_code, 400)
         self.assertEqual(self.client.get("/ops/builds").status_code, 401)
+        (b,) = self._get("dave", "/ops/builds?community=testbed").json()["builds"]
+        self.assertEqual((b["sha"], [j["id"] for j in b["jobs"]], b["gl_status"]), ("abc", [10], "running"))
 
     def test_one_build_with_its_jobs_and_events(self):
         r = self._get("alice", "/ops/builds/1")

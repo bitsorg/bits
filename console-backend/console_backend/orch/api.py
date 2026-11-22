@@ -10,7 +10,7 @@
     POST /ops/actions/{id}/reject      {reason?}
     GET  /ops/events?after=&limit=&wait=   the event log (overall admins), long-polled
     GET  /ops/builds?community=&outcome=&pipelines=&limit=&progress=
-                                       build pipelines and their builds (and phases:
+                                       build pipelines, their jobs and builds (and phases:
                                        what each job spent its time on; with progress=1,
                                        running ones' progress); any signed-in user, of
                                        the community named (_reads)

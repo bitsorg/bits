@@ -486,7 +486,7 @@ def index(conn, store):
 def _pipeline_public(r, builds):
     return {"pipeline": r["id"], "community": r["community"], "name": r["name"],
             "package": r["package"], "version": r["version"], "platform": r["platform"],
-            "source": r["source"], "ref": r["ref"], "web_url": r["web_url"],
+            "source": r["source"], "ref": r["ref"], "sha": r["sha"], "web_url": r["web_url"],
             "gl_status": r["gl_status"], "outcome": r["outcome"],
             "created_at": r["created_at"], "updated_at": r["updated_at"],
             "finished_at": r["finished_at"],
@@ -497,7 +497,7 @@ def _pipeline_public(r, builds):
 
 
 def list_builds(conn, communities=None, outcome=None, pipelines=None, limit=50, build=None):
-    """Build pipelines newest first, with their builds. *communities* (lowercase)
+    """Build pipelines newest first, with their builds and jobs. *communities* (lowercase)
     None = all; *pipelines* restricts to those ids, *build* to those that published it."""
     q, args = "SELECT * FROM pipelines WHERE is_build = 1", []
     if communities is not None:
@@ -525,7 +525,7 @@ def list_builds(conn, communities=None, outcome=None, pipelines=None, limit=50, 
     for r in rows:
         b = conn.execute("SELECT * FROM builds WHERE pipeline_id = ? ORDER BY build_id",
                          (r["id"],)).fetchall()
-        out.append(_pipeline_public(r, b))
+        out.append(dict(_pipeline_public(r, b), jobs=json.loads(r["jobs"])))
     return out
 
 
