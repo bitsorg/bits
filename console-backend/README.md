@@ -92,7 +92,11 @@ the metrics its job pushes with `--monitor` (`BITS_METRICS_URL`; none when that 
 does not answer). `GET
 /ops/builds/{pipeline}/jobs/{job}/log?file=trace|bits-build.log|bits-publish.log&bytes=`
 gives the end (1 MiB, at most 4 MiB) of one of its jobs' log or bits logs, cleaned and
-redacted, to the build's community's admins; GitLab must still have the job. A build job may
+redacted, to the build's community's admins and developers; GitLab must still have the job.
+`GET /ops/monitoring?community=` serves the Monitoring tab's snapshot, which bits-console's
+push-agent writes beside VictoriaMetrics every minute (`BITS_MONITORING_SNAPSHOT`, a path;
+404 when older than 10 minutes): whole to the community's admins and developers, to anyone
+else signed in its overview, the hosts unnamed and without their history. A build job may
 send a hint (`POST /ops/ci/published|failed {pipeline}`) with a CI ID token for
 the audience `BITS_ORCH_CI_AUDIENCE` (default `bits-orchestrator`), from the
 build project on a protected ref; the worker then looks at that pipeline on

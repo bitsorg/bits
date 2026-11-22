@@ -316,6 +316,8 @@ class Settings:
         self.metrics_url = e.get("BITS_METRICS_URL", "")
         if self.metrics_url and not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?", self.metrics_url):
             raise ValueError("BITS_METRICS_URL: http(s)://host[:port], VictoriaMetrics")
+        # ... and the Monitoring tab's snapshot that push-agent writes (a path; empty: off).
+        self.monitoring_snapshot = e.get("BITS_MONITORING_SNAPSHOT", "")
         # ... and VictoriaLogs (the host journals build jobs send): its internal address.
         self.logs_url = e.get("BITS_LOGS_URL", "")
         if self.logs_url and not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?", self.logs_url):

@@ -38,6 +38,8 @@
     GET  /ops/trace?repo=&path=&build_id=   who built and approved a CVMFS path (bits trace)
     POST /ops/ci/published, /ops/ci/failed   {pipeline}: a CI job's hint to look
                                        at its pipeline now (GitLab CI ID token)
+    GET  /ops/monitoring?community=    the Monitoring tab's snapshot (push-agent's): whole for
+                                       the community's admins and developers, else its overview
     POST /ops/ci/logs                  the build job's host journal (journalctl -o json lines,
                                        its CI ID token) into VictoriaLogs (BITS_LOGS_URL)
     POST /ops/ci/store-token           a store token for the build job (its CI ID token):
@@ -111,9 +113,9 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session, store_series, store_token
 from . import (actions, approvals, build_progress, build_queue, canary, certified, certifier,
-               ci_logs, db, events, failures, hosts, kinds, nightlies, outside, phases, read_tokens,
-               reconcile, replay, sbom_history, sbom_licences, sbom_plan, sbom_scan, schedules,
-               shadow, trace, vuln_triage, watches)
+               ci_logs, db, events, failures, hosts, kinds, monitoring, nightlies, outside, phases,
+               read_tokens, reconcile, replay, sbom_history, sbom_licences, sbom_plan, sbom_scan,
+               schedules, shadow, trace, vuln_triage, watches)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -977,6 +979,23 @@ async def ci_failed(request: Request):
 
 
 _logs_sent = {}   # job id → bytes taken (one backend process), for ci_logs.JOB_BYTES
+
+
+@router.get("/ops/monitoring")
+async def monitoring_snapshot(request: Request, community: str = ""):
+    """The Monitoring tab's snapshot (orch/monitoring.py): whole for the admins and
+    developers of *community* (overall admins: always), else its overview."""
+    data = await _caller(request)
+    path = _m().settings.monitoring_snapshot
+    if not path:
+        raise HTTPException(503, "monitoring is off (BITS_MONITORING_SNAPSHOT)")
+    snap = await run_in_threadpool(monitoring.read, path)
+    if snap is None:
+        raise HTTPException(404, "no recent monitoring snapshot (push-agent)")
+    reads, c = await _debug_scope(data), community.strip().lower()
+    whole = reads is None or bool(c and c in reads)
+    return JSONResponse(snap if whole else monitoring.overview(snap),
+                        headers={"Cache-Control": "no-store"})
 
 
 @router.post("/ops/ci/logs")
