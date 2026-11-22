@@ -38,6 +38,7 @@
     GET  /ops/trace?repo=&path=&build_id=   who built and approved a CVMFS path (bits trace)
     POST /ops/ci/published, /ops/ci/failed   {pipeline}: a CI job's hint to look
                                        at its pipeline now (GitLab CI ID token)
+    GET  /ops/cvmfs-status             what is on CVMFS (the worker's cvmfs-status.json): signed in
     GET  /ops/monitoring?community=    the Monitoring tab's snapshot (push-agent's): whole for
                                        the community's admins and developers, else its overview
     POST /ops/ci/logs                  the build job's host journal (journalctl -o json lines,
@@ -113,9 +114,9 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session, store_series, store_token
 from . import (actions, approvals, build_progress, build_queue, canary, certified, certifier,
-               ci_logs, db, events, failures, hosts, kinds, monitoring, nightlies, outside, phases,
-               read_tokens, reconcile, replay, sbom_history, sbom_licences, sbom_plan, sbom_scan,
-               schedules, shadow, trace, vuln_triage, watches)
+               ci_logs, cvmfs_status, db, events, failures, hosts, kinds, monitoring, nightlies,
+               outside, phases, read_tokens, reconcile, replay, sbom_history, sbom_licences,
+               sbom_plan, sbom_scan, schedules, shadow, trace, vuln_triage, watches)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -979,6 +980,17 @@ async def ci_failed(request: Request):
 
 
 _logs_sent = {}   # job id → bytes taken (one backend process), for ci_logs.JOB_BYTES
+
+
+@router.get("/ops/cvmfs-status")
+async def get_cvmfs_status(request: Request):
+    """What is on CVMFS: the worker's cvmfs-status.json (orch/cvmfs_status.py), as
+    it last wrote it; any signed-in user."""
+    await _caller(request)
+    doc = await run_in_threadpool(_read, cvmfs_status.document)
+    if doc is None:
+        raise HTTPException(404, "the worker has not written the CVMFS status yet")
+    return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/ops/monitoring")

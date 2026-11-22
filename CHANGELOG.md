@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** `GET /ops/cvmfs-status`: the CVMFS tab's document (cvmfs-status.json) from the console backend, for anyone signed in; the worker keeps a copy of what it last wrote.
 - **[Feature]** `GET /ops/monitoring`: the Monitoring tab's snapshot from the console backend (`BITS_MONITORING_SNAPSHOT`, the file push-agent writes), whole for the community's admins and developers, an overview (hosts unnamed, no per-host history) for anyone else signed in: no GitLab registry or read token for it.
 - **[Fix]** Deleting a pipeline GitLab no longer has (one deleted before the orchestrator noticed) succeeds for its recorded community's admins, and it leaves the builds' list; it answered 502 "forge: 404".
 - **[Fix]** A pipeline deleted on GitLab leaves `/ops/builds` (the record stays: a build it published still names it): the worker asks GitLab again about each finished pipeline at most daily, and at once after a cancel, retry or delete through the backend.

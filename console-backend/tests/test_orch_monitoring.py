@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 """GET /ops/monitoring: push-agent's snapshot, whole for a community's admins and
-developers, its overview (hosts unnamed, no per-host history) for anyone signed in."""
+developers, its overview (hosts unnamed, no per-host history) for anyone signed in;
+and GET /ops/cvmfs-status, the CVMFS tab's document."""
 
 import json
 import os
@@ -63,6 +64,18 @@ class MonitoringTest(_DB):
             for name in ("pcphsft204", "load_hist", "disk_hist"):
                 self.assertNotIn(name, text)
             self.assertEqual(sorted(got["series"]["1h"]), ["prepub_testbed", "prepub_tput_hist", "ram", "step"])
+
+    def test_the_cvmfs_status_for_anyone_signed_in(self):
+        from console_backend.orch import cvmfs_status, db
+        self.assertEqual(self._get("dave", "").status_code, 200)               # (monitoring)
+        r = self.client.get("/ops/cvmfs-status", headers={"Authorization": "Bearer dave"})
+        self.assertEqual(r.status_code, 404)
+        with db.transaction(self.conn):
+            self.conn.execute("INSERT INTO kv (key, value) VALUES (?, ?)",
+                              (cvmfs_status.DOC, '{"packages": [{"package": "ROOT"}]}'))
+        r = self.client.get("/ops/cvmfs-status", headers={"Authorization": "Bearer dave"})
+        self.assertEqual(r.json()["packages"][0]["package"], "ROOT")
+        self.assertEqual(self.client.get("/ops/cvmfs-status").status_code, 401)
 
     def test_none_too_old_or_off(self):
         self.assertEqual(self.client.get("/ops/monitoring").status_code, 401)

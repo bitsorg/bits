@@ -112,6 +112,25 @@ class CvmfsStatusTest(unittest.TestCase):
         self.assertEqual(cvmfs_status.step(self.conn, forge, self.store), 1)
         self.assertEqual([p["pkg_id"] for p in forge.doc()["packages"]], ["LCG-110-2-%s" % ARCH])
 
+    def test_the_document_kept_for_the_backend(self):
+        forge = FakeForge({"packages": [{"pkg_id": "old", "published_at": "2026-01-01"}]})
+        self.assertIsNone(cvmfs_status.document(self.conn))
+        self.assertEqual(cvmfs_status.step(self.conn, forge, self.store), 0)    # the first copy
+        self.assertEqual([p["pkg_id"] for p in cvmfs_status.document(self.conn)["packages"]], ["old"])
+        forge.files.clear()                                                     # read once only
+        cvmfs_status.step(self.conn, forge, self.store)
+        self.assertEqual(len(cvmfs_status.document(self.conn)["packages"]), 1)
+        self._build(1, "b1", ["MANIFESTS/b1/a.json"])
+        cvmfs_status.step(self.conn, forge, self.store)
+        self.assertEqual(cvmfs_status.document(self.conn), forge.doc())         # as written
+
+    def test_a_registry_down_holds_up_only_the_first_copy(self):
+        forge = FakeForge()
+        forge.generic_file = lambda *a: (_ for _ in ()).throw(OSError("down"))
+        with self.assertLogs("bits_orchestrator.cvmfs_status", "WARNING"):
+            self.assertEqual(cvmfs_status.step(self.conn, forge, self.store), 0)
+        self.assertIsNone(cvmfs_status.document(self.conn))
+
     def test_an_unreadable_document_is_never_overwritten(self):
         forge = FakeForge()
         forge.files[cvmfs_status.FILE] = b"<html>"

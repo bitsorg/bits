@@ -8,7 +8,8 @@ The worker is its only writer, so a read-modify-write needs no lock. It merges
 into the document, since the database holds only the lookback window. A record
 is written for each build of a successful pipeline that published to CVMFS,
 once: a cursor on when builds were recorded or their pipeline indexed again,
-advanced after the upload."""
+advanced after the upload. The document as last written is kept in the database
+too (DOC), which the console backend serves (GET /ops/cvmfs-status)."""
 
 import json
 import logging
@@ -20,6 +21,7 @@ log = logging.getLogger("bits_orchestrator.cvmfs_status")
 
 PACKAGE, VERSION, FILE = "cvmfs-status", "latest", "cvmfs-status.json"
 CURSOR = "cvmfs_status.since"
+DOC = "cvmfs_status.doc"
 
 
 def _missing(e):
@@ -109,17 +111,33 @@ def step(conn, forge, store):
     row = conn.execute("SELECT value FROM kv WHERE key = ?", (CURSOR,)).fetchone()
     since = int(row["value"]) if row else 0
     new, newest = records(conn, store, since)
-    if new:
-        raw = forge.generic_file(PACKAGE, VERSION, FILE)
+    doc = None
+    copied = conn.execute("SELECT 1 FROM kv WHERE key = ?", (DOC,)).fetchone()
+    if new or not copied:                         # the registry's, once for the first copy
         try:
+            raw = forge.generic_file(PACKAGE, VERSION, FILE)
             doc = json.loads(raw) if raw else {}
-        except ValueError:
+        except Exception as exc:
+            if not new:                          # only the copy waits: tried again next pass
+                log.warning("%s not read for the backend's copy: %s", FILE, exc)
+                return 0
+            if not isinstance(exc, ValueError):
+                raise
             # Never overwrite a document that cannot be read: it holds the history.
             raise RuntimeError("%s in the package registry is not JSON" % FILE)
-        forge.put_generic_file(PACKAGE, VERSION, FILE,
-                               (json.dumps(merge(doc, new), indent=2) + "\n").encode())
-    if newest != since:
-        with db.transaction(conn):
-            conn.execute("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key)"
-                         " DO UPDATE SET value = excluded.value", (CURSOR, str(newest)))
+        if new:
+            doc = merge(doc, new)
+            forge.put_generic_file(PACKAGE, VERSION, FILE, (json.dumps(doc, indent=2) + "\n").encode())
+    with db.transaction(conn):
+        for key, value in ((DOC, doc is not None and json.dumps(doc)),
+                           (CURSOR, newest != since and str(newest))):
+            if value:
+                conn.execute("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key)"
+                             " DO UPDATE SET value = excluded.value", (key, value))
     return len(new)
+
+
+def document(conn):
+    """The document as the worker last wrote it, or None before it has."""
+    row = conn.execute("SELECT value FROM kv WHERE key = ?", (DOC,)).fetchone()
+    return json.loads(row["value"]) if row else None
