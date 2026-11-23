@@ -6,6 +6,7 @@ admin token per request, never through the store's public address."""
 
 import base64
 import json
+import logging
 import re
 import secrets
 import time
@@ -18,12 +19,14 @@ from . import audit, signproxy, store_token
 VIEWS = ("summary", "objects", "object", "access", "withdrawn", "gc", "gc/files", "gc/log",  # GET
          "problems", "git", "fills")
 ACTIONS = ("withdraw", "lift", "delete", "gc/plan", "gc/apply")  # PUT, a JSON object
+WORKER_ACTIONS = ("written",)                       # PUT, the orchestrator's only
 MAX_QUERY = 2048
 MAX_BODY = 4096                                     # as bits-store takes them
 AUDITED = ("binding", "sha256", "key", "etag", "id", "files", "why",  # an action's fields, audited
            "grace", "read", "reads", "keep_builds", "max")
 TOKEN_TTL = 60                                      # a token per request: a minute
 _STRAY_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
+log = logging.getLogger("bits_orchestrator.store_admin")
 
 
 class Unreachable(Exception):
@@ -88,7 +91,7 @@ def body(raw):
 def put(base, action, body, token, timeout=(5, 60)):
     """(status, JSON body) of PUT <base>/_admin/<action> with the JSON *body* (bytes):
     bits-store's answer when it took the token (200, 202, 400, 404, 409); else Unreachable."""
-    if action not in ACTIONS:
+    if action not in ACTIONS + WORKER_ACTIONS:
         raise ValueError("not an admin action: %r" % (action,))
     with requests.Session() as s:
         s.trust_env = False
@@ -162,6 +165,21 @@ def admin_token(settings, sub, caps, ttl=TOKEN_TTL):
     tok = signer.sign(sub, "admin", caps, ttl, now=now, jti=jti)
     audit.record("store_token", user=sub, group="admin", jti=jti, exp=now + ttl, principal="worker")
     return tok, jti
+
+
+def written(settings, bucket, keys, sub="admin:bits-orchestrator"):
+    """Tell bits-store that *keys* were put in *bucket* directly, so that its index takes
+    them now and its next listing sees no drift. Nothing without a store; never raises."""
+    if not settings.store_admin_configured():
+        return
+    try:
+        tok, _ = admin_token(settings, sub, [("PUT", "/_admin/written")])
+        code, body = put(settings.store_admin_url, "written",
+                         json.dumps({"bucket": bucket, "keys": list(keys)}).encode(), tok)
+        if code != 200:
+            log.warning("bits-store was not told of %s: %d %s", ", ".join(keys), code, body.get("error", ""))
+    except Exception as exc:                      # pylint: disable=broad-except
+        log.warning("bits-store was not told of %s: %s", ", ".join(keys), exc)
 
 
 def problems(settings, since, sub="admin:bits-orchestrator"):

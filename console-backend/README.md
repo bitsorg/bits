@@ -286,7 +286,9 @@ approver an admin of every group, the key policy, none being a refusal). The
 bytes are kept before they are signed, so a rerun signs the same bytes again;
 signatures are verified, and written through the store writer
 (`BITS_STORE_WRITER_AGENT_SOCKET`, a security-proxy instance only the worker
-reaches), at most `BITS_ORCH_CERTIFY_DAILY_SIGNS` a day. Manifests are valid
+reaches), at most `BITS_ORCH_CERTIFY_DAILY_SIGNS` a day; with bits-store's admin API
+configured, the worker then tells it which keys it wrote (`PUT /_admin/written`), so they
+cause no `index_drift` there. Manifests are valid
 `BITS_ORCH_CERTIFY_VALID_DAYS` (30). `GET /ops/certify` (overall admins: with
 the reasons, and why a build still signing is retried; community admins: their
 pipelines' builds) and `/ops/certifications/summary` say whether the worker owns

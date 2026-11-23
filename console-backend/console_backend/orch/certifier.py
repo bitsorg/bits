@@ -47,6 +47,7 @@ import time
 from urllib.parse import urlsplit
 
 from . import actions, certified, db, events, outside, replay, shadow
+from .. import store_admin
 
 log = logging.getLogger("bits_orchestrator.certifier")
 KIND = "certify"
@@ -684,9 +685,12 @@ def _sign_and_write(conn, settings, store, row, sign=None, writer=None):
         # The manifest first, then its signature. In between, a reader sees the
         # new manifest with the old signature, which does not verify: it fails
         # closed, never trusts other bytes.
-        writer.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
-        writer.put_object(Bucket=bucket, Key=key + ".sig", Body=json.dumps(env).encode(),
-                          ContentType="application/json")
+        try:
+            writer.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
+            writer.put_object(Bucket=bucket, Key=key + ".sig", Body=json.dumps(env).encode(),
+                              ContentType="application/json")
+        finally:                                  # half written too: bits-store looks at both
+            store_admin.written(settings, bucket, [key, key + ".sig"])
         written = db.now_ms()
     with db.transaction(conn):
         conn.execute("UPDATE certify_runs SET state = 'signed', written_ms = ?, reason = ?,"
@@ -1294,6 +1298,7 @@ def repair(conn, settings, store, writer=None):
                 else:
                     writer.put_object(Bucket=store[1], Key=key, Body=bytes(prev["manifest"]),
                                       ContentType="application/json")
+            store_admin.written(settings, store[1], [key, key + ".sig"])   # recorded too
         except Exception:                         # pylint: disable=broad-except
             log.exception("certifier: repairing the %s manifest", arch)
             continue

@@ -5,6 +5,7 @@ with a minute's admin token; bits-store's own answers passed on, its refusals 50
 
 import base64
 import hashlib
+import json
 import unittest
 from unittest import mock
 
@@ -13,7 +14,7 @@ import requests
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
-from console_backend import audit, config, main
+from console_backend import audit, config, main, store_admin
 
 USER_SEED = hashlib.sha256(b"bits-store test key 1").digest()
 ADMIN_SEED = hashlib.sha256(b"bits-store test admin key").digest()   # bits-store's vectors' admin-1
@@ -198,6 +199,26 @@ class StoreAdminTest(unittest.TestCase):
         tok = self.calls[-1][2]["Authorization"].removeprefix("Bearer ")
         jwt.decode(tok, key.public_key(), algorithms=["EdDSA"], audience="example-site/store",
                    issuer="https://bits.example.org")
+
+    def test_the_orchestrator_says_what_it_wrote(self):
+        self.answer = Answer(200, {"keys": {"M/a.json": "changed"}})
+        store_admin.written(main.settings, "b", ["M/a.json", "M/a.json.sig"])
+        url, data, headers, redirects, trust_env = self.calls[-1]
+        self.assertEqual((url, json.loads(data)), ("http://bits-store:8099/_admin/written",
+                                                   {"bucket": "b", "keys": ["M/a.json", "M/a.json.sig"]}))
+        self.assertFalse(redirects or trust_env)
+        pub = Ed25519PrivateKey.from_private_bytes(ADMIN_SEED).public_key()
+        c = jwt.decode(headers["Authorization"].removeprefix("Bearer "), pub, algorithms=["EdDSA"],
+                       audience="example-site/store", issuer="https://bits.example.org")
+        self.assertEqual((c["sub"], c["cap"]), ("admin:bits-orchestrator", [{"m": "PUT", "p": "/_admin/written"}]))
+        for answer in (Answer(404, ValueError()), Answer(500, ValueError()), requests.ConnectionError("down")):
+            self.answer = answer                                 # an older store, or none answering
+            with self.assertLogs("bits_orchestrator.store_admin", "WARNING"):
+                store_admin.written(main.settings, "b", ["M/a.json"])
+        n = len(self.calls)
+        store_admin.written(config.Settings(env=dict(ENV, BITS_STORE_ADMIN_URL="")), "b", ["M/a.json"])
+        self.assertEqual(len(self.calls), n)                     # no store: nothing asked
+        self.assertEqual(self.put("carol", "/store-admin/written", b'{"bucket": "b", "keys": ["x"]}').status_code, 404)
 
     def test_settings(self):
         for over in ({"BITS_STORE_ADMIN_URL": "ftp://bits-store"}, {"BITS_STORE_ADMIN_URL": "http://bits-store:8099/x"},

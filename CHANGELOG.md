@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** The worker tells bits-store (when its admin API is configured) which common manifests it certified or repaired, so that bits-store indexes them at once, not as `index_drift` at its next listing.
 - **[Feature]** `/ops/builds` and `/ops/builds/{pipeline}` name who queued a build the build queue started (`queued_by`), for its community's admins: the Monitoring tab's users, without GitLab.
 - **[Feature]** `GET /ops/cvmfs-status`: the CVMFS tab's document (cvmfs-status.json) from the console backend, for anyone signed in; the worker keeps a copy of what it last wrote.
 - **[Feature]** `GET /ops/monitoring`: the Monitoring tab's snapshot from the console backend (`BITS_MONITORING_SNAPSHOT`, the file push-agent writes), whole for the community's admins and developers, an overview (hosts unnamed, no per-host history) for anyone else signed in: no GitLab registry or read token for it.

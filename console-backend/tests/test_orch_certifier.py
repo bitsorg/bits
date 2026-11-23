@@ -107,6 +107,24 @@ class CertifierTest(CertifierBase):
                          ("done", "alice", "worker"))
         self.assertIn("certify.signed", self.kinds())
 
+    def test_the_store_is_told_of_the_manifest_written(self):
+        told, put = [], self.writer.put_object
+
+        def no_sig(Bucket, Key, Body, ContentType=None):
+            if Key.endswith(".sig"):
+                raise OSError("down")
+            return put(Bucket, Key, Body, ContentType)
+        self.writer.put_object = no_sig
+        self.approve()
+        keys = ["CANARY/common-manifest-el9.json", "CANARY/common-manifest-el9.json.sig"]
+        with patch.object(certifier.store_admin, "written",
+                          lambda st, b, keys: told.append((b, keys, len(self.writer.puts)))):
+            self.certify()                                      # half written: told all the same
+            self.writer.put_object = put
+            self.conn.execute("UPDATE actions SET not_before_ms = 0")
+            actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.KIND})
+        self.assertEqual(told, [("bucket", keys, 1), ("bucket", keys, 3)])   # after the puts
+
     def test_a_build_in_the_store_is_certified_while_its_pipeline_runs(self):
         self.conn.execute("UPDATE pipelines SET outcome = 'running'")    # publishing to CVMFS
         self.approve()
@@ -513,9 +531,12 @@ class NumberInPlaceTest(_StoreBase):
         self.conn.execute("UPDATE approvals SET revoked_ms = ? WHERE id = ?", (db.now_ms(), aid))
         self.conn.execute("UPDATE actions SET not_before_ms = 0")
         actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.KIND})
-        self.assertEqual(certifier.repair(self.conn, self.settings, self.deps.store(),
-                                          self.writer), 1)
+        told = []
+        with patch.object(certifier.store_admin, "written", lambda st, b, keys: told.append(keys)):
+            self.assertEqual(certifier.repair(self.conn, self.settings, self.deps.store(),
+                                              self.writer), 1)
         key = "%s-el9.json" % certifier.write_prefix(self.settings)
+        self.assertEqual(told, [[key, key + ".sig"]])          # the manifest put back
         self.assertEqual(trust.verify_bytes(self.s3.docs[key], json.loads(
             self.s3.docs[key + ".sig"]), self.trusted), self.kid)
         self.assertEqual(self.written(), before)               # without b3
