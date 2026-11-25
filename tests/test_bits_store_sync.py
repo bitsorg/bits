@@ -391,6 +391,17 @@ class BitsStoreWriteTest(StandIn):
   def marker(self, rev="2"):
     return "MANIFESTS/rev-index/%s/zlib/v1.3-%s" % (ARCH, rev)
 
+  def test_a_revision_is_reserved_once(self):
+    w = self.writer()
+    self.assertEqual(w.claim_rev_marker("zlib", "v1.3", "2", ARCH, H1), H1)   # written
+    self.assertEqual(w.claim_rev_marker("zlib", "v1.3", "2", ARCH, H1), H1)   # ours already
+    self.assertEqual(w.claim_rev_marker("zlib", "v1.3", "2", ARCH, H2), H1)   # another's
+    self.assertEqual(Store.markers, {self.marker(): H1})
+    self.assertIsNone(self.store().claim_rev_marker("zlib", "v1.3", "3", ARCH, H1))   # not a writer
+    spec = self.built()                     # the upload's own marker write agrees with it
+    w.upload_symlinks_and_tarball(spec)
+    self.assertIn(H1, Store.builds)
+
   def test_the_marker_then_the_build(self):
     spec = self.built()
     self.writer().upload_symlinks_and_tarball(spec)

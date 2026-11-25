@@ -372,6 +372,14 @@ class BitsStoreSync(RemoteSync):
       info("%s: kept the stored build, uploaded by %s", name, spec["store_tarball_by"])
     return None
 
+  def claim_rev_marker(self, package, version, revision, arch, pkg_hash):
+    if not self.writeStore:
+      return None
+    key = rev_index.marker_key(arch, package, version, revision)
+    if self._upload("%s/%s" % (self.root, key), data=pkg_hash.encode()):
+      return pkg_hash                  # written once: bits-store refuses a second writer
+    return self.read_rev_markers(package, version, arch).get(revision)
+
   def write_rev_marker(self, spec, arch):
     """This build's write-once revision marker; one taken by another hash stops a
     fixed revision label, as with the other stores."""

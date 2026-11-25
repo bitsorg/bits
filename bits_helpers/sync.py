@@ -516,6 +516,11 @@ class RemoteSync:
     """Who uploaded the stored build of (arch, hash), as the store says, or None."""
     return None
 
+  def claim_rev_marker(self, package, version, revision, arch, pkg_hash):
+    """Write the revision marker for *pkg_hash* unless one exists; the hash the marker
+    then holds, or None when this store keeps none or it cannot be read."""
+    return None
+
   def writestore_has_tarball(self, spec, architecture=None):
     """True iff *spec*'s content tarball already exists in the WRITE store.
 
@@ -634,6 +639,14 @@ class MultiRemoteSync(RemoteSync):
 
   def writer_of(self, arch, pkg_hash):
     return next((v for v in (r.writer_of(arch, pkg_hash) for r in self.readers + self.writers) if v), None)
+
+  def claim_rev_marker(self, package, version, revision, arch, pkg_hash):
+    # In every write store: one whose marker names another hash takes the number.
+    held = [w.claim_rev_marker(package, version, revision, arch, pkg_hash) for w in self.writers]
+    others = [h for h in held if h is not None and h != pkg_hash]
+    if others:
+      return others[0]
+    return pkg_hash if any(h is not None for h in held) else None
 
   def writestore_has_tarball(self, spec, architecture=None):
     # Existence in EVERY write store — the readers are irrelevant to uploading.
@@ -1545,6 +1558,26 @@ class Boto3RemoteSync(RemoteSync):
     dieOnError(bool(fixed and recorded) and recorded != spec["hash"],
                rev_index.fixed_label_taken(spec["package"], spec["version"], rev,
                                            recorded, spec["hash"]))
+
+  def claim_rev_marker(self, package, version, revision, arch, pkg_hash):
+    if not self.writeStore:
+      return None
+    from bits_helpers import rev_index
+    key = rev_index.marker_key(arch, package, version, revision)
+    if not self._s3_key_exists(key):
+      from botocore.exceptions import ClientError, ParamValidationError
+      put = dict(Bucket=self.writeStore, Key=key, Body=pkg_hash.encode("utf-8"))
+      try:                     # write-once (If-None-Match) where the store has it
+        self.s3.put_object(IfNoneMatch="*", **put)
+      except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") not in ("PreconditionFailed", "412",
+                                                              "ConditionalRequestConflict"):
+          self.s3.put_object(**put)
+      except ParamValidationError:     # a botocore without it
+        self.s3.put_object(**put)
+    # Read back: without write-once, of two builds writing at once the last one wins.
+    return self.s3.get_object(Bucket=self.writeStore, Key=key)["Body"] \
+               .read().decode("utf-8", "replace").strip()
 
   def read_rev_markers(self, package, version, arch):
     """Return ``{revision: hash}`` from the rev-index markers for (arch, pkg,

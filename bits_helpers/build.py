@@ -661,6 +661,27 @@ def _revision_index_records(spec, spec_arch, args, work_dir, sync_helper):
   return rev_index.merge_records(store_recs + manifest_recs, markers)
 
 
+def reserve_revision(spec, arch, sync_helper, busy, attempts=20):
+  """The revision just picked, or the next free one: its store marker is written now,
+  before the build, so a build of another hash running meanwhile takes another number.
+  A store that cannot be asked keeps the number (the upload records it, as before)."""
+  first = rev = int(spec["revision"])
+  mine = spec["remote_revision_hash"]
+  for _ in range(attempts):
+    try:
+      holder = sync_helper.claim_rev_marker(spec["package"], spec["version"], str(rev), arch, mine)
+    except Exception as exc:          # pylint: disable=broad-except
+      warning("%s: could not reserve revision %d in the store (%s)", spec["package"], rev, exc)
+      return str(rev)
+    if holder is None or holder == mine:
+      return str(rev)
+    debug("%s: revision %d was taken by %s meanwhile", spec["package"], rev, holder)
+    busy.add(rev)
+    rev = min(set(range(1, max(busy) + 2)) - busy)
+  warning("%s: no free revision to reserve after %d tries; using %d", spec["package"], attempts, first)
+  return str(first)
+
+
 def _fold_revision_records(records, spec, candidate, busy_revisions, revision_prefix):
   """Fold rev-index ``{revision: hash}`` records into the revision counter state.
 
@@ -2728,6 +2749,8 @@ def build_one_package(p, ctx):
       spec["revision"] = revisionPrefix + str(
         min(set(range(1, max(busyRevisions) + 2)) - busyRevisions)
         if busyRevisions else 1)
+      if not revisionPrefix:          # a write store: take the number in it before building
+        spec["revision"] = reserve_revision(spec, spec_arch, syncHelper, busyRevisions)
     else:
       spec["revision"] = revision
       # Remember what hash we're actually using.
