@@ -335,6 +335,7 @@ else
   # B1 FIX: double-quote all path variables so that a WORK_DIR or INSTALLROOT
   # containing spaces does not cause word-splitting — especially dangerous on
   # 'rm -rf' lines which could otherwise delete multiple unintended paths.
+  _bits_reset "$WORK_DIR/TMP/$PKGHASH"     # an interrupted unpack's files are not this one's
   mkdir -p "$WORK_DIR/TMP/$PKGHASH"
   # Tar-slip guard: a recalled store tarball may be attacker-controlled when
   # signed reuse is disabled. Refuse member names that are absolute or contain
