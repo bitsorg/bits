@@ -314,8 +314,9 @@ def _resolve_source_entry(entry, architecture):
 
   # --- Inline bash evaluation: $(bash_expr) ---
   if entry.startswith("$(") and entry.endswith(")"):
+    from bits_helpers.cmd import credential_free_env
     expr = entry[2:-1]
-    env = dict(os.environ)
+    env = credential_free_env()     # recipe code, on the host: no tokens or keys
     env["ARCHITECTURE"] = architecture
     try:
       result = subprocess.check_output(
