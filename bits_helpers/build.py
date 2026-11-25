@@ -3117,9 +3117,8 @@ def build_one_package(p, ctx):
 
   # The actual build script.
   
-  fp = open(dirname(realpath(__file__))+'/build_template.sh')
-  cmd_raw = fp.read()
-  fp.close()
+  with open(dirname(realpath(__file__)) + "/build_template.sh") as fp:
+    cmd_raw = fp.read()
 
   container_workDir = ""
   cachedTarball = spec["cachedTarball"]
@@ -4720,8 +4719,7 @@ def doBuild(args, parser):
     _prefetch_workers = min(max(int(getattr(args, "builders", 1)), 1), 4)
   _prefetch_executor, _prefetch_futures = None, []
   _prefetch_order = prefetch_wanted(buildOrder, _states)
-  if _prefetch_workers > 0 and _prefetch_order and not isinstance(syncHelper,
-      __import__("bits_helpers.sync", fromlist=["NoRemoteSync"]).NoRemoteSync):
+  if _prefetch_workers > 0 and _prefetch_order and not isinstance(syncHelper, NoRemoteSync):
     debug("Starting %d prefetch worker(s)", _prefetch_workers)
     _prefetch_executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=_prefetch_workers,
