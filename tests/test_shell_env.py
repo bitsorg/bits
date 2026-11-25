@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import unittest
 
-from bits_helpers.build import shell_env
+from bits_helpers.build import hooks_env, shell_env
 
 
 class ShellEnvTest(unittest.TestCase):
@@ -26,6 +26,12 @@ class ShellEnvTest(unittest.TestCase):
 
   def test_docker_options(self):
     self.assertEqual(shell_env([("A", "1"), ("B", "x y")], "-e "), "-e A=1 -e 'B=x y'")
+
+  def test_a_list_of_hooks_is_their_names_with_commas(self):
+    env = hooks_env({"POST_INSTALL": ["rpm", "sbom"], "SYMLINK_STAGE": "a, b", "PRE": None})
+    self.assertEqual(env, [("POST_INSTALL_HOOKS", "rpm,sbom"), ("SYMLINK_STAGE_HOOKS", "a,b"),
+                           ("PRE_HOOKS", "")])
+    self.assertEqual(shell_env(env[:1], "-e "), "-e POST_INSTALL_HOOKS=rpm,sbom")
 
 
 if __name__ == "__main__":

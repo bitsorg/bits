@@ -113,6 +113,14 @@ def pkg_to_shell_id(name: str) -> str:
 
 
 
+def hook_names(value):
+  """The hook names of a recipe's hook: entry: "a,b", a YAML list [a, b], or empty."""
+  if value is None:
+    return []
+  items = value.split(",") if isinstance(value, str) else value
+  return [n for n in (str(i).replace(" ", "") for i in items) if n]
+
+
 def ver_rev(spec):
   """Return the version-revision directory segment for *spec*.
 

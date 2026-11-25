@@ -18,7 +18,7 @@ import tempfile
 from bits_helpers.arch import effective_arch
 from bits_helpers.log import debug
 from bits_helpers.utilities import pkg_to_shell_id
-from bits_helpers.utilities import is_virtual_package
+from bits_helpers.utilities import hook_names, is_virtual_package
 
 
 SYMLINK_STAGE_HOOK = "SYMLINK_STAGE"   # hooks run on a staged package; not in its hash
@@ -28,7 +28,7 @@ def stage_hook_scripts(spec, config_dir):
     """The scripts of *spec*'s ``hook: {SYMLINK_STAGE: name[,name]}``, found as
     the build finds its hooks: hooks/<name> in the recipe repositories."""
     hooks = spec.get("hook") if isinstance(spec.get("hook"), dict) else {}
-    names = [n for n in str(hooks.get(SYMLINK_STAGE_HOOK) or "").replace(" ", "").split(",") if n]
+    names = hook_names(hooks.get(SYMLINK_STAGE_HOOK))
     if not names:
         return []
     config_dir = os.path.abspath(config_dir or ".")

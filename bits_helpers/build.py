@@ -20,7 +20,7 @@ from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.sandbox import wrap_build_command
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort
-from bits_helpers.utilities import resolve_store_path, resolve_links_path, ver_rev, is_virtual_package
+from bits_helpers.utilities import resolve_store_path, resolve_links_path, ver_rev, is_virtual_package, hook_names
 from bits_helpers.arch import detectArch, effective_arch, SHARED_ARCH, compute_combined_arch, compute_own_hash_arch
 from bits_helpers.defaults import parseDefaults, readDefaults
 from bits_helpers.matchers import resolve_variables, exported_flavours
@@ -2366,6 +2366,11 @@ def hook_params_exports(package, params):
   return "\n  ".join("export %s=%s" % (k, quote(str(v))) for k, v in params.items())
 
 
+def hooks_env(hooks):
+  """The <TYPE>_HOOKS variables of a recipe's hook: {type: "a,b"}, run_hooks splits on commas."""
+  return [(name + "_HOOKS", ",".join(hook_names(value))) for name, value in hooks.items()]
+
+
 def host_dirs_read_only(work_dir, container_work_dir, reference_sources):
   """Read-only overlays of what the host uses in the work dir after a build: its git
   repositories (the mirrors, REPOS/, a CI job's recipe clones in jobs/), where it
@@ -3307,8 +3312,7 @@ def build_one_package(p, ctx):
   else:
     buildEnvironment.append(("PATCH_COUNT", "0"))
   # Add resolved hooks as environment variables (POST_INSTALL -> POST_INSTALL_HOOKS)
-  for hook_name, hook_value in spec.get("hook", {}).items():
-    buildEnvironment.append((hook_name + "_HOOKS", hook_value))
+  buildEnvironment.extend(hooks_env(spec.get("hook", {})))
 
   # pip's index: the site's bits-store /pypi when it answers (before -e, which wins)
   buildEnvironment += pypi_index.build_environment(bool(getattr(args, "docker", False)),
@@ -3421,7 +3425,6 @@ def build_one_package(p, ctx):
                     if "reference" in spec else ""),
     )
   else:
-    buildEnvironment = ([key, (val if isinstance(val, str) else "_".join(val))] for key, val in buildEnvironment)
     env_vars = shell_env(buildEnvironment)
     build_command =  "env -- {} {} -e -x {}/build.sh 2>&1".format(env_vars, BASH, quote(scriptDir))
 

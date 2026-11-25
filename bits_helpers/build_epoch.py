@@ -50,7 +50,8 @@ COVERED = (
 # --confine-work-dir: its own trees emptied, its install copied, links by the host;
 # nothing changes without it and tarballs are the same, so BUILD_EPOCH is unchanged.
 # The packed-here record (PACKED/) is written beside, not into, the tarball: unchanged.
-COVERED_SHA256 = "861219028282cbe0b9e7801e9a091413f6b70af4a46d856de9703d0954db691a"
+# A SYMLINK_STAGE hook given as a YAML list is found; a string one as before: unchanged.
+COVERED_SHA256 = "83f225012846feb9631e71f17d642dc1ee97c13aec150086126d06e9dd5f58c2"
 
 
 def covered_sha256(root=None):

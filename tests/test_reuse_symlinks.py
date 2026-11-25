@@ -558,6 +558,9 @@ class ReuseSymlinksTest(unittest.TestCase):
     def test_stage_hooks_are_found_as_build_hooks_are(self):
         self.assertEqual(stage_hook_scripts(self.spec, "/nowhere"), [])
         self.assertEqual(self.scram_hook(), [str(self.root / "cms.bits/hooks/scram-project")])
+        listed = dict(self.spec, hook={"SYMLINK_STAGE": ["scram-project", "scram-project"]})
+        self.assertEqual(stage_hook_scripts(listed, self.root / "cms.bits"),
+                         [str(self.root / "cms.bits/hooks/scram-project")] * 2)   # a YAML list
         with patch.dict(os.environ, {"BITS_PATH": "other"}):
             with self.assertRaisesRegex(ValueError, "missing is in no hooks/ of other, cms"):
                 stage_hook_scripts(dict(self.spec, hook={"SYMLINK_STAGE": "missing"}),

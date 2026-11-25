@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A `hook:` given as a YAML list (`POST_INSTALL: [rpm, sbom]`) runs its hooks as `rpm,sbom` would, and an empty one runs none: bits ran a hook named `rpm_sbom` (with `--docker` it stopped with a TypeError), did not find a `SYMLINK_STAGE` list, and stopped on an empty hook without `--docker`.
 - **[Fix]** A recipe's `hook_params` reach its hooks as written, no longer expanded: a value with `"` broke the build script, and `$` or a backquote in one was expanded. A name that is not a shell variable name is refused.
 - **[Fix]** A build's environment reaches the shell quoted whole, name and value: a recipe's `hook:` name is part of a name, and one with `;` ran a command on the host before the container started (`--docker`).
 - **[Improvement]** A failed build's report reads only the last 16 MiB of its log for the excerpt; it read the whole log into memory, which can be gigabytes, once per failure with `--builders`.
