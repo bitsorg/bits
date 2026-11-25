@@ -113,6 +113,19 @@ def pkg_to_shell_id(name: str) -> str:
 
 
 
+def cli_environment(entries):
+  """`-e` bindings: the NAME=VALUE pairs, and the NAMEs given alone, which the build
+  script gets from bits' environment as `docker run -e NAME` does: never on a command line."""
+  pairs, names = [], []
+  for entry in entries:
+    name, eq, value = entry.partition("=")
+    if eq:
+      pairs.append((name, value))
+    else:
+      names.append(name)
+  return pairs, names
+
+
 def hook_names(value):
   """The hook names of a recipe's hook: entry: "a,b", a YAML list [a, b], or empty."""
   if value is None:

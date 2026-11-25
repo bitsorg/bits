@@ -21,6 +21,7 @@ from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script
 from bits_helpers.sandbox import wrap_build_command
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, ver_rev, is_virtual_package, hook_names
+from bits_helpers.utilities import cli_environment
 from bits_helpers.arch import detectArch, effective_arch, SHARED_ARCH, compute_combined_arch, compute_own_hash_arch
 from bits_helpers.defaults import parseDefaults, readDefaults
 from bits_helpers.matchers import resolve_variables, exported_flavours
@@ -3334,7 +3335,8 @@ def build_one_package(p, ctx):
       buildEnvironment.append(("BITS_PIP_PIN", "%(file)s %(sha256)s" % spec["pip_pin"]))
 
   # Add the extra environment as passed from the command line.
-  buildEnvironment += [e.partition('=')[::2] for e in args.environment]
+  _cli_env, _cli_names = cli_environment(args.environment)
+  buildEnvironment += _cli_env
 
   # Add the computed track_env environment
   buildEnvironment += [(key, value) for key, value in spec.get("track_env", {}).items()]
@@ -3420,7 +3422,7 @@ def build_one_package(p, ctx):
                               abspath(args.configDir), scriptDir, bits_dir, spec["_own_paths"]),
       container_workDir=container_workDir,
       extraArgs=" ".join(map(quote, args.docker_extra_args)),
-      additionalEnv=shell_env(buildEnvironment, "-e "),
+      additionalEnv=" ".join([shell_env(buildEnvironment, "-e ")] + ["-e " + quote(n) for n in _cli_names]),
       # Used e.g. by O2DPG-sim-tests to find the O2DPG repository.
       develVolumes=" ".join(
         '-v "$PWD/$(readlink {pkg} || echo {pkg})":/{pkg}:rw'.format(pkg=quote(spec["package"]))

@@ -622,15 +622,17 @@ def wrap_build_command(
         # The workdir is mounted at the same absolute path so that all embedded
         # paths (scriptDir, WORK_DIR_OVERRIDE, etc.) resolve correctly inside
         # the container.
+        from bits_helpers.utilities import cli_environment   # -e NAME: podman takes it here
         return (
             "podman run --rm --userns=keep-id "
             "-v {wd}:{wd} "
-            "{net}"
+            "{net}{passed}"
             "{img} "
             "/bin/bash -c {cmd}"
         ).format(
             wd=quote(workdir),
             net=network_flag,
+            passed="".join("-e %s " % quote(n) for n in cli_environment(getattr(opts, "environment", []))[1]),
             img=quote(image),
             cmd=quote(build_command),
         )

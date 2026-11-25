@@ -250,6 +250,14 @@ class WrapPodmanLocalTests(unittest.TestCase):
         self.assertIn("-v /sw:/sw", result)
 
     @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
+    def test_a_name_passed_alone_goes_by_name(self, _r):
+        opts = _opts(sandbox="podman", sandbox_image="myimage")
+        opts.environment = ["JALIEN_TOKEN_KEY", "A=1"]
+        result = wrap_build_command(LOCAL_CMD, _spec(), opts, workdir="/sw")
+        self.assertIn(" -e JALIEN_TOKEN_KEY myimage ", result)
+        self.assertNotIn("-e A=1", result)          # a pair is in the build command already
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
     def test_network_allowed_when_off(self, _r):
         result = wrap_build_command(
             LOCAL_CMD, _spec(sandbox_network="off"),

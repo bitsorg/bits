@@ -1549,7 +1549,8 @@ def add_build_arguments(subparsers, ctx):
                                   "where there is one), source (each from its sdist) or all (its build "
                                   "tools too). Default: the defaults' system.pip_build, else wheel."))
   build_parser.add_argument("-e", dest="environment", action="append", default=[],
-                            help="KEY=VALUE binding to add to the build environment. May be specified multiple times.")
+                            help=("KEY=VALUE binding to add to the build environment, or KEY alone: the build script "
+                                  "gets its value here, as with docker run -e (not on a command line). Repeatable."))
   build_parser.add_argument("-j", "--jobs", dest="jobs", type=int, default=multiprocessing.cpu_count(),
                             help=("The number of parallel compilation processes to run. "
                                   "Default for this system: %(default)d."))

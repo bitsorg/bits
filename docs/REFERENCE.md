@@ -1094,7 +1094,7 @@ Which packages, for which platform and defaults profiles, with which flavours an
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected, or the `architecture:` template from defaults (see [The `architecture:` template](#architecture-string-and-the-architecture-template)). An explicit value here overrides the template. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `--day DAY` | Value of the `{day}` nightly CVMFS path slot (e.g. `Fri`). Default: the UTC weekday, filled in only when a template uses `{day}`; `''` collapses the slot. Layout only — never hashed. See [bits store / bits cvmfs](#bits-store--bits-cvmfs-admin--ci-groups). |
-| `-e KEY=VALUE` | Extra environment variable binding (repeatable). |
+| `-e KEY=VALUE` | Extra environment variable binding (repeatable); `-e KEY` alone hands the build script KEY's value from bits' environment, as `docker run -e KEY` does, without it appearing on a command line. |
 | `--force-rebuild PACKAGE` | Always rebuild PACKAGE from scratch (repeatable; same as `force_rebuild: true` in its recipe). |
 | `--only-deps` | Build only the dependencies, not the requested package (e.g. to warm a cache). |
 | `--annotate PACKAGE=COMMENT` | Store COMMENT in PACKAGE's build metadata when it is built or downloaded in this run. |
