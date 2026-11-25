@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 
 from bits_helpers import fetch_cache
 
@@ -151,6 +152,49 @@ class FetchCacheTest(unittest.TestCase):
     state = fetch_cache.restore(spec(), self.store, self.work, "cms", ARCH)
     self.assertEqual((os.listdir(self.cache()), list(state.files)), ([], ["a"]))
     self.assertFalse(os.path.exists(os.path.join(self.work, "escape")))
+
+  def test_a_build_cannot_list_files_out_of_its_cache(self):
+    secret = os.path.join(self.work, "secret")
+    with open(secret, "wb") as f:
+      f.write(b"key")
+    sha = hashlib.sha256(b"key").hexdigest()
+    buildroot = os.path.join(self.work, "BUILD")
+    os.makedirs(buildroot)
+    listing = os.path.join(buildroot, fetch_cache.LISTING)
+    for planted in ("link", "dir/file"):                 # a link to it, or a linked directory
+      with self.subTest(planted=planted):
+        shutil.rmtree(os.path.join(self.work, "FETCH_CACHE"), True)
+        os.makedirs(self.cache())
+        if planted == "link":
+          os.symlink(secret, os.path.join(self.cache(), "link"))
+        else:
+          os.symlink(self.work, os.path.join(self.cache(), "dir"))
+          shutil.copyfile(secret, os.path.join(self.work, "file"))
+        with open(listing, "w") as f:                    # written by the build, so its word
+          f.write("%s  ./%s\n" % (sha, planted))
+        state = fetch_cache.restore(spec(), self.store, self.work, "cms", ARCH)
+        with self.assertLogs("bits", "WARNING"):
+          fetch_cache.save(spec(), self.store, self.work, "cms", ARCH, state, listing)
+        self.assertEqual(self.store.objects, {})
+    with open(os.path.join(self.cache(), "a"), "wb") as f:   # listed with another file's sha256
+      f.write(b"x")
+    with open(listing, "w") as f:
+      f.write("%s  ./a\n" % sha)
+    fetch_cache.save(spec(), self.store, self.work, "cms", ARCH,
+                     fetch_cache.restore(spec(), self.store, self.work, "cms", ARCH), listing)
+    self.assertEqual(self.store.objects, {})
+
+  def test_files_restored_from_the_store_are_not_hashed_again(self):
+    self._build(spec(), {"a": b"1"})
+    shutil.rmtree(os.path.join(self.work, "FETCH_CACHE"))
+    hashed = []
+    real = fetch_cache._sha256
+    with unittest.mock.patch.object(fetch_cache, "_sha256",
+                                    side_effect=lambda p: hashed.append(os.path.basename(p)) or real(p)):
+      self._build(spec(), {"b": b"2"})               # "a" restored, "b" new but not in the list
+      self._build(spec("2.17"), {"c": b"3"})         # a first save: its file is checked
+    self.assertNotIn("a", hashed)
+    self.assertIn("c", hashed)
 
   def test_no_write_store_or_no_redistribution_saves_nothing(self):
     self.store = Store(write=False)

@@ -88,6 +88,13 @@ def _inside(directory, path):
   return os.path.realpath(path).startswith(top + os.sep)
 
 
+def _listed_file(directory, rel, sha):
+  """Is *rel* a file of the cache itself (not a link, not reached out of it) with *sha*?"""
+  path = os.path.join(directory, rel)
+  return (not os.path.islink(path) and os.path.isfile(path) and _inside(directory, path)
+          and _sha256(path) == sha)
+
+
 def _scratch(work_dir):
   """A temporary directory next to the caches (same filesystem, not listed)."""
   top = os.path.join(work_dir, "FETCH_CACHE")
@@ -198,6 +205,13 @@ def save(spec, sync_helper, work_dir, name, arch, state, listing):
       warning("Fetch cache of %s %s: %d files the build downloaded are not in it (its list "
               "is written once per version and architecture): %s", spec["package"],
               spec["version"], len(extra), ", ".join(extra[:5]) + (", ..." if len(extra) > 5 else ""))
+    # The list is the build's word: each file to upload must be its own and as listed.
+    bad = [rel for rel, sha in sorted(files.items()) if current.get(rel) == sha
+           and sha not in state.confirmed and not _listed_file(directory, rel, sha)]
+    if bad:
+      warning("Fetch cache of %s not saved: %s %s a link, outside the cache or not as listed",
+              spec["package"], ", ".join(bad[:5]), "is" if len(bad) == 1 else "are")
+      return
     with _scratch(work_dir) as tmp:
       done = set(state.confirmed)
       for rel, sha in sorted(files.items()):
