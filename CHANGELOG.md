@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Improvement]** bits warns about a signed manifest without `expires`, once per manifest and run: where no sequence is remembered, an older signed copy put back would be accepted. `bits certify` writes none unless given `--valid-days` (the orchestrator writes 30 days). REFERENCE says to keep `$BITS_TRUST_SEQUENCE_STATE` on runners with a fresh home.
 - **[Improvement]** A reused package's installed `.meta.json` keeps who built it: the tarball's own record is added as `origin` (this run's record stays, as before). Left out when the tarball has none bits can read.
 - **[Fix]** The HTTP and `b3://` stores download the object named as the package's tarball (`<pkg>-<version>-<rev>.<arch>.tar.gz`), as bits-store does: they took the first object listed under the hash, whatever its name.
 - **[Fix]** A `--symlink-packages-from` stage whose marker was cut short (bits killed while writing it) is staged again: the build stopped with "Cannot symlink package" on every run.

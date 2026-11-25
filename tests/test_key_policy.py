@@ -55,7 +55,7 @@ class KeyPolicyDropDiagnosticTest(unittest.TestCase):
         tmp = tempfile.mkdtemp()
         path = os.path.join(tmp, "common.json")
         with open(path, "w") as fh:
-            json.dump({"packages": [
+            json.dump({"expires": "2999-01-01T00:00:00Z", "packages": [
                 {"group": group, "hash": "h1", "tarball_sha256": "sha256:aa"}]}, fh)
         with open(path + ".sig", "w") as fh:          # verify_bytes is patched
             json.dump({}, fh)

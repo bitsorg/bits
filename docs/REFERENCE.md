@@ -273,7 +273,10 @@ Reuse from the remote archive (tier 3) is controlled by these `bits build` optio
   a numbered manifest (`sequence`, as the orchestrator writes them) is checked
   against the highest number this node has verified for its issuer and
   architecture (`~/.bits/trust-sequence.json`, or `$BITS_TRUST_SEQUENCE_STATE`):
-  an older one put back is refused.
+  an older one put back is refused. On a runner whose home is fresh for every job
+  (docker or Kubernetes executors), point `$BITS_TRUST_SEQUENCE_STATE` at a kept
+  directory; without that only `expires` bounds a rollback, and bits warns about a
+  manifest that has none.
 - `--trust-groups G1,G2,…` — scope reuse by group. The signed common manifest may
   tag each entry with a `group`; with `--trust-groups` a consumer trusts only
   those groups plus the always-trusted `common` base (untagged entries count as

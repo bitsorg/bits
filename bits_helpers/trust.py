@@ -467,6 +467,9 @@ def trusted_object_index(manifest_path, sig_path=None, dirs=None, accept_groups=
   return kid, index
 
 
+_NO_EXPIRY_WARNED = set()
+
+
 def _verified_entries(manifest_path, sig_path, dirs, accept_groups, now):
   """Verify a signed manifest and return ``(key_id, [accepted package entries])``.
 
@@ -494,6 +497,13 @@ def _verified_entries(manifest_path, sig_path, dirs, accept_groups, now):
     return None, []
   if is_expired(data, now):
     return None, []
+  if not data.get("expires") and manifest_path not in _NO_EXPIRY_WARNED:
+    _NO_EXPIRY_WARNED.add(manifest_path)       # once per run: a node without a sequence takes any copy
+    from bits_helpers.log import warning
+    warning("trust: %s never expires: where no sequence is remembered (a fresh home, see "
+            "BITS_TRUST_SEQUENCE_STATE) an older signed copy put back is accepted. "
+            "Sign it with a validity period (bits certify --valid-days).",
+            os.path.basename(manifest_path))
   rolled_back = check_sequence(data, raw, kid)
   if rolled_back:
     from bits_helpers.log import warning

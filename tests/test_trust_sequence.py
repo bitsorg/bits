@@ -51,12 +51,23 @@ class SequenceTest(unittest.TestCase):
     def trusted(self, path):
         return trust.trusted_index(path)[0] is not None
 
+    def test_a_manifest_that_never_expires_is_warned_about_once(self):
+        path = self.manifest("forever", 1)
+        with self.assertLogs("bits", "WARNING") as logs:
+            self.assertTrue(self.trusted(path))
+            self.assertTrue(self.trusted(path))
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("forever never expires", logs.output[0])
+        with mock.patch("bits_helpers.log.warning") as warned:
+            self.assertTrue(self.trusted(self.manifest("dated", 2, expires="2999-01-01T00:00:00Z")))
+        self.assertFalse(warned.called)
+
     def test_a_node_never_goes_back(self):
         self.assertTrue(self.trusted(self.manifest("m1", 1)))
         self.assertTrue(self.trusted(self.manifest("m3", 3, hashes=("h1", "h3"))))
         with self.assertLogs("bits", "WARNING") as logs:
             self.assertFalse(self.trusted(self.manifest("m2", 2)))   # put back
-        self.assertIn("older than the 3", logs.output[0])
+        self.assertTrue(any("older than the 3" in line for line in logs.output), logs.output)
         self.assertTrue(self.trusted(os.path.join(self.tmp, "m3")))  # the same one again
 
     def test_two_manifests_under_one_number(self):
