@@ -2353,6 +2353,12 @@ def make_own_paths(paths, work_dir):
     makedirs(p, exist_ok=True)
 
 
+def shell_env(env, option=""):
+  """*env*'s (name, value) pairs as shell words, each quoted whole after *option*:
+  a recipe's hook name is part of a name, and the command runs in the host's shell."""
+  return " ".join(option + quote("%s=%s" % (name, value)) for name, value in env)
+
+
 def host_dirs_read_only(work_dir, container_work_dir, reference_sources):
   """Read-only overlays of what the host uses in the work dir after a build: its git
   repositories (the mirrors, REPOS/, a CI job's recipe clones in jobs/), where it
@@ -3397,8 +3403,7 @@ def build_one_package(p, ctx):
                               abspath(args.configDir), scriptDir, bits_dir, spec["_own_paths"]),
       container_workDir=container_workDir,
       extraArgs=" ".join(map(quote, args.docker_extra_args)),
-      additionalEnv=" ".join(
-        f"-e {var}={quote(value)}" for var, value in buildEnvironment),
+      additionalEnv=shell_env(buildEnvironment, "-e "),
       # Used e.g. by O2DPG-sim-tests to find the O2DPG repository.
       develVolumes=" ".join(
         '-v "$PWD/$(readlink {pkg} || echo {pkg})":/{pkg}:rw'.format(pkg=quote(spec["package"]))
@@ -3412,8 +3417,8 @@ def build_one_package(p, ctx):
     )
   else:
     buildEnvironment = ([key, (val if isinstance(val, str) else "_".join(val))] for key, val in buildEnvironment)
-    env_vars = " ".join(["{}={}".format(key, quote(val)) for key, val in buildEnvironment])
-    build_command =  "env {} {} -e -x {}/build.sh 2>&1".format(env_vars, BASH, quote(scriptDir))
+    env_vars = shell_env(buildEnvironment)
+    build_command =  "env -- {} {} -e -x {}/build.sh 2>&1".format(env_vars, BASH, quote(scriptDir))
 
   # Warn when cross-compiling (QEMU) with sandboxing enabled: nested podman
   # inside a QEMU-emulated container requires seccomp=unconfined on the outer

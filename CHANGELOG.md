@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A build's environment reaches the shell quoted whole, name and value: a recipe's `hook:` name is part of a name, and one with `;` ran a command on the host before the container started (`--docker`).
 - **[Improvement]** A failed build's report reads only the last 16 MiB of its log for the excerpt; it read the whole log into memory, which can be gigabytes, once per failure with `--builders`.
 - **[Improvement]** The failure report of a build (host, `xcodebuild -version` on macOS, log excerpt) is gathered only when the build fails; it was made for every package, and twice for development packages.
 - **[Fix]** A package or version with `+`, `(` or another character a regular expression reads otherwise (`tauola++`, `1.0+cms`) no longer breaks the revision scan: its version links were not parsed, so a revision already taken could be handed out again; with `(`, or `++` on Python 3.8–3.10, the pattern did not compile and bits stopped.
