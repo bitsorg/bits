@@ -516,9 +516,11 @@ def _wipe_source_if_patchset_changed(spec, source_dir):
 
     * ``.bits_patched`` records a DIFFERENT patch-set fingerprint than the current
       patches — i.e. a patch file was edited (a legacy/empty sentinel has no
-      fingerprint and counts as different, so old trees self-heal); or
-    * there is NO ``.bits_patched`` sentinel but the tree was already extracted
-      (``.bits_extracted`` present).  That means a previous patch run did not
+      fingerprint and counts as different, so old trees self-heal; with no patches
+      left, any sentinel, or the recipe's own ``.bits_applied_patches``: the tree
+      still carries the dropped ones); or
+    * the recipe has patches, there is NO ``.bits_patched`` sentinel but the tree
+      was already extracted (``.bits_extracted`` present).  That means a previous patch run did not
       complete (``.bits_patched`` is only written on full success), leaving a
       partially/already-patched tree.  Re-running ``patch`` on it yields
       "Reversed (or previously applied) patch detected" and corruption, so the
@@ -534,12 +536,14 @@ def _wipe_source_if_patchset_changed(spec, source_dir):
         recorded = json.loads(f.read()).get("patchset")
     except Exception:
       recorded = None   # legacy empty sentinel, or unreadable → treat as changed
-    if recorded == current:
+    if recorded == current and current is not None:
       return            # already patched with the same patch set: reuse as-is
     reason = "patch set changed (recorded %r, now %r)" % (recorded, current)
-  elif os.path.exists(extracted):
+  elif os.path.exists(extracted) and current is not None:   # never patched: as it is
     reason = ("source was extracted but not successfully patched "
               "(no .bits_patched); a previous patch run likely failed partway")
+  elif current is None and os.path.exists(os.path.join(source_dir, ".bits_applied_patches")):
+    reason = "patched by its recipe (bits_apply_patches), and it has no patches now"
   else:
     return              # pristine / not yet extracted: nothing to wipe
   debug("Wiping %s for %s to re-extract and re-patch from pristine sources: %s",
@@ -813,7 +817,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
   # For tarball sources, if this shared source tree was already patched with a
   # different patch set, wipe it so it is re-extracted and re-patched cleanly.
   # (Scoped to tarball sources; git checkouts handle their own working tree.)
-  if spec.get("sources") and spec.get("patches") and os.path.isdir(source_dir):
+  if spec.get("sources") and os.path.isdir(source_dir):
     _wipe_source_if_patchset_changed(spec, source_dir)
   _arch = architecture or os.environ.get("ARCHITECTURE", "")
   if spec.get("sources") and os.path.isdir(source_dir):

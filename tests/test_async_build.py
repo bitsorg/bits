@@ -433,6 +433,26 @@ class LocalArchiveCheckoutTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.source_dir, "old.txt")))
         self.assertEqual(self._read("added.txt"), "added\n")
 
+    def test_dropping_every_patch_extracts_again(self):
+        with open(os.path.join(self.recipes, "patches", "add.patch"), "w") as fh:
+            fh.write("--- /dev/null\n+++ b/added.txt\n@@ -0,0 +1 @@\n+added\n")
+        self._make_archive({"a.txt": "first\n"})
+        self._checkout(["add.patch"])
+        self.assertEqual(self._read("added.txt"), "added\n")
+        self._checkout()
+        self.assertFalse(os.path.exists(os.path.join(self.source_dir, "added.txt")))
+        self.assertFalse(os.path.exists(os.path.join(self.source_dir, ".bits_patched")))
+        self.assertEqual(self._read("a.txt"), "first\n")
+
+    def test_dropping_the_patches_a_recipe_applied_extracts_again(self):
+        self._make_archive({"a.txt": "first\n"})
+        self._checkout()
+        with open(os.path.join(self.source_dir, "a.txt"), "w") as fh:      # auto_patch: false
+            fh.write("patched by the recipe\n")
+        open(os.path.join(self.source_dir, ".bits_applied_patches"), "w").close()
+        self._checkout()
+        self.assertEqual(self._read("a.txt"), "first\n")
+
     def test_an_unchanged_archive_is_not_extracted_again(self):
         self._make_archive({"a.txt": "first\n"})
         self._checkout()
