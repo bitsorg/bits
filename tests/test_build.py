@@ -871,6 +871,35 @@ class AfterRecipeTest(unittest.TestCase):
             quiet = ["+ make", "built", "bits:stage:package", "+ tar c x", "tar: x: Cannot stat", "+ exit 2"]
             self.assertEqual(_after_recipe(quiet, log.name), ["(in bits' package step)", "tar: x: Cannot stat"])
 
+    def test_only_the_end_of_a_large_log_is_read(self):
+        from bits_helpers import build
+        with tempfile.NamedTemporaryFile("wb", suffix=".log") as log:
+            log.write(b"x" * 5000 + b" cut\r\n" + b"filler\n" * 400
+                      + b"error: the cause\r\nmake: *** [all] Error 2\n")
+            log.flush()
+            with patch.object(build, "LOG_TAIL_BYTES", 1000):
+                with patch("builtins.open", wraps=open) as opened:
+                    excerpt = build._extract_error_excerpt(log.name)
+                    lines = build._log_tail(log.name)
+                    self.assertEqual(build._after_recipe(["make: *** [all] Error 2", "+ rsync",
+                                                          "rsync: not found"], log.name),
+                                     ["rsync: not found"])
+            self.assertIn("    error: the cause", excerpt)
+            self.assertIn("    make: *** [all] Error 2", excerpt)
+            self.assertTrue(lines[0] == "filler\n" and lines[-1] == "make: *** [all] Error 2\n")
+            self.assertLessEqual(sum(len(ln) for ln in lines), 1000)    # its end only
+            self.assertTrue(all(call.args[1] == "rb" for call in opened.call_args_list))
+
+    def test_a_cut_at_a_line_start_keeps_that_line(self):
+        from bits_helpers.build import _log_tail
+        with tempfile.NamedTemporaryFile("wb", suffix=".log") as log:
+            log.write(b"first\nsecond\nthird\n")
+            log.flush()
+            self.assertEqual(_log_tail(log.name, 13), ["second\n", "third\n"])   # at a line start
+            self.assertEqual(_log_tail(log.name, 12), ["third\n"])                # in a line
+            self.assertEqual(_log_tail(log.name, 18), ["second\n", "third\n"])   # 1 byte cut
+            self.assertEqual(_log_tail(log.name, 19), ["first\n", "second\n", "third\n"])
+
     def test_a_failure_before_the_recipe_shows_its_own_lines(self):
         from bits_helpers.build import _script_failure
         out = ["bits:stage:prepare",

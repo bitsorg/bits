@@ -1371,6 +1371,23 @@ _ERROR_PATTERNS = re.compile(
 )
 
 
+LOG_TAIL_BYTES = 16 << 20   # what a failure's report reads of a build log, at most
+
+
+def _log_tail(log_path, max_bytes=None):
+  """The last lines of *log_path* (with their newlines), from its last *max_bytes*
+  (LOG_TAIL_BYTES) at most: a log can be gigabytes. OSError when it cannot be read."""
+  max_bytes = max_bytes or LOG_TAIL_BYTES
+  with open(log_path, "rb") as f:
+    size = f.seek(0, os.SEEK_END)
+    f.seek(max(0, size - max_bytes - 1))   # and the byte before the cut
+    data = f.read()
+  if size > max_bytes:   # drop the first line, unless the cut fell at its start
+    data = data[1:] if data[:1] == b"\n" else data.partition(b"\n")[2]
+  text = data.decode(errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+  return [ln for ln in re.split(r"(?<=\n)", text) if ln]
+
+
 def _extract_error_excerpt(log_path, max_match=15, tail=12, scan_limit=20000):
   """Return a short, high-signal excerpt from a build log to speed up triage.
 
@@ -1380,9 +1397,8 @@ def _extract_error_excerpt(log_path, max_match=15, tail=12, scan_limit=20000):
   returns "" if the log is missing/empty/unreadable and never raises.
   """
   try:
-    with open(log_path, "r", errors="replace") as f:
-      lines = f.readlines()
-  except (OSError, IOError):
+    lines = _log_tail(log_path)
+  except OSError:
     return ""
   if not lines:
     return ""
@@ -1409,8 +1425,7 @@ def _after_recipe(output, log_path, limit=8):
   """The error lines bits' build script printed after the recipe's log ended:
   the failure when the recipe itself succeeded (a missing rsync)."""
   try:
-    with open(log_path, errors="replace") as f:
-      last = [ln.rstrip("\n") for ln in f if ln.strip()][-1:]
+    last = [ln.rstrip("\n") for ln in _log_tail(log_path) if ln.strip()][-1:]
   except OSError:
     return []                              # no recipe log to start after
   output = list(output)

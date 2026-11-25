@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Improvement]** A failed build's report reads only the last 16 MiB of its log for the excerpt; it read the whole log into memory, which can be gigabytes, once per failure with `--builders`.
 - **[Improvement]** The failure report of a build (host, `xcodebuild -version` on macOS, log excerpt) is gathered only when the build fails; it was made for every package, and twice for development packages.
 - **[Fix]** A package or version with `+`, `(` or another character a regular expression reads otherwise (`tauola++`, `1.0+cms`) no longer breaks the revision scan: its version links were not parsed, so a revision already taken could be handed out again; with `(`, or `++` on Python 3.8–3.10, the pattern did not compile and bits stopped.
 - **[Fix]** At startup bits keeps the tarball download sentinels of another bits run on the same host (same PID namespace); it removed every one, so both runs downloaded the same file. It removes a sentinel whose owner is gone, that holds our own PID or that is older than the 600 s a waiter waits for it, now also those under `SOURCES/cache/`, which it missed.
