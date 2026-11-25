@@ -51,7 +51,6 @@ from bits_helpers.log import ProgressPrint, log_current_package
 from glob import glob
 from collections import OrderedDict
 from shlex import quote
-from textwrap import dedent
 import tempfile
 
 import concurrent.futures
@@ -1565,6 +1564,178 @@ def mark_latest(spec, args, work_dir):
   call_ignoring_oserrors(create_version_link, spec, args.architecture, work_dir)
 
 
+def report_build_failure(scheduler, spec, specs, args, build_command, err, output, recipe_ran):
+  """The message of a failed build, with its log, directories and an excerpt: returned
+  (and noted for the end-of-run summary) with --builders > 1, else the run stops."""
+  # We do not use the override for devel packages, because we
+  # want to avoid having to rebuild things when the /tmp gets cleaned.
+  buildWorkDir = build_work_dir(spec, args)
+
+  # Determine paths
+  devSuffix = _devel_suffix(spec, args)
+  log_path = abspath(join(buildWorkDir, "BUILD", f"{spec['package']}-latest{devSuffix}", "log"))
+  log_is_current = recipe_ran
+  build_dir = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/{spec['package']}"
+  # Staging install prefix ($INSTALLROOT in the recipe): where the package's
+  # files are installed before being tarred. Useful for inspecting a partial
+  # install after a failure.
+  try:
+    install_root = _pkg_install_path(
+      join(buildWorkDir, "INSTALLROOT", spec["hash"]),
+      effective_arch(spec, args.architecture), spec)
+  except Exception:  # pylint: disable=broad-except
+    install_root = None
+
+  # Relative paths for the build and install directories when they are under the
+  # working directory; else, and always for the log, absolute (../../home/... helps no one).
+  def _rel(p):
+    try:
+      r = os.path.relpath(p, os.getcwd())
+    except (ValueError, OSError):
+      return p
+    return p if r == ".." or r.startswith(".." + os.sep) else r
+  build_dir = _rel(build_dir)
+  if install_root:
+    install_root = _rel(install_root)
+
+  # Color codes for error message (if TTY)
+  bold = "\033[1m" if sys.stderr.isatty() else ""
+  red = "\033[31m" if sys.stderr.isatty() else ""
+  reset = "\033[0m" if sys.stderr.isatty() else ""
+
+  # Build the error message
+  devel_note = " (development package)" if spec["is_devel_pkg"] else ""
+  buildErrMsg = f"{red}{bold}BUILD FAILED:{reset} {spec['package']}@{spec['version']}{devel_note}\n"
+  buildErrMsg += "=" * 70 + "\n\n"
+
+  buildErrMsg += f"{bold}Build Host:{reset}\n"
+  buildErrMsg += f"  {socket.gethostname()} (the paths below are on it)\n\n"
+
+  buildErrMsg += f"{bold}Log File:{reset}\n"
+  buildErrMsg += (f"  {log_path}\n\n" if log_is_current
+                  else "  none: the build stopped before its recipe started\n\n")
+
+  buildErrMsg += f"{bold}Build Directory:{reset}\n"
+  buildErrMsg += f"  {build_dir}\n"
+
+  if install_root:
+    buildErrMsg += f"{bold}Install Root:{reset}\n"
+    buildErrMsg += f"  {install_root}\n"
+
+  # Surface the proximate error so the user does not have to open the full log.
+  excerpt = ""
+  if err and not log_is_current:
+    before = _script_failure(output)
+    excerpt = "\n".join(before)
+    if before:
+      buildErrMsg += f"\n{bold}Before the recipe, bits' build script printed:{reset}\n"
+      buildErrMsg += "".join("    %s\n" % ln for ln in before)
+  elif err:
+    excerpt = _extract_error_excerpt(log_path) or ""
+    if excerpt:
+      buildErrMsg += f"\n{bold}Error excerpt:{reset}\n"
+      buildErrMsg += excerpt + "\n"
+    after = _after_recipe(output, log_path)
+    if after:
+      buildErrMsg += f"\n{bold}After the recipe, bits' build script printed:{reset}\n"
+      buildErrMsg += "".join("    %s\n" % ln for ln in after)
+  if err:
+    from bits_helpers.sandbox import failure_hint
+    hint = failure_hint(build_command)
+    if hint:
+      buildErrMsg += f"\n{bold}Sandbox:{reset}\n  {hint}\n"
+
+  updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
+  if spec["is_devel_pkg"]:
+    updatablePkgs.append(spec["package"])
+
+  # Gather build info for the error message
+  try:
+    detected_arch = detectArch()
+
+    # Only show safe arguments (no tokens/secrets) in CLI-usable format
+    safe_args = {
+      "pkgname", "defaults", "architecture", "forceUnknownArch",
+      "develPrefix", "jobs", "noSystem", "noDevel", "forceTracked", "plugin",
+      "disable", "annotate", "onlyDeps", "docker"
+    }
+    
+    cli_args = []
+    for k, v in vars(args).items():
+      if not v or k not in safe_args:
+        continue
+      
+      # Format based on type for CLI usage
+      if isinstance(v, bool):
+        if v:  # Only show if True
+          cli_args.append(f"--{k}")
+      elif isinstance(v, list):
+        if v:  # Only show non-empty lists
+          # For lists, use multiple --flag=val entries; deduplicate while
+          # preserving first-seen order (duplicates can arise from the
+          # prefer_system / system_requirement resolution loop).
+          seen = set()
+          for item in v:
+            if item not in seen:
+              seen.add(item)
+              cli_args.append(f"--{k}={quote(str(item))}")
+      else:
+        # Quote if needed
+        cli_args.append(f"--{k}={quote(str(v))}")
+
+    args_str = " ".join(cli_args)
+
+    buildErrMsg += f"\n{bold}Environment:{reset}\n"
+    buildErrMsg += "".join(f"  {line}\n" for line in failure_os_lines(args, detected_arch))
+    buildErrMsg += f"  bits: {__version__ or 'unknown'} (bits@{os.environ['BITS_DIST_HASH'][:10]})\n"
+
+    if detected_arch.startswith("osx"):
+      xcode_info = getstatusoutput("xcodebuild -version")[1]
+      # Combine XCode version lines into one
+      xcode_lines = xcode_info.strip().split('\n')
+      if len(xcode_lines) >= 2:
+        xcode_str = f"{xcode_lines[0]} ({xcode_lines[1]})"
+      else:
+        xcode_str = xcode_lines[0] if xcode_lines else "Unknown"
+      buildErrMsg += f"  XCode: {xcode_str}\n"
+
+    buildErrMsg += f"  Arguments: {args_str}\n"
+
+  except Exception as exc:
+    warning("Failed to gather build info", exc_info=exc)
+
+  # Add note about development packages if applicable
+  if updatablePkgs:
+    buildErrMsg += f"\n{bold}Development Packages:{reset}\n"
+    buildErrMsg += "  Development sources are not updated automatically.\n"
+    buildErrMsg += "  This may be due to outdated sources. To update:\n"
+    buildErrMsg += "".join(f"\n    ( cd {dp} && git pull --rebase )" for dp in updatablePkgs)
+    buildErrMsg += "\n"
+
+  # Add Next Steps section
+  buildErrMsg += f"\n{bold}Next Steps:{reset}\n"
+  if log_is_current:
+    buildErrMsg += f"  • View error log:          cat {log_path}\n"
+  if not args.debug:
+    buildErrMsg += f"  • Rebuild with debug:      bits build {spec['package']} --debug\n"
+  buildErrMsg += f"  • Please upload the full log to CERNBox/Dropbox if you intend to request support.\n"
+
+  if args.builders > 1:
+    # Record a concise entry for the end-of-run failure summary (write_failure_summary).
+    fails = getattr(scheduler, "buildFailures", None)
+    if fails is not None:
+      try:
+        with scheduler.buildFailuresLock:
+          fails.append({"package": "%s@%s" % (spec["package"], spec["version"]),
+                        "log": log_path if log_is_current else "none (stopped before the recipe)",
+                        "install_root": install_root,
+                        "excerpt": excerpt})
+      except Exception:  # pylint: disable=broad-except
+        pass
+    return buildErrMsg.strip()
+  dieOnError(err, buildErrMsg.strip())
+
+
 def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper):
   spec = specs[p]
   debug("Build command: %s", build_command)
@@ -1668,213 +1839,9 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
     fetch_cache.save(spec, syncHelper, workDir, _cache, _arch, _cache_state,
                      os.path.join(_bwd, "BUILD", spec["hash"], fetch_cache.LISTING))
 
-  # We do not use the override for devel packages, because we
-  # want to avoid having to rebuild things when the /tmp gets cleaned.
-  buildWorkDir = build_work_dir(spec, args)
-
-  # Determine paths
-  devSuffix = _devel_suffix(spec, args)
-  log_path = abspath(join(buildWorkDir, "BUILD", f"{spec['package']}-latest{devSuffix}", "log"))
-  log_is_current = bool(_recipe_ran)
-  build_dir = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/{spec['package']}"
-  # Staging install prefix ($INSTALLROOT in the recipe): where the package's
-  # files are installed before being tarred. Useful for inspecting a partial
-  # install after a failure.
-  try:
-    install_root = _pkg_install_path(
-      join(buildWorkDir, "INSTALLROOT", spec["hash"]),
-      effective_arch(spec, args.architecture), spec)
-  except Exception:  # pylint: disable=broad-except
-    install_root = None
-
-  # Relative paths for the build and install directories when they are under the
-  # working directory; else, and always for the log, absolute (../../home/... helps no one).
-  def _rel(p):
-    try:
-      r = os.path.relpath(p, os.getcwd())
-    except (ValueError, OSError):
-      return p
-    return p if r == ".." or r.startswith(".." + os.sep) else r
-  build_dir = _rel(build_dir)
-  if install_root:
-    install_root = _rel(install_root)
-
-  # Color codes for error message (if TTY)
-  bold = "\033[1m" if sys.stderr.isatty() else ""
-  red = "\033[31m" if sys.stderr.isatty() else ""
-  reset = "\033[0m" if sys.stderr.isatty() else ""
-
-  # Build the error message
-  devel_note = " (development package)" if spec["is_devel_pkg"] else ""
-  buildErrMsg = f"{red}{bold}BUILD FAILED:{reset} {spec['package']}@{spec['version']}{devel_note}\n"
-  buildErrMsg += "=" * 70 + "\n\n"
-
-  buildErrMsg += f"{bold}Build Host:{reset}\n"
-  buildErrMsg += f"  {socket.gethostname()} (the paths below are on it)\n\n"
-
-  buildErrMsg += f"{bold}Log File:{reset}\n"
-  buildErrMsg += (f"  {log_path}\n\n" if log_is_current
-                  else "  none: the build stopped before its recipe started\n\n")
-
-  buildErrMsg += f"{bold}Build Directory:{reset}\n"
-  buildErrMsg += f"  {build_dir}\n"
-
-  if install_root:
-    buildErrMsg += f"{bold}Install Root:{reset}\n"
-    buildErrMsg += f"  {install_root}\n"
-
-  # Surface the proximate error so the user does not have to open the full log.
-  excerpt = ""
-  if err and not log_is_current:
-    before = _script_failure(list(_output))
-    excerpt = "\n".join(before)
-    if before:
-      buildErrMsg += f"\n{bold}Before the recipe, bits' build script printed:{reset}\n"
-      buildErrMsg += "".join("    %s\n" % ln for ln in before)
-  elif err:
-    excerpt = _extract_error_excerpt(log_path) or ""
-    if excerpt:
-      buildErrMsg += f"\n{bold}Error excerpt:{reset}\n"
-      buildErrMsg += excerpt + "\n"
-    after = _after_recipe(_output, log_path)
-    if after:
-      buildErrMsg += f"\n{bold}After the recipe, bits' build script printed:{reset}\n"
-      buildErrMsg += "".join("    %s\n" % ln for ln in after)
   if err:
-    from bits_helpers.sandbox import failure_hint
-    hint = failure_hint(build_command)
-    if hint:
-      buildErrMsg += f"\n{bold}Sandbox:{reset}\n  {hint}\n"
-
-  updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
-  if spec["is_devel_pkg"]:
-    updatablePkgs.append(spec["package"])
-
-  # Gather build info for the error message
-  try:
-    detected_arch = detectArch()
-
-    # Only show safe arguments (no tokens/secrets) in CLI-usable format
-    safe_args = {
-      "pkgname", "defaults", "architecture", "forceUnknownArch",
-      "develPrefix", "jobs", "noSystem", "noDevel", "forceTracked", "plugin",
-      "disable", "annotate", "onlyDeps", "docker"
-    }
-    
-    cli_args = []
-    for k, v in vars(args).items():
-      if not v or k not in safe_args:
-        continue
-      
-      # Format based on type for CLI usage
-      if isinstance(v, bool):
-        if v:  # Only show if True
-          cli_args.append(f"--{k}")
-      elif isinstance(v, list):
-        if v:  # Only show non-empty lists
-          # For lists, use multiple --flag=val entries; deduplicate while
-          # preserving first-seen order (duplicates can arise from the
-          # prefer_system / system_requirement resolution loop).
-          seen = set()
-          for item in v:
-            if item not in seen:
-              seen.add(item)
-              cli_args.append(f"--{k}={quote(str(item))}")
-      else:
-        # Quote if needed
-        cli_args.append(f"--{k}={quote(str(v))}")
-
-    args_str = " ".join(cli_args)
-
-    buildErrMsg += f"\n{bold}Environment:{reset}\n"
-    buildErrMsg += "".join(f"  {line}\n" for line in failure_os_lines(args, detected_arch))
-    buildErrMsg += f"  bits: {__version__ or 'unknown'} (bits@{os.environ['BITS_DIST_HASH'][:10]})\n"
-
-    if detected_arch.startswith("osx"):
-      xcode_info = getstatusoutput("xcodebuild -version")[1]
-      # Combine XCode version lines into one
-      xcode_lines = xcode_info.strip().split('\n')
-      if len(xcode_lines) >= 2:
-        xcode_str = f"{xcode_lines[0]} ({xcode_lines[1]})"
-      else:
-        xcode_str = xcode_lines[0] if xcode_lines else "Unknown"
-      buildErrMsg += f"  XCode: {xcode_str}\n"
-
-    buildErrMsg += f"  Arguments: {args_str}\n"
-
-  except Exception as exc:
-    warning("Failed to gather build info", exc_info=exc)
-
-  # Add note about development packages if applicable
-  if updatablePkgs:
-    buildErrMsg += f"\n{bold}Development Packages:{reset}\n"
-    buildErrMsg += "  Development sources are not updated automatically.\n"
-    buildErrMsg += "  This may be due to outdated sources. To update:\n"
-    buildErrMsg += "".join(f"\n    ( cd {dp} && git pull --rebase )" for dp in updatablePkgs)
-    buildErrMsg += "\n"
-
-  # Add Next Steps section
-  buildErrMsg += f"\n{bold}Next Steps:{reset}\n"
-  if log_is_current:
-    buildErrMsg += f"  • View error log:          cat {log_path}\n"
-  if not args.debug:
-    buildErrMsg += f"  • Rebuild with debug:      bits build {spec['package']} --debug\n"
-  buildErrMsg += f"  • Please upload the full log to CERNBox/Dropbox if you intend to request support.\n"
-
-  if err and args.builders>1:
-    # Record a concise entry for the end-of-run failure summary (write_failure_summary).
-    fails = getattr(scheduler, "buildFailures", None)
-    if fails is not None:
-      try:
-        with scheduler.buildFailuresLock:
-          fails.append({"package": "%s@%s" % (spec["package"], spec["version"]),
-                        "log": log_path if log_is_current else "none (stopped before the recipe)",
-                        "install_root": install_root,
-                        "excerpt": excerpt})
-      except Exception:  # pylint: disable=broad-except
-        pass
-    return buildErrMsg.strip()
-  else:
-    dieOnError(err, buildErrMsg.strip())
-
-  updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
-  if spec["is_devel_pkg"]:
-    updatablePkgs.append(spec["package"])
-
-  if updatablePkgs:
-    buildErrMsg += dedent("""
-    Note that you have packages in development mode.
-    Devel sources are not updated automatically, you must do it by hand.\n
-    This problem might be due to one or more outdated devel sources.
-    To update all development packages required for this build it is usually sufficient to do:
-    """)
-    buildErrMsg += "".join("\n  ( cd %s && git pull --rebase )" % dp for dp in updatablePkgs)
-
-    # Gather build info for the error message
-    try:
-      safe_args = {
-        "pkgname", "defaults", "architecture", "forceUnknownArch",
-        "develPrefix", "jobs", "noSystem", "noDevel", "forceTracked", "plugin",
-        "disable", "annotate", "onlyDeps", "docker"
-      }
-      args_str = " ".join(f"--{k}={v}" for k, v in vars(args).items() if v and k in safe_args)
-      detected_arch = detectArch()
-      buildErrMsg += "\nBuild info:\n" + "".join(
-        line + "\n" for line in failure_os_lines(args, detected_arch)) + dedent(f"""\
-      Using BITS from bits@{__version__ or "unknown"} recipes in bits@{os.environ["BITS_DIST_HASH"][:10]}
-      Build arguments: {args_str}
-      """)
-
-      if detected_arch.startswith("osx"):
-         buildErrMsg += f'XCode version: {getstatusoutput("xcodebuild -version")[1]}'
-
-    except Exception as exc:
-      warning("Failed to gather build info: %s", exc)
-
-    if err and args.builders>1:
-      return buildErrMsg.strip()
-    else:
-      dieOnError(err, buildErrMsg.strip())
+    return report_build_failure(scheduler, spec, specs, args, build_command, err,
+                                list(_output), bool(_recipe_ran))
 
   if confined:
     mark_latest(spec, args, workDir)
