@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A `SYMLINK_STAGE` hook runs without the run's credentials (tokens, keys, URLs holding one): it ran on the host with the whole environment.
 - **[Fix]** A recipe's `$(...)` source entry is evaluated without the run's credentials (tokens, keys, URLs holding one), as publish runs a package's scripts: it ran on the host with the whole environment.
 - **[Fix]** A `hook:` given as a YAML list (`POST_INSTALL: [rpm, sbom]`) runs its hooks as `rpm,sbom` would, and an empty one runs none: bits ran a hook named `rpm_sbom` (with `--docker` it stopped with a TypeError), did not find a `SYMLINK_STAGE` list, and stopped on an empty hook without `--docker`.
 - **[Fix]** A recipe's `hook_params` reach its hooks as written, no longer expanded: a value with `"` broke the build script, and `$` or a backquote in one was expanded. A name that is not a shell variable name is refused.

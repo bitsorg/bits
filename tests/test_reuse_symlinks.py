@@ -650,6 +650,14 @@ class ReuseSymlinksTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incompatible existing content"):
             self.stage(stage_hooks=hooks)
 
+    def test_stage_hooks_get_no_credentials(self):
+        hook = self.root / "env-hook"
+        hook.write_text('echo "${CI_JOB_TOKEN:-none} ${BITS_S3_X_SECRET_ACCESS_KEY:-none}'
+                        ' $PKGNAME" > "$PKG_ROOT/seen"\n')
+        with patch.dict(os.environ, {"CI_JOB_TOKEN": "t0k", "BITS_S3_X_SECRET_ACCESS_KEY": "k"}):
+            local = self.stage(stage_hooks=[str(hook)])
+        self.assertEqual((local / "seen").read_text(), "none none gcc\n")
+
     def test_failed_stage_hook_leaves_no_stage(self):
         hook = self.root / "fail"
         hook.write_text("exit 3\n")

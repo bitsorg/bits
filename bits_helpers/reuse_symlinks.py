@@ -387,7 +387,8 @@ def stage_reused_package(spec, install_base, work_dir, architecture,
         (staged / marker).write_text(json.dumps(dict(identity, complete=False)) + "\n")
         backup = _install_stage(staged, destination, source, replace=unfinished)
         try:
-            env = dict(os.environ, PKG_ROOT=str(destination), SOURCE_ROOT=str(source),
+            from bits_helpers.cmd import credential_free_env   # on the host: no tokens or keys
+            env = dict(credential_free_env(), PKG_ROOT=str(destination), SOURCE_ROOT=str(source),
                        REFERENCE_ROOT=str(base.parent if base.name == arch else base),
                        WORK_DIR=str(runtime), ARCHITECTURE=architecture,
                        PKGNAME=package, PKGVERSION=spec["version"])

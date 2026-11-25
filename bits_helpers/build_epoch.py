@@ -51,7 +51,8 @@ COVERED = (
 # nothing changes without it and tarballs are the same, so BUILD_EPOCH is unchanged.
 # The packed-here record (PACKED/) is written beside, not into, the tarball: unchanged.
 # A SYMLINK_STAGE hook given as a YAML list is found; a string one as before: unchanged.
-COVERED_SHA256 = "83f225012846feb9631e71f17d642dc1ee97c13aec150086126d06e9dd5f58c2"
+# SYMLINK_STAGE hooks run without credentials; what they make is unchanged.
+COVERED_SHA256 = "b57a0f729048cabe5b924e2633b702919a42789b167096b090d9fd3d9ce13916"
 
 
 def covered_sha256(root=None):
