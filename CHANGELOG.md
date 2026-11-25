@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A `--symlink-packages-from` stage whose marker was cut short (bits killed while writing it) is staged again: the build stopped with "Cannot symlink package" on every run.
 - **[Fix]** The build script no longer looks up gcc before the recipe (`cversion`, `cpath`, used nowhere): where no gcc was on PATH it stopped in its preparation without a message.
 - **[Fix]** A reused tarball is unpacked into an emptied `TMP/<hash>`: files an interrupted unpack of the same hash left there were installed with the package.
 - **[Fix]** A tarball-source package whose recipe drops its last patch is extracted again: the source tree kept the dropped patches, and the new build (its hash changed) was made from them.

@@ -650,6 +650,14 @@ class ReuseSymlinksTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incompatible existing content"):
             self.stage(stage_hooks=hooks)
 
+    def test_a_damaged_marker_is_staged_again(self):
+        for damaged in ('{"source": "/x", "layo', "[]", "\xff"):
+            local = self.stage(stage_hooks=self.scram_hook())
+            marker = local / ".bits-reuse-symlinks.json"
+            marker.write_bytes(damaged.encode("latin-1"))
+            self.assertEqual(self.stage(stage_hooks=self.scram_hook()), local)
+            self.assertIn("init_sha256", json.loads(marker.read_text()))
+
     def test_stage_hooks_get_no_credentials(self):
         hook = self.root / "env-hook"
         hook.write_text('echo "${CI_JOB_TOKEN:-none} ${BITS_S3_X_SECRET_ACCESS_KEY:-none}'

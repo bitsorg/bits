@@ -322,9 +322,15 @@ def stage_reused_package(spec, install_base, work_dir, architecture,
     unfinished = False      # a stage of ours whose hooks were interrupted
     if os.path.lexists(destination):
         if not destination.is_symlink() and (destination / marker).is_file():
-            previous = json.loads((destination / marker).read_text())
-            unfinished = (previous.get("complete") is False
-                          and previous.get("source") == identity["source"])
+            try:
+                previous = json.loads((destination / marker).read_text())
+            except ValueError:
+                previous = None
+            if not isinstance(previous, dict):    # cut short while bits wrote it: stage again
+                previous, unfinished = {}, True
+            else:
+                unfinished = (previous.get("complete") is False
+                              and previous.get("source") == identity["source"])
             local_init = destination / "etc/profile.d/init.sh"
             private = all((not (destination / "etc").is_symlink(),
                            not local_init.parent.is_symlink(),
