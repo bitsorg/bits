@@ -928,9 +928,10 @@ def tarball_link_regex(spec, arch):
 def tarball_target_regex(spec, arch):
   """Pattern for a version link's store target; groups (hash, revision)."""
   return (
-    r"../../{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/"
+    r"\.\./\.\./{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/"
     r"{package}-{version}(?:-({rev_re}))?\.{arch}\.tar\.gz$"
-  ).format(arch=arch, rev_re=REVISION_TOKEN_PATTERN, **spec)
+  ).format(arch=re.escape(arch), package=re.escape(spec["package"]),
+           version=re.escape(spec["version"]), rev_re=REVISION_TOKEN_PATTERN)
 
 
 def check_untracked_labels(specs, targets):

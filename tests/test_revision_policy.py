@@ -261,3 +261,12 @@ class RevisionPolicyReviewTest(unittest.TestCase):
                                  ("ab" * 20, rev))
         self.assertIsNone(tarball_link_regex(spec, self.ARCH).fullmatch(
             "app-1-v2.%s.tar.gz" % self.ARCH))   # a sibling version, not a revision
+        # characters a regex reads otherwise: the link and its target parse alike
+        spec = {"package": "tauola++", "version": "1.1.8+cms(2)"}
+        name = "tauola++-1.1.8+cms(2)-3.%s.tar.gz" % self.ARCH
+        self.assertTrue(tarball_link_regex(spec, self.ARCH).fullmatch(name))
+        target = "../../%s/store/ab/%s/%s" % (self.ARCH, "ab" * 20, name)
+        self.assertEqual(re.match(tarball_target_regex(spec, self.ARCH), target).groups(),
+                         ("ab" * 20, "3"))
+        self.assertIsNone(re.match(tarball_target_regex({"package": "app", "version": "1.0"}, self.ARCH),
+                                   target.replace("tauola++-1.1.8+cms(2)", "app-1x0")))
