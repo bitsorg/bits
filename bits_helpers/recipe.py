@@ -59,10 +59,18 @@ def getRecipeReader(url: str, dist=None, genPackages={}, repo_dir=None):
 # Generate a recipe of package
 class GeneratedPackage:
   def __init__(self, obj) -> None:
-    self.command = obj["command"]
+    self.generate = obj.get("generate")
+    self.command = obj["command"] if self.generate is None else obj.get("command")
     self.url = obj["url"]
   def __call__(self):
-    return  getoutput(self.command).strip()
+    if self.generate is not None:
+      try:
+        return self.generate().strip()
+      except Exception:
+        if self.command is None:
+          raise
+        # Reuse the legacy command's diagnostic and exit status on failure.
+    return getoutput(self.command).strip()
 
 # Read a recipe from a file
 class FileReader:
