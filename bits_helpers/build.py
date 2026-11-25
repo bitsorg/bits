@@ -2359,6 +2359,13 @@ def shell_env(env, option=""):
   return " ".join(option + quote("%s=%s" % (name, value)) for name, value in env)
 
 
+def hook_params_exports(package, params):
+  """build.sh's exports of a recipe's hook_params, each value quoted: taken as written."""
+  bad = [k for k in params if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(k))]
+  dieOnError(bad, "%s: hook_params %s: not a shell variable name" % (package, ", ".join(map(repr, bad))))
+  return "\n  ".join("export %s=%s" % (k, quote(str(v))) for k, v in params.items())
+
+
 def host_dirs_read_only(work_dir, container_work_dir, reference_sources):
   """Read-only overlays of what the host uses in the work dir after a build: its git
   repositories (the mirrors, REPOS/, a CI job's recipe clones in jobs/), where it
@@ -3197,9 +3204,7 @@ def build_one_package(p, ctx):
   if args.resourceMonitoring:
     monitoredDirs[p] = scriptDir
   writeAll("{}/{}.sh".format(scriptDir, spec["package"]), spec["recipe"])
-  hook_params_locals = "\n  ".join(
-    'export %s="%s"' % (k, v) for k, v in spec.get("hook_params", {}).items()
-  )
+  hook_params_locals = hook_params_exports(spec["package"], spec.get("hook_params", {}))
   writeAll("%s/build.sh" % scriptDir, cmd_raw % {
     "provenance": create_provenance_info(spec["package"], specs, args),
     "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False,
