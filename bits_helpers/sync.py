@@ -467,6 +467,15 @@ def store_unreachable(sync_helper, insecure=False, timeout=5, tries=2):
       why = type(exc).__name__
   return why
 
+def tarball_name_regex(spec, arch):
+  """A content tarball's object name: <pkg>-<version>[-<revision>].<arch>.tar.gz; a
+  fixed label (force_revision: "dev") is taken as it is."""
+  revs = [REVISION_TOKEN_PATTERN] + [re.escape(r) for r in (spec.get("revision"), spec.get("force_revision"))
+                                     if isinstance(r, str) and r]
+  return re.compile(r"^{}-{}(?:-(?:{}))?\.{}\.tar\.gz$".format(
+    re.escape(spec["package"]), re.escape(spec["version"]), "|".join(revs), re.escape(arch)))
+
+
 class RemoteSync:
   """Base for remote-store backends. Supplies documented no-op defaults for the
   optional STORE-METADATA queries (rev-index markers and content-object
@@ -884,6 +893,7 @@ class HttpRemoteSync(RemoteSync):
       debug("Updating remote store for package %s; trying hashes %s",
             spec["package"], ", ".join(spec["remote_hashes"]))
       store_path = use_tarball = None
+      wanted = tarball_name_regex(spec, arch)
       # Find the first tarball that matches any possible hash and fetch it.
       for pkg_hash in spec["remote_hashes"]:
         store_path = resolve_store_path(arch, pkg_hash)
@@ -894,13 +904,14 @@ class HttpRemoteSync(RemoteSync):
           # write path below: reduce to a basename and refuse anything that
           # still looks like a traversal — "name": "../../..." from a hostile
           # or man-in-the-middled store must never escape the store directory.
-          _name = tarballs[0].get("name") if isinstance(tarballs[0], dict) else None
-          if not isinstance(_name, str):
+          # The first object named as this package's tarball: another may be listed first.
+          _name = next((os.path.basename(t["name"]) for t in tarballs if isinstance(t, dict)
+                        and isinstance(t.get("name"), str)
+                        and wanted.match(os.path.basename(t["name"]))), None)
+          if _name is None:
             continue
-          _name = os.path.basename(_name)
-          if not _name or _name in (".", "..") or "/" in _name or "\\" in _name:
-            warning("ignoring store object with unsafe name %r under %s",
-                    tarballs[0].get("name"), store_path)
+          if "\\" in _name:
+            warning("ignoring store object with unsafe name %r under %s", _name, store_path)
             continue
           use_tarball = _name
           break
@@ -1601,6 +1612,8 @@ class Boto3RemoteSync(RemoteSync):
       # than one is a waste of time as they should be equivalent and we only
       # ever use one anyway.)
       for tarball in self._s3_listdir(store_path):
+        if not tarball_name_regex(spec, arch).match(os.path.basename(tarball)):
+          continue                      # another object under the hash: not the tarball
         debug("Fetching tarball %s", tarball)
         progress = ProgressPrint("Downloading tarball for %s@%s" %
                                  (spec["package"], spec["version"]), min_interval=5.0)
