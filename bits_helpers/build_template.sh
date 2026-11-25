@@ -63,9 +63,6 @@ unset _bits_v
 set -e
 set +h
 
-cversion=$(gcc --version | head -n 1)
-cpath=$(which gcc)
-
 function hash() { true; }
 
 # bits_apply_patches [strip] : apply the patch files bits staged in $SOURCEDIR

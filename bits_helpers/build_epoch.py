@@ -53,7 +53,8 @@ COVERED = (
 # A SYMLINK_STAGE hook given as a YAML list is found; a string one as before: unchanged.
 # SYMLINK_STAGE hooks run without credentials; what they make is unchanged.
 # TMP/<hash> emptied before a reused tarball is unpacked: what is installed is the tarball's.
-COVERED_SHA256 = "2d4b3e09e586d355eb11c8d3cd77844c3be27416db23a0cbdfa26b1e4180d9f5"
+# Unused gcc lookups removed from the preamble: builds are unchanged.
+COVERED_SHA256 = "25d6c49d5f1ad1483b881cc1eda898460a8e0de2c000c3e8ff8a1e896ba12aac"
 
 
 def covered_sha256(root=None):
