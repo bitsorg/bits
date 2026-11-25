@@ -186,13 +186,19 @@ if [[ -z "${PKGHASH}" ]]; then
   echo "ERROR: PKGHASH is empty — refusing to rm -fr '$WORK_DIR/INSTALLROOT/'" >&2
   exit 1
 fi
-rm -fr "$WORK_DIR/INSTALLROOT/$PKGHASH"
+# --confine-work-dir: the build's own directories are mount points, emptied, not removed.
+if [ "${BITS_CONFINE_WORK_DIR:-}" = 1 ]; then
+  _bits_reset() { [ ! -d "$1" ] || find "$1" -mindepth 1 -maxdepth 1 -exec rm -rf {} +; }
+else
+  _bits_reset() { rm -rf "$1"; }
+fi
+_bits_reset "$WORK_DIR/INSTALLROOT/$PKGHASH"
 # We remove the build directory only if we are not in incremental mode.
-if [[ "$INCREMENTAL_BUILD_HASH" == 0 ]] && ! rm -rf "$BUILDROOT"; then
+if [[ "$INCREMENTAL_BUILD_HASH" == 0 ]] && ! _bits_reset "$BUILDROOT"; then
   # Golang installs stuff without write permissions for ourselves sometimes.
   # This makes the `rm -rf` above fail, so give ourselves write permission.
   chmod -R u+w "$BUILDROOT" || :
-  rm -rf "$BUILDROOT"
+  _bits_reset "$BUILDROOT"
 fi
 mkdir -p "$INSTALLROOT" "$BUILDROOT" "$BUILDDIR" "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH"
 
@@ -254,9 +260,11 @@ EOF
 cd "$BUILDROOT"
 # The "latest" links with /bin/ln: GNU ln -f replaces a link through a temporary
 # name beside it, which the macOS sandbox (sandbox.py) does not allow.
-/bin/ln -snf "$PKGHASH" "$BITS_BUILD_WORK_DIR/BUILD/$PKGNAME-latest"
-if [[ $DEVEL_PREFIX ]]; then
-  /bin/ln -snf "$PKGHASH" "$BITS_BUILD_WORK_DIR/BUILD/$PKGNAME-latest-$DEVEL_PREFIX"
+if [ "${BITS_CONFINE_WORK_DIR:-}" != 1 ]; then   # confined: made by bits on the host
+  /bin/ln -snf "$PKGHASH" "$BITS_BUILD_WORK_DIR/BUILD/$PKGNAME-latest"
+  if [[ $DEVEL_PREFIX ]]; then
+    /bin/ln -snf "$PKGHASH" "$BITS_BUILD_WORK_DIR/BUILD/$PKGNAME-latest-$DEVEL_PREFIX"
+  fi
 fi
 
 cd "$BUILDDIR"
@@ -355,7 +363,7 @@ else
   fi
   popd
   find "$INSTALLROOT" -name "*.unrelocated" -delete
-  rm -rf "$WORK_DIR/TMP/$PKGHASH"
+  _bits_reset "$WORK_DIR/TMP/$PKGHASH"
 fi
 
 # What the build left in its fetch cache, by sha256, for bits to save (a failure only skips that).
@@ -542,7 +550,11 @@ mkdir -p "${WORK_DIR}/TARS/$HASH_PATH" \
 PACKAGE_WITH_REV=$PKGNAME-${_VERREV}.$EFFECTIVE_ARCHITECTURE.tar.gz
 # Copy and tar/compress (if applicable) in parallel.
 # Use -H to match tar's behaviour of preserving hardlinks.
-rsync -aH "$WORK_DIR/INSTALLROOT/$PKGHASH/" "$WORK_DIR" & rsync_pid=$!
+if [ "${BITS_CONFINE_WORK_DIR:-}" = 1 ]; then   # only its own install: the rest is read-only
+  rsync -aH "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH/" "$WORK_DIR/$PKGPATH/" & rsync_pid=$!
+else
+  rsync -aH "$WORK_DIR/INSTALLROOT/$PKGHASH/" "$WORK_DIR" & rsync_pid=$!
+fi
 if [ "$CAN_DELETE" = 1 ] && [ -z "$BITS_HAS_WRITE_STORE" ]; then
   # We're deleting the tarball anyway, so no point in creating a new one.
   # There might be an old existing tarball, and we should delete it.
@@ -601,7 +613,7 @@ elif [ -z "$CACHED_TARBALL" ]; then
       "$(wc -c < "$_final" | tr -d ' ')" > "$_final.sha256"
   fi
   rm -f "$_dst.sum"
-  ln -nfs "../../$HASH_PATH/$PACKAGE_WITH_REV" \
+  [ "${BITS_CONFINE_WORK_DIR:-}" = 1 ] || ln -nfs "../../$HASH_PATH/$PACKAGE_WITH_REV" \
      "$WORK_DIR/TARS/$EFFECTIVE_ARCHITECTURE/$PKGNAME/$PACKAGE_WITH_REV"
 fi
 wait "$rsync_pid"
@@ -618,11 +630,12 @@ fi
 # Last package built gets a "latest" mark.
 # dirname of $PKGPATH = $EFFECTIVE_ARCHITECTURE[/$PKGFAMILY]/$PKGNAME
 # B4 FIX: quote ${_VERREV} and $(dirname ...) so spaces in PKGPATH don't split.
-/bin/ln -snf "${_VERREV}" "$(dirname "$PKGPATH")/latest"
-
-# Latest package built for a given devel prefix gets latest-$BUILD_FAMILY
-if [[ $BUILD_FAMILY ]]; then
-  /bin/ln -snf "${_VERREV}" "$(dirname "$PKGPATH")/latest-${BUILD_FAMILY}"
+if [ "${BITS_CONFINE_WORK_DIR:-}" != 1 ]; then   # confined: made by bits on the host
+  /bin/ln -snf "${_VERREV}" "$(dirname "$PKGPATH")/latest"
+  # Latest package built for a given devel prefix gets latest-$BUILD_FAMILY
+  if [[ $BUILD_FAMILY ]]; then
+    /bin/ln -snf "${_VERREV}" "$(dirname "$PKGPATH")/latest-${BUILD_FAMILY}"
+  fi
 fi
 
 # When the package is definitely fully installed, install the file that marks

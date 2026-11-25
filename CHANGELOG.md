@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** `bits build --docker --confine-work-dir`: the work dir is read-only in the build container, but for the package's own paths, so that on a shared build host one build cannot change other builds' trees, tarballs or installations (but for one of the same version label: the install dir and the fetch cache are per version, not per hash). With it, the `latest` and version links are made by bits on the host; without it nothing changes.
 - **[Fix]** The worker tells bits-store (when its admin API is configured) which common manifests it certified or repaired, so that bits-store indexes them at once, not as `index_drift` at its next listing.
 - **[Feature]** `/ops/builds` and `/ops/builds/{pipeline}` name who queued a build the build queue started (`queued_by`), for its community's admins: the Monitoring tab's users, without GitLab.
 - **[Feature]** `GET /ops/cvmfs-status`: the CVMFS tab's document (cvmfs-status.json) from the console backend, for anyone signed in; the worker keeps a copy of what it last wrote.

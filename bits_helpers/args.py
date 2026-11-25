@@ -1726,6 +1726,11 @@ def add_build_arguments(subparsers, ctx):
                                   "the daemon-default (host-native) image variant. "
                                   "Requires QEMU binfmt handlers to be registered on the Docker host; "
                                   "see the cross-compilation section in the reference manual."))
+  build_docker.add_argument("--confine-work-dir", dest="confineWorkDir", action="store_true", default=False,
+                            help=("Mount the work directory read-only in the build container, but for "
+                                  "the package's own paths (its BUILD, INSTALLROOT, TMP, tarball folder, "
+                                  "installation and fetch cache), so that a build cannot change another "
+                                  "package's files. For shared build hosts; needs --docker."))
   build_docker.add_argument("-v", dest="volumes", action="append", default=[],
                             help=("Additional volume to be mounted inside the Docker container, if one is used. "
                                   "May be specified multiple times. Passed verbatim to 'docker run'."))

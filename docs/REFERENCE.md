@@ -1161,6 +1161,7 @@ Build in a container with your own image, for another Linux or CPU, and isolate 
 | `-v VOLUME` | Additional volume to mount in the container (repeatable; passed to `docker run`). |
 | `--cvmfs-prefix PATH` | Bind-mount the work directory at `PATH` inside the container so packages compile with their final CVMFS paths embedded and need no relocation at publish time. Only used with `--docker`. See [No-relocation builds](#no-relocation-builds-with---cvmfs-prefix). |
 | `--container-use-workdir` | Mount the work directory at the same absolute path inside the container (without this flag it is mounted at `/container/bits/sw`). Ignored when `--cvmfs-prefix` is set. |
+| `--confine-work-dir` | Mount the work directory read-only, but for the package's own paths: its `BUILD/<hash>`, `INSTALLROOT/<hash>`, `TMP/<hash>`, tarball folder, installation and fetch cache. A build can then not change another package's files. For shared build hosts; needs `--docker`. See [workDir mount point inside the container](#workdir-mount-point-inside-the-container). |
 | `--docker-platform PLATFORM` | Docker `--platform` for cross-compilation (e.g. `linux/arm64`). Inferred automatically from `--architecture`; pass `native` to suppress. Requires QEMU binfmt handlers. See [§22.2 Cross-compilation via QEMU](#222-cross-compilation-via-qemu). |
 | `--sandbox MODE` | Sandbox recipe builds: `off` (default), `auto`, `podman`, or `sandbox-exec` (macOS). See [§22.1 Recipe Sandbox](#221-recipe-sandbox). |
 | `--sandbox-allow-write PATH` | With `sandbox-exec`, also let builds write under PATH (repeatable). |
@@ -4547,6 +4548,8 @@ By default the workDir is bind-mounted at `/container/bits/sw` inside the contai
 |------|--------|
 | `--container-use-workdir` | Mount the workDir at the same path as on the host (i.e. `container_workDir = workDir`). Useful when the host and container share the same filesystem. |
 | `--cvmfs-prefix PATH` | Mount the workDir at `PATH` inside the container. Packages then compile with `PATH` embedded in all install-time paths. |
+
+Whatever its mount point, the work dir is read-write in the container, but for what the host reuses after a build (`REPOS/`, the git mirrors, `LOGS/`, `MANIFESTS/`, a CI job's `jobs/`) and `SOURCES/`. With `--confine-work-dir` it is read-only, and only the package's own paths are mounted read-write. bits makes them before the container starts and stops when one is reached through a symlink. The `latest` links and the tarball's version link are made by bits on the host. A recipe that writes elsewhere in the work dir (another package's installation, `MODULES/`) fails with "Read-only file system". Two of its paths are per version, not per build: its installation (`<arch>/<pkg>/<version>-<revision>`) and its fetch cache, so a build of the same version can still change them.
 
 ### No-relocation builds with `--cvmfs-prefix`
 

@@ -1550,9 +1550,35 @@ def failure_os_lines(args, detected_arch):
   return ["OS: %s" % detected_arch]
 
 
+def _devel_suffix(spec, args):
+  return "-" + args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else ""
+
+
+def mark_build_dir(spec, args):
+  """BUILD/<pkg>-latest[-<devel prefix>] -> this build's hash, before a confined build
+  runs (its log is there): the build script makes it otherwise."""
+  build = join(build_work_dir(spec, args), "BUILD")
+  call_ignoring_oserrors(makedirs, build, exist_ok=True)
+  for suffix in dict.fromkeys(("", _devel_suffix(spec, args))):
+    call_ignoring_oserrors(symlink, spec["hash"], join(build, spec["package"] + "-latest" + suffix))
+
+
+def mark_latest(spec, args, work_dir):
+  """Once a confined build succeeded: <pkg>/latest[-<build family>] -> its version, and
+  its tarball's version link (TARS/<arch>/<pkg>/<file>)."""
+  installed = dirname(_pkg_install_path(work_dir, effective_arch(spec, args.architecture), spec))
+  for name in ["latest"] + (["latest-" + spec["build_family"]] if spec.get("build_family") else []):
+    call_ignoring_oserrors(symlink, ver_rev(spec), join(installed, name))
+  call_ignoring_oserrors(create_version_link, spec, args.architecture, work_dir)
+
+
 def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper):
   spec = specs[p]
   debug("Build command: %s", build_command)
+  confined = bool(spec.get("_own_paths"))           # --confine-work-dir
+  if confined:
+    make_own_paths(spec["_own_paths"], abspath(args.workDir))
+    mark_build_dir(spec, args)
   # Reuse marker (shown even without --debug): "[from store]" when a remote store
   # is configured (tarball from the shared cache), "[cached]" for a local-only
   # tarball. Blank when the package is compiled.
@@ -1639,6 +1665,9 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
     _bits_monitor.note_build(p, getattr(args, "architecture", ""), False)
     if nice_ladder is not None:
       nice_ladder.release(nice_token)
+    if confined:                     # its mount points, left empty: not an installation
+      call_ignoring_oserrors(rmdir, join(workDir, "TMP", spec["hash"]))
+      call_ignoring_oserrors(rmdir, _pkg_install_path(workDir, effective_arch(spec, args.architecture), spec))
   if err:
     progress.end(error=True)
   if _cache and not err:
@@ -1651,7 +1680,7 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   buildWorkDir = build_work_dir(spec, args)
 
   # Determine paths
-  devSuffix = "-" + args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else ""
+  devSuffix = _devel_suffix(spec, args)
   log_path = abspath(join(buildWorkDir, "BUILD", f"{spec['package']}-latest{devSuffix}", "log"))
   log_is_current = bool(_recipe_ran)
   build_dir = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/{spec['package']}"
@@ -1854,6 +1883,8 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
     else:
       dieOnError(err, buildErrMsg.strip())
 
+  if confined:
+    mark_latest(spec, args, workDir)
   progress.update("Syncing package to store" if getattr(syncHelper, "writeStore", "")
                   else "Finalizing package", interactive=False)
   try:
@@ -2274,13 +2305,34 @@ class _BuildLoopCtx:
   full_order: list = field(default_factory=list)
 
 
-def container_mounts(work_dir, container_work_dir, ro_sources, config_dir, script_dir, bits_dir):
+def container_mounts(work_dir, container_work_dir, ro_sources, config_dir, script_dir, bits_dir,
+                     own=None):
   """The volumes of a build's container: its work dir read-write (the build writes
   there), the rest read-only: the recipes, its build.sh and bits itself, which the
-  host runs again for the next build."""
-  return ("-v %s:%s %s-v %s:/pkgdist.bits:ro -v %s:/build.sh:ro -v %s:/bits:ro "
-          % (quote(work_dir), container_work_dir, ro_sources, quote(config_dir),
-             quote(script_dir + "/build.sh"), quote(bits_dir)))
+  host runs again for the next build. With *own* (--confine-work-dir) the work dir
+  is read-only too, but for those paths of it: the package's own."""
+  rw = "".join("-v %s:%s " % (quote(p), quote(container_work_dir + "/" + os.path.relpath(p, work_dir)))
+               for p in own or ())
+  return ("-v %s:%s%s %s-v %s:/pkgdist.bits:ro -v %s:/build.sh:ro -v %s:/bits:ro %s"
+          % (quote(work_dir), container_work_dir, ":ro" if own is not None else "", ro_sources,
+             quote(config_dir), quote(script_dir + "/build.sh"), quote(bits_dir), rw))
+
+
+def own_paths(env, work_dir):
+  """The package's own paths in the work dir (sandbox.package_own_paths)."""
+  from bits_helpers.sandbox import package_own_paths
+  return package_own_paths(env, work_dir, work_dir)
+
+
+def make_own_paths(paths, work_dir):
+  """Make the package's own paths just before its container mounts them; one reached
+  through a symlink stops the build (a build may have made it, to have it mounted)."""
+  real = realpath(work_dir)
+  for p in paths:
+    dieOnError(realpath(p) != join(real, os.path.relpath(p, work_dir)),
+               "%s is reached through a symlink: a confined build mounts only the work "
+               "dir's own directories; check what put the link there" % p)
+    makedirs(p, exist_ok=True)
 
 
 def host_dirs_read_only(work_dir, container_work_dir, reference_sources):
@@ -3203,6 +3255,8 @@ def build_one_package(p, ctx):
     ("BITS_FETCH_CACHE", fetch_cache.relative_dir(spec, effective_arch(spec, args.architecture))
      if fetch_cache.enabled(spec, getattr(args, "fetchCache", "")) else ""),
   ]
+  if getattr(args, "confineWorkDir", False) and args.docker:
+    buildEnvironment.append(("BITS_CONFINE_WORK_DIR", "1"))   # build_template.sh: its own paths only
   if "sources" in spec:
     for idx, src in enumerate(spec["sources"]):
       url, _ = parse_checksum_entry(src)   # strip any ,algo:digest suffix
@@ -3287,6 +3341,9 @@ def build_one_package(p, ctx):
     # gitlab-runner 19.1.x regression — otherwise orphans the container and the
     # build keeps running). Label only; no hash impact.
     _job_id = (os.environ.get("BITS_JOB_ID") or os.environ.get("CI_JOB_ID") or "").strip()
+    # --confine-work-dir: made in runBuildCommand, when the build starts.
+    spec["_own_paths"] = (own_paths(_pkg_env, abspath(args.workDir))
+                          if getattr(args, "confineWorkDir", False) else None)
     build_command = (
       "docker run --rm --entrypoint= {userArg}{jobLabel}"
       "{platformArg}"
@@ -3313,7 +3370,7 @@ def build_one_package(p, ctx):
       platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
       image=quote(args.dockerImage),
       mounts=container_mounts(abspath(args.workDir), container_workDir, _ro_sources,
-                              abspath(args.configDir), scriptDir, bits_dir),
+                              abspath(args.configDir), scriptDir, bits_dir, spec["_own_paths"]),
       container_workDir=container_workDir,
       extraArgs=" ".join(map(quote, args.docker_extra_args)),
       additionalEnv=" ".join(
@@ -3886,6 +3943,8 @@ def doBuild(args, parser):
       args.trustManifest = str(_tm).strip()
   if getattr(args, "docker", False) and os.environ.get("BITS_BUILD_WORK_DIR"):
     warning("BITS_BUILD_WORK_DIR is ignored with --docker: the container builds in the work dir")
+  if getattr(args, "confineWorkDir", False) and not getattr(args, "docker", False):
+    warning("--confine-work-dir needs --docker: the build is not confined")
   # Signed reuse is ON by default: reusing an untrusted remote store is unsafe.
   # Precedence: explicit CLI flag (--require-signed-reuse / --no-require-signed-reuse,
   # True/False) > system: require_signed_reuse > built-in default (True). When on

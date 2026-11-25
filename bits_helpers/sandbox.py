@@ -303,6 +303,26 @@ def _both(path: str, literal: bool = False) -> list:
     return [path] if real == path else [path, real]
 
 
+def _pkgpath(env: dict) -> str:
+    verrev = env["PKGVERSION"] + ("-" + env["PKGREVISION"] if env.get("PKGREVISION") else "")
+    family = env.get("PKGFAMILY") or ""
+    return os.path.join(env["EFFECTIVE_ARCHITECTURE"], family, env["PKGNAME"], verrev) if family \
+        else os.path.join(env["EFFECTIVE_ARCHITECTURE"], env["PKGNAME"], verrev)
+
+
+def package_own_paths(env: dict, workdir: str, build_workdir: str) -> list:
+    """The trees in the work dir that are this package's build's alone: its BUILD,
+    INSTALLROOT, TMP, store tarball folder, installation and fetch cache."""
+    h, w = env["PKGHASH"], workdir
+    paths = [os.path.join(build_workdir, "BUILD", h), os.path.join(w, "INSTALLROOT", h),
+             os.path.join(w, "TMP", h),
+             os.path.join(w, "TARS", env["EFFECTIVE_ARCHITECTURE"], "store", h[:2], h),
+             os.path.join(w, _pkgpath(env))]
+    if env.get("BITS_FETCH_CACHE"):          # relative to the work dir
+        paths.append(os.path.join(w, env["BITS_FETCH_CACHE"]))
+    return paths
+
+
 def package_write_paths(env: dict, workdir: str, build_workdir: str,
                         extra=()) -> tuple:
     """What one package's build may write, as ``(subpaths, literals, dirs)``:
@@ -315,23 +335,12 @@ def package_write_paths(env: dict, workdir: str, build_workdir: str,
     build_template.sh gets it); *extra* are --sandbox-allow-write paths.
     """
     h, name = env["PKGHASH"], env["PKGNAME"]
-    arch = env["EFFECTIVE_ARCHITECTURE"]
-    verrev = env["PKGVERSION"] + ("-" + env["PKGREVISION"] if env.get("PKGREVISION") else "")
-    family = env.get("PKGFAMILY") or ""
-    pkgpath = os.path.join(arch, family, name, verrev) if family else \
-        os.path.join(arch, name, verrev)
+    pkgpath = _pkgpath(env)
     w, b = workdir, build_workdir
-    subpaths = [
-        os.path.join(b, "BUILD", h),
-        os.path.join(w, "INSTALLROOT", h),
-        os.path.join(w, "TMP", h),
-        os.path.join(w, "TARS", arch, "store", h[:2], h),
-        os.path.join(w, "TARS", arch, name),
-        os.path.join(w, pkgpath),
-        os.path.join(w, "SOURCES", name, env["PKGVERSION"], env.get("COMMIT_HASH") or "0"),
-    ]
-    if env.get("BITS_FETCH_CACHE"):          # relative to the work dir
-        subpaths.append(os.path.join(w, env["BITS_FETCH_CACHE"]))
+    own = package_own_paths(env, w, b)
+    subpaths = own[:4] + [os.path.join(w, "TARS", env["EFFECTIVE_ARCHITECTURE"], name), own[4],
+                          os.path.join(w, "SOURCES", name, env["PKGVERSION"],
+                                       env.get("COMMIT_HASH") or "0")] + own[5:]
     literals = [os.path.join(b, "BUILD", name + "-latest"),
                 os.path.join(w, os.path.dirname(pkgpath), "latest")]
     if env.get("DEVEL_PREFIX"):
