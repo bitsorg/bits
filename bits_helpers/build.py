@@ -1298,7 +1298,7 @@ def create_provenance_info(package, specs, args):
   from bits_helpers.deps import deps_graph
   from bits_helpers.build_epoch import BUILD_EPOCH
 
-  return json.dumps({
+  record = {
     "comment": args.annotate.get(package),
     "bits_version": __version__,
     "build_epoch": BUILD_EPOCH,
@@ -1341,7 +1341,16 @@ def create_provenance_info(package, specs, args):
       },
     },
     "dependency_graph": deps_graph(specs, package, runtime_only=True),
-  })
+  }
+  # A reused package keeps this run's record, and who built it: its tarball's own.
+  if specs[package].get("cachedTarball"):
+    from bits_helpers.provenance import tarball_meta
+    member = os.path.relpath(_pkg_install_path("", effective_arch(specs[package], args.architecture),
+                                               specs[package])) + "/.meta.json"
+    origin = tarball_meta(specs[package]["cachedTarball"], member)
+    if origin is not None:
+      record["origin"] = origin
+  return json.dumps(record)
 
 
 # High-signal patterns that usually pinpoint the proximate cause of a build

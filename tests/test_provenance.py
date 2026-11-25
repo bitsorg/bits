@@ -91,8 +91,8 @@ class TestProvenanceRecord(unittest.TestCase):
     NEW_KEYS = ("build_id", "abi_tag", "reuse_policy", "provenance", "repro",
                 "cvmfs_layout")
 
-    def _record(self, args):
-        specs = {"a": _spec("a")}
+    def _record(self, args, **spec):
+        specs = {"a": _spec("a", **spec)}
         os.environ["BITS_DIST_HASH"] = "deadbeef"
         try:
             return json.loads(create_provenance_info("a", specs, args))
@@ -111,6 +111,31 @@ class TestProvenanceRecord(unittest.TestCase):
         self.assertEqual(rec["provenance"], "pure")
         self.assertEqual(rec["package"]["hash"], "ha")
         self.assertIsNone(rec["cvmfs_layout"])   # None when args has no layout
+
+    def test_a_reused_package_records_its_builder_as_origin(self):
+        import io
+        import shutil
+        import tarfile
+        import tempfile
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work)
+        args = SimpleNamespace(annotate={}, architecture="arch", defaults=["release"])
+
+        def tarball(meta, path="./arch/a/1.0-1/.meta.json"):
+            name = os.path.join(work, "a.tar.gz")
+            with tarfile.open(name, "w:gz") as tf:
+                for member, data in (("./arch/a/1.0-1/.bits-view.json", b"{}"), (path, meta)):
+                    info = tarfile.TarInfo(member)
+                    info.size = len(data)
+                    tf.addfile(info, io.BytesIO(data))
+            return name
+        rec = self._record(args, cachedTarball=tarball(b'{"build_id": "theirs", "bits_version": "0.9"}'))
+        self.assertEqual(rec["origin"], {"build_id": "theirs", "bits_version": "0.9"})
+        self.assertNotEqual(rec["build_id"], "theirs")                  # this run's record stays
+        for damaged in (tarball(b'{"build_id": "the'), tarball(b"[]"), tarball(b"{}", "./x/.meta.json"),
+                        os.path.join(work, "missing.tar.gz")):
+            self.assertNotIn("origin", self._record(args, cachedTarball=damaged))
+        self.assertNotIn("origin", self._record(args))                  # built here
 
     def test_cvmfs_layout_recorded_when_present(self):
         layout = {"cvmfs_dir": "/cvmfs/x", "install_dir": "arch",

@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Improvement]** A reused package's installed `.meta.json` keeps who built it: the tarball's own record is added as `origin` (this run's record stays, as before). Left out when the tarball has none bits can read.
 - **[Fix]** The HTTP and `b3://` stores download the object named as the package's tarball (`<pkg>-<version>-<rev>.<arch>.tar.gz`), as bits-store does: they took the first object listed under the hash, whatever its name.
 - **[Fix]** A `--symlink-packages-from` stage whose marker was cut short (bits killed while writing it) is staged again: the build stopped with "Cannot symlink package" on every run.
 - **[Fix]** The build script no longer looks up gcc before the recipe (`cversion`, `cpath`, used nowhere): where no gcc was on PATH it stopped in its preparation without a message.

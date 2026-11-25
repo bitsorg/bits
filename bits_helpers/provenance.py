@@ -112,6 +112,26 @@ def build_id_from_manifest(manifest) -> str:
     return compute_build_id(specs, args)
 
 
+def tarball_meta(tarball, member, max_members=256, max_size=4 << 20):
+  """The JSON object at *member* (<arch>/<pkg>/<ver-rev>/.meta.json) of *tarball*, or
+  None. Read streaming: packing sorts the members, so it comes among the first."""
+  import json
+  import tarfile
+  try:
+    with tarfile.open(tarball, "r|gz") as tf:
+      for n, entry in enumerate(tf):
+        if n >= max_members:
+          return None
+        if os.path.normpath(entry.name) == member:
+          if not entry.isfile() or entry.size > max_size:
+            return None
+          doc = json.loads(tf.extractfile(entry).read().decode())
+          return doc if isinstance(doc, dict) else None
+  except (OSError, EOFError, tarfile.TarError, ValueError):
+    return None
+  return None
+
+
 def recipe_tools_ref(specs) -> str:
     """A reference to the bits-recipe-tools used (version+short hash), or ''.
 
