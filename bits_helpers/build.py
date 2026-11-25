@@ -2317,6 +2317,29 @@ def check_architecture(arch):
              "defaults?)" % arch)
 
 
+SENTINEL_MAX_AGE = 600   # s: a waiter gives up after as long (download._wait_for_sentinel)
+
+
+def remove_stale_sentinels(work_dir):
+  """Remove the *.downloading sentinels a killed run left: its PID gone, ours (a new
+  container reuses it), or older than a waiter waits. Another bits run's, on this host
+  and in this PID namespace, is kept. Sentinels sit at SOURCES/cache/<h2>/<sum>/<file>
+  and TARS/<arch>/store/<h2>/<hash>."""
+  from bits_helpers.download import _sentinel_is_stale
+  for pattern in (os.path.join(work_dir, "SOURCES", "cache", "*", "*", "*.downloading"),
+                  os.path.join(work_dir, "TARS", "*", "store", "*", "*.downloading")):
+    for sentinel in glob(pattern):
+      try:
+        with open(sentinel) as f:
+          ours = f.read().strip() == str(os.getpid())
+        old = time.time() - os.path.getmtime(sentinel) > SENTINEL_MAX_AGE
+      except OSError:
+        continue
+      if ours or old or _sentinel_is_stale(sentinel):
+        debug("Removing stale sentinel: %s", sentinel)
+        call_ignoring_oserrors(os.unlink, sentinel)
+
+
 def own_install_dir(work_dir, path):
   """Stop unless *path* (made by _pkg_install_path) is a plain path under the work dir:
   no "", "." or ".." in what the architecture, family, name and version made of it."""
@@ -4689,32 +4712,8 @@ def doBuild(args, parser):
         scheduler.renice_watchdog = ReniceWatchdog(boost_after=_boost_after, log=info).start()
 
   # --- Stale sentinel cleanup -------------------------------------------------
-  # Remove any leftover *.downloading sentinels from a previous run that was
-  # killed before it could clean up.  This must happen BEFORE launching the
-  # prefetch pool so that no live sentinels are confused with stale ones.
-  #
-  # Sentinels are only ever created at two fixed, known depths (see
-  # _prefetch_package / bits_helpers.download):
-  #   - source archives:  SOURCES/<package>/<version>/<file>.downloading
-  #   - prebuilt tarballs: TARS/<arch>/store/<hash[:2]>/<hash>.downloading
-  #     (resolve_store_path)
-  # Walking the WHOLE workDir would also descend INSTALLROOT and BUILD -- the
-  # entire installed stack, tens of thousands of files -- adding a long,
-  # pointless stat() storm before the first build (very noticeable on macOS).
-  # Because the depths are fixed, we don't even need a recursive walk: two
-  # depth-bounded (non-recursive) glob patterns match exactly the directories
-  # where sentinels can appear and nothing else.
-  _sentinel_globs = [
-    os.path.join(workDir, "SOURCES", "*", "*", "*.downloading"),
-    os.path.join(workDir, "TARS", "*", "store", "*", "*.downloading"),
-  ]
-  for _pattern in _sentinel_globs:
-    for _s in glob(_pattern):
-      debug("Removing stale sentinel: %s", _s)
-      try:
-        os.unlink(_s)
-      except OSError:
-        pass
+  # Before the prefetch pool starts: the claims a killed run left, not a live one's.
+  remove_stale_sentinels(workDir)
 
   # --- Optional prefetch pool -------------------------------------------------
   # Default (-1) means "auto": scale with the number of builders so that, on the

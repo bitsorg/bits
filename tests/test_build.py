@@ -323,7 +323,7 @@ class BuildTestCase(unittest.TestCase):
         "*": ["zlib"],
         # Stale-sentinel cleanup scans these two depth-bounded globs; no stale
         # .downloading sentinels in this fixture.
-        "/sw/SOURCES/*/*/*.downloading": [],
+        "/sw/SOURCES/cache/*/*/*.downloading": [],
         "/sw/TARS/*/store/*/*.downloading": [],
         f"/sw/TARS/{TEST_ARCHITECTURE}/store/{TEST_DEFAULT_RELEASE_BUILD_HASH[:2]}/{TEST_DEFAULT_RELEASE_BUILD_HASH}/*gz": [],
         f"/sw/TARS/{TEST_ARCHITECTURE}/store/{TEST_ZLIB_BUILD_HASH[:2]}/{TEST_ZLIB_BUILD_HASH}/*gz": [],
