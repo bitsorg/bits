@@ -343,7 +343,7 @@ class TestPrefetchPackage(unittest.TestCase):
         build._prefetch_package(spec, helper, self.tmp, self.ARCH)   # no raise
         self.assertNotIn("prefetched_tarballs", spec)
 
-    def test_records_remotely_fetched_tarball(self):
+    def test_fetches_the_tarball_into_its_hash_dir(self):
         from bits_helpers.utilities import resolve_store_path
         h = "a888a899"
         spec = {"package": "bzip2", "version": "1.0.6", "hash": h,
@@ -357,8 +357,10 @@ class TestPrefetchPackage(unittest.TestCase):
             open(os.path.join(d, name), "w").close()   # "download"
         helper = types.SimpleNamespace(fetch_tarball=_fetch)
         build._prefetch_package(spec, helper, self.tmp, self.ARCH)
-        self.assertEqual([os.path.basename(t) for t in spec["prefetched_tarballs"]],
-                         [name])
+        self.assertTrue(os.path.isfile(os.path.join(d, name)))
+        self.assertFalse(os.path.exists(d + ".downloading"))   # its claim released
+        # The signed-reuse gate does not rely on what prefetch says: packed_ledger.
+        self.assertNotIn("prefetched_tarballs", spec)
 
 
 class TestSelectCachedTarball(unittest.TestCase):

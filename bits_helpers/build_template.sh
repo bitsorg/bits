@@ -605,6 +605,14 @@ elif [ -z "$CACHED_TARBALL" ]; then
     rm -f "$_dst.list"
   fi
   _final="$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
+  # Packed here: the signed-reuse gate exempts it while unchanged (packed_ledger.py).
+  # Written before the tarball takes its place, so no one sees it unrecorded.
+  _packed="$WORK_DIR/PACKED/TARS/$HASH_PATH/$PACKAGE_WITH_REV.sha256"
+  rm -f "$_packed" || :
+  if [ -s "$_dst.sum" ]; then
+    { mkdir -p "${_packed%%/*}" && cut -d' ' -f1 < "$_dst.sum" > "$_packed"; } ||
+      echo "bits: WARNING: $PKGNAME's tarball not recorded as packed here" >&2
+  fi
   mv "$_dst" "$_final"
   # Written after the tarball, so it is never older than the file it describes.
   rm -f "$_final.sha256"

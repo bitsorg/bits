@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 from argparse import Namespace
+import glob
 import os
 import os.path
 import platform
@@ -1023,11 +1024,17 @@ class PlannedReuseBuiltAfterAllTest(unittest.TestCase):
     StopAtBuildScript = HashPolicyBuildFallbackTest.StopAtBuildScript
     _run_package = HashPolicyBuildFallbackTest._run_package
 
-    def _run(self, work_dir, skipped, order, prefetched=None, planned=plan.REMOTE):
+    def _run(self, work_dir, skipped, order, refused=False, planned=plan.REMOTE):
         def prepare(ctx):
             app = ctx.specs["hash-policy-test"]
-            if prefetched is not None:            # what the pass before brought
-                app["prefetched_tarballs"] = prefetched
+            if refused:                           # what the pass before decided
+                app["store_tarball_refused"] = True
+                fetch = ctx.syncHelper.fetch_tarball
+
+                def counted(spec):
+                    self.fetched += 1
+                    fetch(spec)
+                ctx.syncHelper.fetch_tarball = counted
             ctx.specs["cmake"] = {"package": "cmake", "is_devel_pkg": False, "requires": [],
                                   "hash": "c" * 40, "revision": "1", "not_needed": True}
             app["requires"] = app["build_requires"] = ["cmake"]
@@ -1037,7 +1044,7 @@ class PlannedReuseBuiltAfterAllTest(unittest.TestCase):
             ctx.full_order = ["cmake", "hash-policy-test"]
             self.ctx = ctx
             return ctx
-        with patch("bits_helpers.build.trusted_reuse_index", return_value={}):
+        with patch("bits_helpers.build.trusted_reuse_index", return_value={("other-arch", "0" * 40): "sha256:0"}):   # read, not it
             return self._run_package(work_dir, remote_tarball=True, prepare=prepare)
 
     def test_skipped_dependencies_come_back_first(self):
@@ -1048,11 +1055,15 @@ class PlannedReuseBuiltAfterAllTest(unittest.TestCase):
             self.assertEqual(order, ["cmake", "hash-policy-test"])
             self.assertEqual(self.ctx.skipped, set())
             self.assertEqual(set(self.ctx.specs["cmake"]), {"package", "is_devel_pkg", "requires"})
-            self.assertEqual(len(spec["prefetched_tarballs"]), 1)
-            # The next pass: the remote tarball left on disk is still not reused.
-            result, spec = self._run(work_dir, set(), [], spec["prefetched_tarballs"])
+            self.assertTrue(spec["store_tarball_refused"])
+            quarantined = os.path.join(work_dir, "QUARANTINE", resolve_store_path(TEST_ARCHITECTURE,
+                                                                                  self.remote_hash))
+            self.assertEqual(len(os.listdir(quarantined)), 1)     # kept aside, not left to reuse
+            # The next pass (the same spec): it is built, the store not asked again.
+            self.fetched = 0
+            result, spec = self._run(work_dir, set(), [], refused=True)
             self.assertIsInstance(result, self.StopAtBuildScript)
-            self.assertEqual(spec["cachedTarball"], "")
+            self.assertEqual((spec["cachedTarball"], self.fetched), ("", 0))
 
     def test_without_skipped_dependencies_it_is_built_at_once(self):
         for skipped, planned in ((set(), plan.REMOTE), ({"cmake"}, plan.BUILD)):
@@ -1094,6 +1105,93 @@ class InstallDirGuardTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self._run_package(work_dir, prepare=prepare)
             self.assertTrue(os.path.isdir(other))
+
+
+class PackedHereTest(unittest.TestCase):
+    """The signed-reuse gate exempts only a tarball a build here packed, as it was packed:
+    not one merely on disk before the fetch (an interrupted run's download, a refused
+    one, one fetched with the gate off or by another bits process)."""
+
+    remote_hash = HashPolicyBuildFallbackTest.remote_hash
+    local_hash = HashPolicyBuildFallbackTest.local_hash
+    StopAtBuildScript = HashPolicyBuildFallbackTest.StopAtBuildScript
+    _run_package = HashPolicyBuildFallbackTest._run_package
+
+    index = {("other-arch", "0" * 40): "sha256:0"}   # a signed manifest was read, without this package
+
+    def _run(self, work_dir, store=False):
+        def prepare(ctx):
+            ctx.cfg.require_signed_reuse = True
+            fetch = ctx.syncHelper.fetch_tarball
+
+            def keeps_a_file_on_disk(spec):          # as the store backends do
+                self.fetches += 1
+                if not glob.glob(os.path.join(work_dir, resolve_store_path(
+                        TEST_ARCHITECTURE, self.remote_hash), "*gz")):
+                    fetch(spec)
+            ctx.syncHelper.fetch_tarball = keeps_a_file_on_disk
+            return ctx
+        self.fetches = 0
+        with patch("bits_helpers.build.trusted_reuse_index", return_value=self.index):
+            return self._run_package(work_dir, prepare=prepare, remote_tarball=store)[1]
+
+    def _tarball(self, work_dir, data=b"on disk"):
+        directory = os.path.join(work_dir, resolve_store_path(TEST_ARCHITECTURE, self.remote_hash))
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, "hash-policy-test-1.0-%s.%s.tar.gz" % (self.remote_hash,
+                                                                               TEST_ARCHITECTURE))
+        with _REAL_OPEN(path, "wb") as stream:
+            stream.write(data)
+        return path
+
+    def test_a_tarball_already_on_disk_is_gated(self):
+        with tempfile.TemporaryDirectory() as work_dir:
+            path = self._tarball(work_dir)
+            spec = self._run(work_dir)
+            self.assertEqual((spec["cachedTarball"], os.path.exists(path)), ("", False))
+
+    def test_one_on_disk_refused_is_asked_of_the_store_once(self):
+        import hashlib
+        self.private_sha = "sha256:" + hashlib.sha256(b"remote").hexdigest()   # the store's copy
+        with tempfile.TemporaryDirectory() as work_dir:
+            path = self._tarball(work_dir)                     # an older, unrecorded copy
+            spec = self._run(work_dir, store=True)
+            self.assertEqual((spec["cachedTarball"], self.fetches), (path, 2))
+            with _REAL_OPEN(path, "rb") as stream:
+                self.assertEqual(stream.read(), b"remote")
+            self.assertNotIn("store_tarball_refused", spec)
+            self.private_sha = None                            # not vouched for: built
+            self._tarball(work_dir)
+            spec = self._run(work_dir, store=True)
+            self.assertEqual((spec["cachedTarball"], self.fetches, spec["store_tarball_refused"]),
+                             ("", 2, True))
+
+    def test_without_a_manifest_read_it_is_not_reused_but_left(self):
+        with tempfile.TemporaryDirectory() as work_dir:
+            path = self._tarball(work_dir)
+            self.index = {}                                    # offline, or none loadable
+            spec = self._run(work_dir)
+            self.assertEqual(spec["cachedTarball"], "")
+            self.assertTrue(os.path.exists(path))
+            self.assertNotIn("store_tarball_refused", spec)
+
+    def test_a_tarball_that_cannot_be_moved_aside_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as work_dir:
+            path = self._tarball(work_dir)
+            with patch("bits_helpers.packed_ledger.quarantine", side_effect=OSError("EXDEV")), \
+                 self.assertLogs("bits", "WARNING"):
+                spec = self._run(work_dir)
+            self.assertEqual((spec["cachedTarball"], spec["store_tarball_refused"]), ("", True))
+            self.assertTrue(os.path.exists(path))
+
+    def test_one_packed_here_is_reused_unless_changed_since(self):
+        from test_packed_ledger import record
+        with tempfile.TemporaryDirectory() as work_dir:
+            path = self._tarball(work_dir)
+            record(work_dir, path)
+            self.assertEqual(self._run(work_dir)["cachedTarball"], path)
+            self._tarball(work_dir, b"replaced")
+            self.assertEqual(self._run(work_dir)["cachedTarball"], "")
 
 
 class PrivateReuseTest(unittest.TestCase):

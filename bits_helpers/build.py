@@ -39,7 +39,7 @@ from bits_helpers.scm import SCMError
 from bits_helpers.sync import remote_from_url, store_urls
 from bits_helpers.build_config import BuildConfig
 from bits_helpers import plan as _plan
-from bits_helpers import fetch_cache
+from bits_helpers import fetch_cache, packed_ledger
 from bits_helpers.build_progress import BuildProgress, package_info, package_label, set_package_progress
 from dataclasses import dataclass, field
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
@@ -282,8 +282,7 @@ def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None,
   BEFORE that loop starts, so for any package not yet processed ``spec["hash"]``
   does not exist yet. Return quietly in that case instead of raising a swallowed
   KeyError: prefetch is a best-effort speedup, the main loop fetches the tarball
-  synchronously anyway, and a security gate (``--require-signed-reuse``) keys off
-  ``spec["prefetched_tarballs"]`` which we simply leave unset here.
+  synchronously anyway.
   """
   from bits_helpers.download import _acquire_download, _wait_for_sentinel, download
   from bits_helpers.checksum import parse_entry as _pe
@@ -302,14 +301,7 @@ def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None,
     if _acquire_download(tar_hash_dir):
       try:
         os.makedirs(tar_hash_dir, exist_ok=True)
-        _before = set(glob(os.path.join(tar_hash_dir, "*gz")))
         sync_helper.fetch_tarball(spec)
-        # Record what came from the REMOTE store. doBuild treats tarballs that
-        # predate its own fetch_tarball call as trusted local build-node
-        # artifacts and exempts them from --require-signed-reuse; a prefetched
-        # tarball also predates that call, but is remote and must stay gated.
-        spec["prefetched_tarballs"] = sorted(
-          set(glob(os.path.join(tar_hash_dir, "*gz"))) - _before)
       finally:
         # Always remove the sentinel so the main loop is never left waiting.
         sentinel = tar_hash_dir + ".downloading"
@@ -2926,20 +2918,12 @@ def build_one_package(p, ctx):
   tar_hash_dir = os.path.join(workDir, resolve_store_path(effective_arch(spec, args.architecture), spec["hash"]))
   debug("Looking for cached tarball in %s", tar_hash_dir)
   spec["cachedTarball"] = ""
-  _remote_tars = set()   # tarballs the fetch below brings from the remote store
   # Virtual packages (provides_repository, defaults-release) are never in the
   # store: skip the fetch/select/trusted-reuse scan entirely and build locally.
   if not spec["is_devel_pkg"] and not is_virtual_package(spec):
-    # MUTUAL EXCLUSION with the prefetch pool, not just waiting: merely
-    # waiting on the sentinel left a window — a prefetch worker that had not
-    # yet STARTED this package (no sentinel to wait on) could drop the
-    # REMOTE tarball into the hash dir between our pre-fetch snapshot below
-    # and the gate check, and the gate would then treat it as a trusted
-    # local artifact. Claiming the SAME sentinel the prefetcher claims
-    # closes it: while we hold it, _prefetch_package's _acquire_download
-    # fails and it downloads nothing; if the prefetcher holds it, we wait
-    # for it to finish (its spec["prefetched_tarballs"] write happens before
-    # its sentinel release).
+    # Mutual exclusion with the prefetch pool: while we hold its sentinel it
+    # downloads nothing here; if it holds it, we wait for its download to end.
+    # (Which tarballs the gate exempts no longer depends on it: packed_ledger.)
     _hold_sentinel = False
     if _prefetch_executor is not None:   # a prefetch pool actually started
       from bits_helpers.download import (
@@ -2958,22 +2942,15 @@ def build_one_package(p, ctx):
             except OSError:
               pass
           else:
-            break                     # live owner past timeout: proceed unguarded
+            break                     # live owner past timeout: go on, the gate still checks
       else:
         _hold_sentinel = True
     try:
-      # Tarballs already present before the remote fetch are local build-node
-      # artifacts (ultimately trusted); ones that appear only after fetch came
-      # from the remote store and are subject to --require-signed-reuse.
-      # A prefetch worker may already have pulled the REMOTE tarball into
-      # this directory — subtract whatever it downloaded, or the gate would
-      # exempt it.
-      _preFetchTars = (set(glob(os.path.join(tar_hash_dir, "*gz")))
-                       - set(spec.get("prefetched_tarballs", ())))
-      syncHelper.fetch_tarball(spec)
+      _on_disk = set(glob(os.path.join(tar_hash_dir, "*gz")))   # before the fetch
+      if not spec.get("store_tarball_refused"):   # refused once this run: built instead
+        syncHelper.fetch_tarball(spec)
       tarballs = [t for t in glob(os.path.join(tar_hash_dir, "*gz"))
                   if os.path.isfile(t)]  # skip dangling symlinks
-      _remote_tars = set(tarballs) - _preFetchTars
     finally:
       if _hold_sentinel:
         try:
@@ -2986,9 +2963,9 @@ def build_one_package(p, ctx):
       try:
         os.utime(tar_hash_dir)        # in use: bits prune keeps one touched within a day
       except OSError:                 # pruned this moment: from the store again (and its gate)
+        _on_disk = set()
         syncHelper.fetch_tarball(spec)
         tarballs = [t for t in glob(os.path.join(tar_hash_dir, "*gz")) if os.path.isfile(t)]
-        _preFetchTars, _remote_tars = set(), set(tarballs)
         spec["cachedTarball"] = _select_cached_tarball(
           tarballs, spec, effective_arch(spec, args.architecture))
     debug("Found tarball in %s" % spec["cachedTarball"]
@@ -2999,13 +2976,14 @@ def build_one_package(p, ctx):
     if spec["cachedTarball"] and cfg.store_integrity:
       from bits_helpers.store_integrity import verify_tarball_checksum
       verify_tarball_checksum(spec, workDir, args.architecture, spec["cachedTarball"])
-    # Trusted-reuse gate (--require-signed-reuse): a tarball recalled from the
-    # remote store is reused only if a verified signed manifest vouches for it
-    # (hash present AND sha256 matches). Otherwise fall through to a rebuild:
-    # an unvouched hash or a sha256 mismatch both discard the tarball and
-    # rebuild locally (the bad tarball is never reused).
-    if (spec["cachedTarball"] and cfg.require_signed_reuse
-        and spec["cachedTarball"] not in _preFetchTars):
+    # Trusted-reuse gate (--require-signed-reuse): a tarball not packed here, as it
+    # is now (packed_ledger), is reused only if a verified signed manifest vouches
+    # for it (hash AND sha256). Otherwise it is quarantined and the package built.
+    for _attempt in (1, 2):
+      _tarball = spec["cachedTarball"]
+      if not (_tarball and cfg.require_signed_reuse
+              and not packed_ledger.packed_here(workDir, _tarball)):
+        break
       _idx = trusted_reuse_index(args, workDir)
       _key = (effective_arch(spec, args.architecture), spec["hash"])
       # a restricted build: vouched for by bits-store's signature, checked on download
@@ -3015,26 +2993,45 @@ def build_one_package(p, ctx):
         _by = _sha and (syncHelper.writer_of(*_key) or "unknown")
       if _sha is None:
         warning("Trusted reuse: %s@%s not vouched for by the signed manifest; "
-                "discarding remote tarball and rebuilding.",
+                "discarding the tarball and rebuilding.",
                 spec["package"], spec["hash"])
         spec["cachedTarball"] = ""
         spec["reuse_note"] = "store tarball not certified"
       else:
-        _actual = compute_checksum_file(spec["cachedTarball"])
+        _actual = compute_checksum_file(_tarball)
         if _actual != _sha:
           # A mismatched remote tarball is never reused, but that is not fatal:
           # discard it and rebuild locally (same self-healing path as an
           # unvouched hash). Warn loudly so the store inconsistency is visible.
-          warning("Trusted reuse: remote tarball %s does not match the signed "
+          warning("Trusted reuse: tarball %s does not match the signed "
                   "manifest (expected %s, got %s); discarding and rebuilding.",
-                  os.path.basename(spec["cachedTarball"]), _sha, _actual)
+                  os.path.basename(_tarball), _sha, _actual)
           spec["cachedTarball"] = ""
           spec["reuse_note"] = "store tarball differs from the certified one"
         else:
           debug("Trusted reuse: %s@%s verified against signed manifest",
                 spec["package"], spec["hash"])
+          spec.pop("reuse_note", None)
           if _by:
             spec["store_tarball_by"] = _by
+          break
+      if not _idx:                    # the manifests vouch for nothing (offline?): left in place
+        break
+      try:                            # kept aside, never unpacked
+        info("Trusted reuse: %s moved to %s", os.path.basename(_tarball),
+             packed_ledger.quarantine(workDir, _tarball))
+      except OSError as exc:
+        warning("Trusted reuse: could not move %s aside (%s)", _tarball, exc)
+        spec["store_tarball_refused"] = True
+        break
+      if _tarball not in _on_disk or _attempt == 2:
+        spec["store_tarball_refused"] = True   # the store's this run: built, not fetched again
+        break
+      # On disk before the fetch, which then kept it: the store's copy is asked for once.
+      syncHelper.fetch_tarball(spec)
+      spec["cachedTarball"] = _select_cached_tarball(
+        [t for t in glob(os.path.join(tar_hash_dir, "*gz")) if os.path.isfile(t)],
+        spec, effective_arch(spec, args.architecture))
 
     # A hash-policy package first looks up the remote identity, so read-only
     # builds can reuse CI artifacts. Only after that lookup misses do we switch
@@ -3087,7 +3084,6 @@ def build_one_package(p, ctx):
     for d in _back:                          # their own loop pass decides afresh
       for k in ("hash", "revision", "not_needed"):
         specs[d].pop(k, None)
-    spec["prefetched_tarballs"] = sorted(set(spec.get("prefetched_tarballs", ())) | _remote_tars)
     ctx.build_order[0:0] = _back + [p]
     return
 

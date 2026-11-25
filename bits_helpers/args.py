@@ -1821,8 +1821,9 @@ def add_build_arguments(subparsers, ctx):
   build_remote.add_argument("--require-signed-reuse", dest="requireSignedReuse", action="store_true", default=None,
                             help=("Fail-closed: only reuse remote tarballs vouched for by a verified signed "
                                   "manifest (see --trust-manifest, auto-derived from the store when unset). "
-                                  "This is the DEFAULT — reusing an untrusted remote store is unsafe. Local "
-                                  "and CVMFS artifacts are unaffected."))
+                                  "This is the DEFAULT — reusing an untrusted remote store is unsafe. A "
+                                  "tarball packed in this work dir (PACKED/) and CVMFS artifacts are "
+                                  "unaffected; a refused tarball is moved to QUARANTINE/."))
   build_remote.add_argument("--no-require-signed-reuse", dest="requireSignedReuse", action="store_false",
                             help=("Disable the signed-reuse gate and reuse any remote tarball unverified "
                                   "(insecure; for a store with no signed manifest yet, or bootstrap)."))

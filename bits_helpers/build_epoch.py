@@ -49,7 +49,8 @@ COVERED = (
 # chmod u+w: existing tarballs stay valid, so BUILD_EPOCH is unchanged.
 # --confine-work-dir: its own trees emptied, its install copied, links by the host;
 # nothing changes without it and tarballs are the same, so BUILD_EPOCH is unchanged.
-COVERED_SHA256 = "c729058456fc209ca91214e4895239cc648d0571f01b87991b70a8843b925818"
+# The packed-here record (PACKED/) is written beside, not into, the tarball: unchanged.
+COVERED_SHA256 = "861219028282cbe0b9e7801e9a091413f6b70af4a46d856de9703d0954db691a"
 
 
 def covered_sha256(root=None):

@@ -249,7 +249,16 @@ Reuse from the remote archive (tier 3) is controlled by these `bits build` optio
 - `--require-signed-reuse` (the default) — fail closed: a tarball fetched from
   the remote store is reused only when a trusted signed manifest lists its hash
   **and** its sha256 matches. Unlisted or sha256 mismatch → discard and rebuild,
-  with a warning. Local build-node and CVMFS artifacts are unaffected.
+  with a warning. A tarball a build in this work dir packed is not checked while it
+  is unchanged (the build records its sha256 in `PACKED/`); any other tarball found on
+  disk is, whether a download an interrupted run left or one another bits process
+  fetched. A refused tarball is moved to `QUARANTINE/` (kept, never unpacked, removed by
+  hand); one that was on disk before the fetch is then asked of the store once more.
+  When the signed manifests vouch for nothing (none could be read, as offline), a
+  tarball is not reused but left where it is.
+  Tarballs packed before bits recorded them are checked once, also without a remote
+  store. A CI cache of the work dir must keep `PACKED/` with `TARS/`. CVMFS artifacts
+  are unaffected.
   Maximal reuse is the default: with no `--trust-manifest`, a build trusts
   every signed manifest present in the store, under `system: trust_manifest_prefix`
   (default `MANIFESTS/common-manifest`; several prefixes, comma-separated, are

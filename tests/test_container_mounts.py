@@ -55,14 +55,17 @@ class ConfinedWorkDirTest(unittest.TestCase):
             make_own_paths(own, w)
             self.assertEqual([os.path.relpath(p, w) for p in own],
                              ["BUILD/ab12cd", "INSTALLROOT/ab12cd", "TMP/ab12cd", "TARS/el9/store/ab/ab12cd",
-                              "el9/zlib/v1.3-2", "FETCH_CACHE/el9/zlib/v1.3"])
+                              "el9/zlib/v1.3-2", "PACKED/TARS/el9/store/ab/ab12cd",
+                              "FETCH_CACHE/el9/zlib/v1.3"])
             self.assertTrue(all(os.path.isdir(p) for p in own))        # made before the container
             words = shlex.split(container_mounts(w, "/c", "", "/cfg", "/s", "/bits", own))
             vols = [words[i + 1] for i, x in enumerate(words) if x == "-v"]
             self.assertEqual(vols[0], w + ":/c:ro")
             self.assertEqual(vols[4:], ["%s/%s:/c/%s" % (w, r, r) for r in (
                 "BUILD/ab12cd", "INSTALLROOT/ab12cd", "TMP/ab12cd", "TARS/el9/store/ab/ab12cd",
-                "el9/zlib/v1.3-2", "FETCH_CACHE/el9/zlib/v1.3")])
+                "el9/zlib/v1.3-2", "PACKED/TARS/el9/store/ab/ab12cd", "FETCH_CACHE/el9/zlib/v1.3")])
+            unpack = own_paths(dict(ENV, CACHED_TARBALL="/c/TARS/x.tar.gz"), w)    # unpacks
+            self.assertNotIn(os.path.join(w, "PACKED/TARS/el9/store/ab/ab12cd"), unpack)
             # without it, as before: the work dir writable, nothing else added
             self.assertEqual(shlex.split(container_mounts(w, "/c", "", "/cfg", "/s", "/bits"))[1], w + ":/c")
 

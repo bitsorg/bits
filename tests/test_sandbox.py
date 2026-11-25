@@ -572,6 +572,7 @@ class PackageWritePathsTests(unittest.TestCase):
         self.assertIn("/cc", sub)
         self.assertIn("/extra", sub)
         self.assertIn("/sw/MODULES", sub)
+        self.assertIn("/sw/PACKED/TARS/osx_arm64/store/ab/ab12cd", sub)   # its packed-here record
         self.assertEqual(lit, ["/bw/BUILD/zlib-latest", "/sw/osx_arm64/zlib/latest"])
         for d in ("/sw", "/bw", "/sw/TARS/osx_arm64/store/ab", "/sw/osx_arm64/zlib",
                   "/sw/SOURCES/zlib/v1.3", "/sw/SPECS"):

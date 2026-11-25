@@ -312,12 +312,14 @@ def _pkgpath(env: dict) -> str:
 
 def package_own_paths(env: dict, workdir: str, build_workdir: str) -> list:
     """The trees in the work dir that are this package's build's alone: its BUILD,
-    INSTALLROOT, TMP, store tarball folder, installation and fetch cache."""
+    INSTALLROOT, TMP, store tarball folder, installation, packed-here record (when it
+    packs, not unpacks) and fetch cache."""
     h, w = env["PKGHASH"], workdir
+    store = os.path.join("TARS", env["EFFECTIVE_ARCHITECTURE"], "store", h[:2], h)
     paths = [os.path.join(build_workdir, "BUILD", h), os.path.join(w, "INSTALLROOT", h),
-             os.path.join(w, "TMP", h),
-             os.path.join(w, "TARS", env["EFFECTIVE_ARCHITECTURE"], "store", h[:2], h),
-             os.path.join(w, _pkgpath(env))]
+             os.path.join(w, "TMP", h), os.path.join(w, store), os.path.join(w, _pkgpath(env))]
+    if not env.get("CACHED_TARBALL"):        # packs its tarball: records it (packed_ledger)
+      paths.append(os.path.join(w, "PACKED", store))
     if env.get("BITS_FETCH_CACHE"):          # relative to the work dir
         paths.append(os.path.join(w, env["BITS_FETCH_CACHE"]))
     return paths

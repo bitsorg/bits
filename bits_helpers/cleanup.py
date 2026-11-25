@@ -572,6 +572,7 @@ def _try_evict(entry: _SentinelEntry, dry_run: bool, assume_stored: bool = False
 
 _NON_ARCH_DIRS = {"TARS", "BUILD", "TMP", "INSTALLROOT", "SOURCES", "SPECS",
                   "MIRROR", "REPOS", "MANIFESTS", "LOGS", "MODULES", "FETCH_CACHE",
+                  "PACKED", "QUARANTINE",
                   "wrapper-scripts"}
 _HEX_HASH_RE = None   # compiled lazily (re imported locally)
 
