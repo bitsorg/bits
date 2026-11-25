@@ -118,7 +118,7 @@ class BuiltPackageCleanupTest(unittest.TestCase):
                           log=MagicMock())
         with patch.dict(os.environ, {"BITS_BUILD_WORK_DIR": self.dir, "BITS_DIST_HASH": "0123456789"}), \
              patch("bits_helpers.build.execute",
-                   side_effect=lambda cmd, printer: printer("bits:stage:recipe") or rc), \
+                   side_effect=lambda cmd, printer, **kw: printer("bits:stage:recipe") or rc), \
              patch("bits_helpers.build.detectArch", return_value=ARCH), \
              patch("bits_helpers.build.doFinalSync") as sync, \
              patch("bits_helpers.monitor.note_build"):

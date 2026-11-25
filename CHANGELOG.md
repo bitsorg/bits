@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Change]** A native build (no `--docker`) runs its script without the run's credentials (tokens, keys, URLs holding a login, proxies and package indexes included), as a container build already does: a recipe gets one only with `-e NAME`. It inherited all but the S3 keys. (ALICE's xjalienfs tests need `-e JALIEN_TOKEN_CERT -e JALIEN_TOKEN_KEY`.)
 - **[Change]** `bits build -e NAME` without a value hands the build script NAME's value from bits' environment, as `docker run -e NAME` does, without it appearing on a command line; it set NAME empty.
 - **[Improvement]** bits warns about a signed manifest without `expires`, once per manifest and run: where no sequence is remembered, an older signed copy put back would be accepted. `bits certify` writes none unless given `--valid-days` (the orchestrator writes 30 days). REFERENCE says to keep `$BITS_TRUST_SEQUENCE_STATE` on runners with a fresh home.
 - **[Improvement]** A reused package's installed `.meta.json` keeps who built it: the tarball's own record is added as `origin` (this run's record stays, as before). Left out when the tarball has none bits can read.

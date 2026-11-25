@@ -742,7 +742,7 @@ class WriteFailureSummaryTest(unittest.TestCase):
                         with patch.dict(os.environ, {"BITS_BUILD_WORK_DIR": override or args.workDir,
                                                      "BITS_DIST_HASH": "0123456789"}), \
                              patch("bits_helpers.build.execute",
-                                   side_effect=lambda cmd, printer: printer("bits:stage:recipe") or 7), \
+                                   side_effect=lambda cmd, printer, **kw: printer("bits:stage:recipe") or 7), \
                              patch("bits_helpers.build.detectArch", return_value=ARCH), \
                              patch("bits_helpers.monitor.note_build"):
                             if builders == 1:
@@ -769,7 +769,7 @@ class WriteFailureSummaryTest(unittest.TestCase):
             log.write("error: an older build's log\n")
         printed = ["bits:stage:prepare", "init.sh: line 5: v1-1/init.sh: No such file or directory"]
 
-        def execute(cmd, printer):
+        def execute(cmd, printer, **kw):
             for line in printed:
                 printer(line)
             return 1

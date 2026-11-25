@@ -85,8 +85,8 @@ def getstatusoutput(command, timeout=None, cwd=None, env=None):
   return proc.returncode, merged_output
 
 
-def execute(command, printer=debug, timeout=None):
-  popen = Popen(command, shell=isinstance(command, str), stdout=PIPE, stderr=STDOUT)
+def execute(command, printer=debug, timeout=None, env=None):
+  popen = Popen(command, shell=isinstance(command, str), stdout=PIPE, stderr=STDOUT, env=env)
   return monitor_progress(popen, printer, timeout)
 
 

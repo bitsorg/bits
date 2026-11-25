@@ -34,7 +34,7 @@ class LatestLinksTest(unittest.TestCase):
                           log=MagicMock())
         seen = {}
 
-        def execute(cmd, printer):          # what the build sees while it runs
+        def execute(cmd, printer, **kw):    # what the build sees while it runs
             seen["build"] = os.path.realpath(os.path.join(self.dir, "BUILD", "zlib-latest"))
             seen["latest"] = os.path.lexists(os.path.join(self.dir, ARCH, "zlib", "latest"))
             os.makedirs(os.path.join(self.dir, ARCH, "zlib", "v1.3.1-1"), exist_ok=True)

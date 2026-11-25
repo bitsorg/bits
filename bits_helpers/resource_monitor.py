@@ -108,7 +108,7 @@ def monitor_stats(p_id, stats_file_name):
         json_dump(data, sf)
 
 
-def run_monitor_on_command(command, stats_file_name, printer, timeout=None):
+def run_monitor_on_command(command, stats_file_name, printer, timeout=None, env=None):
     """Run *command* in a subprocess while recording its resource usage.
 
     Launches a monitoring thread that writes periodic resource snapshots to
@@ -117,7 +117,7 @@ def run_monitor_on_command(command, stats_file_name, printer, timeout=None):
     popen = subprocess.Popen(
         command, shell=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        close_fds=True,
+        close_fds=True, env=env,
     )
     mon_thd = Thread(target=monitor_stats, args=(popen.pid, stats_file_name))
     mon_thd.start()

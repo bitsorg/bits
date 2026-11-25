@@ -18,6 +18,7 @@ from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
                                     write_checksums_enabled,
                                     checksum_file as compute_checksum_file)
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
+from bits_helpers.cmd import credential_free_env
 from bits_helpers.sandbox import wrap_build_command
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, ver_rev, is_virtual_package, hook_names
@@ -1842,11 +1843,19 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       _recipe_ran.append(True)
     progress(fmt, *a)
   _bits_monitor.note_build(p, getattr(args, "architecture", ""), True)
+  # A native build runs the recipe on this host: no tokens or keys, only what -e passes
+  # (a container build gets nothing but its -e variables already).
+  _env = None
+  if not getattr(args, "docker", False):
+    _env = credential_free_env()
+    _env.update((n, os.environ[n]) for n in cli_environment(getattr(args, "environment", []))[1]
+                if n in os.environ)
   try:
     if args.resourceMonitoring:
-      err = run_monitor_on_command(build_command, "{}/{}.json".format(scriptDir, p), printer=_printer)
+      err = run_monitor_on_command(build_command, "{}/{}.json".format(scriptDir, p), printer=_printer,
+                                   env=_env)
     else:
-      err = execute(build_command, printer=_printer)
+      err = execute(build_command, printer=_printer, env=_env)
   except BaseException:
     progress.end(error=True)
     raise

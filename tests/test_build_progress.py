@@ -114,7 +114,7 @@ class BuildProgressTest(unittest.TestCase):
         helper = Namespace(remoteStore="b3://cache", writeStore="b3://cache")
         messages = []
         with patch.object(build, "info", messages.append), \
-             patch.object(build, "execute", side_effect=lambda cmd, printer: execute(cmd, printer=printer)), \
+             patch.object(build, "execute", side_effect=lambda cmd, printer, **kw: execute(cmd, printer=printer, **kw)), \
              patch.object(build, "doFinalSync") as sync, \
              patch.object(build, "detectArch", return_value="slc7_x86-64"), \
              patch.dict("os.environ", {"BITS_DIST_HASH": "0" * 40}), \
