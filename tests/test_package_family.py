@@ -54,6 +54,15 @@ class TestResolvePkgFamily(unittest.TestCase):
     def test_glob_no_match_returns_default(self):
         self.assertEqual(resolve_pkg_family(self.FAMILY_CFG, "coral"), "cms")
 
+    def test_a_family_out_of_the_architecture_is_refused(self):
+        for family in ("..", "../PACKED", "a/../..", "a//b", "."):
+            with self.subTest(family=family), self.assertRaises(SystemExit):
+                resolve_pkg_family({"package_family": {family: ["ROOT"]}}, "ROOT")
+            with self.subTest(default=family), self.assertRaises(SystemExit):
+                resolve_pkg_family({"package_family": {"default": family}}, "coral")
+        self.assertEqual(resolve_pkg_family({"package_family": {"cms/ext": ["ROOT"]}}, "ROOT"),
+                         "cms/ext")                       # a directory under it is fine
+
     def test_no_package_family_key_returns_empty(self):
         self.assertEqual(resolve_pkg_family({}, "ROOT"), "")
 
@@ -265,6 +274,15 @@ class TestGetPackageListPkgFamily(unittest.TestCase):
     def test_pkg_family_empty_when_no_config(self):
         specs = self._call_getPackageList({})
         self.assertEqual(specs["myapp"]["pkg_family"], "")
+
+    def test_a_version_or_revision_out_of_its_directory_is_refused(self):
+        for recipe, meta in (("package: myapp\nversion: ..\n---\n", {}),
+                             ("package: myapp\nversion: .\n---\n", {}),
+                             ("package: myapp\nversion: v1\n---\n", {"force_revision": "x/../.."})):
+            with self.subTest(recipe=recipe, meta=meta), \
+                 patch.dict(self.RECIPES, {"myapp": recipe}), self.assertRaises(SystemExit):
+                self._call_getPackageList(meta)
+        self.assertEqual(self._call_getPackageList({"force_revision": ""})["myapp"]["version"], "v1")
 
     def test_pkg_family_empty_when_defaults_meta_none(self):
         specs = self._call_getPackageList(None)

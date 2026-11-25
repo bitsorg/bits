@@ -351,6 +351,8 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
       raw = defaults_meta.get("force_revision")
       if raw is not None:
         spec["force_revision"] = "" if raw == "" else str(raw)
+    dieOnError("/" in str(spec.get("force_revision") or ""),
+               "%s: force_revision %r has a '/'" % (spec["package"], spec.get("force_revision")))
 
     # Resolve hash labels only once storeHashes has computed package identity.
     if (defaults_meta or {}).get("revision_policy") == "hash":
@@ -567,6 +569,9 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     if _ovr_dir:
       spec["checksums_dir"] = _ovr_dir
     spec["version"] = spec["version"].replace("/", "_")
+    # The version names a directory under the package's: never one out of it.
+    dieOnError(spec["version"] in ("", ".", ".."),
+               "%s: version %r is not a directory name" % (spec["package"], spec["version"]))
     # Resolve version-/arch-/defaults-conditional patches now that the version is
     # final (after overrides + pins). filterPatches drops inactive entries and
     # strips the :matcher, so the hash, checkout copy, $PATCHn env and patch

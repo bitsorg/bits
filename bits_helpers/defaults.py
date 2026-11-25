@@ -160,8 +160,16 @@ def resolve_pkg_family(defaults_meta: dict, package_name: str) -> str:
       continue
     for pat in patterns:
       if fnmatch.fnmatch(package_name, str(pat)):
-        return family
-  return default_family
+        return _checked_family(family)
+  return _checked_family(default_family)
+
+
+def _checked_family(family):
+  """A family is a directory under the architecture: never one out of it."""
+  family = str(family or "")
+  dieOnError(bool(family) and any(p in ("", ".", "..") for p in family.split("/")),
+             "package_family: %r is not a directory name under the architecture" % family)
+  return family
 
 
 # The build type a chain gets when it qualifies the architecture (a compiler

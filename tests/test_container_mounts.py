@@ -66,6 +66,15 @@ class ConfinedWorkDirTest(unittest.TestCase):
             # without it, as before: the work dir writable, nothing else added
             self.assertEqual(shlex.split(container_mounts(w, "/c", "", "/cfg", "/s", "/bits"))[1], w + ":/c")
 
+    def test_a_path_out_of_its_place_is_refused(self):
+        with tempfile.TemporaryDirectory() as t:
+            w = os.path.join(t, "sw")
+            for env in (dict(ENV, PKGFAMILY=".."), dict(ENV, PKGVERSION="..", PKGREVISION=""),
+                        dict(ENV, PKGNAME="../../PACKED")):
+                with self.subTest(env=env), self.assertRaises(SystemExit):
+                    make_own_paths(own_paths(env, w), w)
+            self.assertEqual(sorted(os.listdir(t)), [])      # nothing made
+
     def test_a_path_through_a_symlink_is_refused(self):
         with tempfile.TemporaryDirectory() as t:
             w = os.path.join(t, "sw")

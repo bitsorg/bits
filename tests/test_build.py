@@ -1063,6 +1063,39 @@ class PlannedReuseBuiltAfterAllTest(unittest.TestCase):
                 self.assertEqual((order, spec["cachedTarball"]), ([], ""))
 
 
+class InstallDirGuardTest(unittest.TestCase):
+    """An install dir that is not the package's own (a version of "..") is never removed."""
+
+    _run_package = HashPolicyBuildFallbackTest._run_package
+    StopAtBuildScript = HashPolicyBuildFallbackTest.StopAtBuildScript
+    remote_hash = HashPolicyBuildFallbackTest.remote_hash
+    local_hash = HashPolicyBuildFallbackTest.local_hash
+
+    def test_an_architecture_or_path_out_of_place_is_refused(self):
+        from bits_helpers.build import check_architecture, own_install_dir
+        for arch in ("x86_64-el9/..", "..", "a..b", "", "x86_64 el9", "/abs"):
+            with self.subTest(arch=arch), self.assertRaises(SystemExit):
+                check_architecture(arch)
+        for arch in ("slc7_x86-64", "x86_64-el10-gcc15-opt", "osx_arm64", "share", "el9.5_x86-64"):
+            check_architecture(arch)
+        for path in ("/w/el9/../PACKED/TARS", "/w/el9/x/.", "/elsewhere/el9/x/1"):
+            with self.subTest(path=path), self.assertRaises(SystemExit):
+                own_install_dir("/w", path)
+        own_install_dir("/w", "/w/el9/cms/x/1-1")
+
+    def test_refused_before_anything_is_removed(self):
+        def prepare(ctx):
+            spec = ctx.specs["hash-policy-test"]
+            spec["version"], spec["force_revision"] = "..", ""
+            return ctx
+        with tempfile.TemporaryDirectory() as work_dir:
+            other = os.path.join(work_dir, TEST_ARCHITECTURE, "other", "1-1")
+            os.makedirs(other)
+            with self.assertRaises(SystemExit):
+                self._run_package(work_dir, prepare=prepare)
+            self.assertTrue(os.path.isdir(other))
+
+
 class PrivateReuseTest(unittest.TestCase):
     """A restricted build bits-store's signature vouches for (checked on download)
     passes signed reuse without a signed manifest; bytes other than vouched do not."""

@@ -2318,6 +2318,22 @@ def container_mounts(work_dir, container_work_dir, ro_sources, config_dir, scrip
              quote(config_dir), quote(script_dir + "/build.sh"), quote(bits_dir), rw))
 
 
+def check_architecture(arch):
+  """Stop unless *arch* (with what the defaults append) is a plain directory name."""
+  dieOnError(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", arch or "") or ".." in arch,
+             "architecture %r is not a directory name (append_arch or architecture: in the "
+             "defaults?)" % arch)
+
+
+def own_install_dir(work_dir, path):
+  """Stop unless *path* (made by _pkg_install_path) is a plain path under the work dir:
+  no "", "." or ".." in what the architecture, family, name and version made of it."""
+  rest = path[len(work_dir):] if path.startswith(join(work_dir, "")) else None
+  dieOnError(rest is None or any(c in ("", ".", "..") for c in rest.strip(os.sep).split(os.sep)),
+             "%s is not an install dir of its own under %s: check the architecture, "
+             "package_family, name and version" % (path, work_dir))
+
+
 def own_paths(env, work_dir):
   """The package's own paths in the work dir (sandbox.package_own_paths)."""
   from bits_helpers.sandbox import package_own_paths
@@ -2329,9 +2345,13 @@ def make_own_paths(paths, work_dir):
   through a symlink stops the build (a build may have made it, to have it mounted)."""
   real = realpath(work_dir)
   for p in paths:
+    dieOnError(os.path.normpath(p) != p or not p.startswith(join(work_dir, "")),
+               "%s is not a plain path in the work dir: a confined build mounts only "
+               "its own directories" % p)
     dieOnError(realpath(p) != join(real, os.path.relpath(p, work_dir)),
                "%s is reached through a symlink: a confined build mounts only the work "
                "dir's own directories; check what put the link there" % p)
+  for p in paths:                    # none made unless all are its own
     makedirs(p, exist_ok=True)
 
 
@@ -2772,6 +2792,7 @@ def build_one_package(p, ctx):
   # Now that we have all the information about the package we want to build, let's
   # check if it wasn't built / unpacked already.
   hashPath = _pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)
+  own_install_dir(workDir, hashPath)     # removed below: never another's
   hashFile = hashPath + "/.build-hash"
   # If the folder is a symlink that resolves to an existing directory,
   # we consider it to be on CVMFS and take the hash for good.
@@ -3041,6 +3062,7 @@ def build_one_package(p, ctx):
       buildRoot = join(buildWorkDir, "BUILD", spec["hash"])
       if _handle_already_installed(local_hash_path):
         return
+      own_install_dir(workDir, local_hash_path)
       shutil.rmtree(local_hash_path.encode("utf-8"), True)
 
   # Planned as reused but built after all (e.g. its tarball failed the signed
@@ -3699,6 +3721,8 @@ def doBuild(args, parser):
   # profile marks an append_arch own_hash_neutral (e.g. -opt/-dbg).
   args.architecture_own_hash = compute_own_hash_arch(
       defaultsMeta, args.defaults, raw_architecture)
+  for _a in (args.architecture, args.architecture_own_hash):   # a directory name in every path
+    check_architecture(_a)
   if args.architecture != raw_architecture:
     debug("qualify_arch active: using combined architecture %s (raw: %s)",
           args.architecture, raw_architecture)
