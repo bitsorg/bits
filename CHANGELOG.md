@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits publish --release-view NAME -n` only says where it would place the view; it built the view for real.
 - **[Fix]** `bits cvmfs publish` does not rewrite a dependency path in a `.bits-relocate` entry that leaves the package through a directory link, as `relocate-me.sh` now refuses one.
 - **[Fix]** `bits publish PACKAGE --cvmfs-target … -n` only says what it would publish, from where and to where; it unpacked, relocated and submitted the package to prepub for real.
 - **[Fix]** `--build-nice` with rootless podman gives a container no `--cpu-shares` when no cgroup controller is delegated to the user at all (no systemd user session); the check missed that case, and the container could not start.

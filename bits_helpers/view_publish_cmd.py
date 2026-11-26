@@ -108,6 +108,10 @@ def doPublishView(args, parser):
         return False
 
     views_dir = layout_views_dir(roots)
+    if getattr(args, "dryRun", False):      # nothing is made
+        info("[dry-run] publish --release-view: would place '%s' (%s), %d package(s), under "
+             "%s/%s", name, build_id, len(roots), store, views_dir)
+        return True
     result = build_published_view(roots, name, build_id, architecture, store,
                                   views_dir=views_dir)
     # Compliance obligations live at the release root: place NOTICE and the

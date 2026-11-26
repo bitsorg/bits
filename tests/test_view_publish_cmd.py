@@ -81,6 +81,12 @@ class TestDoPublishView(unittest.TestCase):
                 os.path.join(s, "release-views", "rel-L-1", "el9")))
             self.assertFalse(os.path.exists(os.path.join(s, "Views")))
 
+    def test_a_dry_run_makes_nothing(self):
+        with tempfile.TemporaryDirectory() as s:
+            _deployed(s, "ROOT/1", "L-1", files=("bin/root",))
+            self.assertTrue(vp.doPublishView(_args(s, dryRun=True), None))
+            self.assertFalse(os.path.exists(os.path.join(s, "Views")))
+
     def test_no_packages_fails(self):
         with tempfile.TemporaryDirectory() as s:
             os.makedirs(os.path.join(s, "el9"))
