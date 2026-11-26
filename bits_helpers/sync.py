@@ -1631,18 +1631,20 @@ class Boto3RemoteSync(RemoteSync):
     except Exception as exc:
       debug("rev-index: list failed for %s (%s)", prefix, exc)
       return out
-    for key in keys:
-      rev = rev_index.revision_of(key, arch, package, version)
-      if not rev:
-        continue
+    def body(key):
       try:
-        h = self.s3.get_object(Bucket=self.remoteStore, Key=key)["Body"] \
-                .read().decode("utf-8", "replace").strip()
-      except Exception as exc:
+        return self.s3.get_object(Bucket=self.remoteStore, Key=key)["Body"] \
+                   .read().decode("utf-8", "replace").strip()
+      except Exception as exc:  # pylint: disable=broad-except
         debug("rev-index: get failed for %s (%s)", key, exc)
-        continue
-      if h:
-        out[rev] = h
+        return ""
+    revs = {key: rev for key in keys for rev in [rev_index.revision_of(key, arch, package, version)]
+            if rev}
+    from concurrent.futures import ThreadPoolExecutor   # one GET each: not one after another
+    with ThreadPoolExecutor(max_workers=min(8, len(revs) or 1)) as pool:
+      for key, h in zip(revs, pool.map(body, revs)):
+        if h:
+          out[revs[key]] = h
     return out
 
   def list_store_tarballs(self, arch, pkg_hash):

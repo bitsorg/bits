@@ -134,6 +134,21 @@ class RevMarkerS3TestCase(unittest.TestCase):
         got = self._syncer(s3).read_rev_markers("fftw", "3.3.10", ARCH)
         self.assertEqual(got, {"1": "h1", "2": "h2"})
 
+    def test_read_markers_asks_for_them_at_once(self):
+        import threading
+        pfx = ri.marker_prefix(ARCH, "fftw", "3.3.10")
+        s3 = FakeS3(objects={pfx + "1": b"h1", pfx + "2": b"h2", pfx + "3": b"h3"})
+        get, both = s3.get_object, threading.Barrier(2, timeout=5)
+
+        def get_object(Bucket, Key):
+            if Key.endswith("3"):
+                raise RuntimeError("one marker unreadable")
+            both.wait()                     # one after another would never get here twice
+            return get(Bucket=Bucket, Key=Key)
+        s3.get_object = get_object
+        got = self._syncer(s3).read_rev_markers("fftw", "3.3.10", ARCH)
+        self.assertEqual(got, {"1": "h1", "2": "h2"})
+
     def test_read_markers_empty_when_none(self):
         got = self._syncer(FakeS3()).read_rev_markers("fftw", "3.3.10", ARCH)
         self.assertEqual(got, {})
