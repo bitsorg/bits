@@ -571,7 +571,7 @@ See: [Flavours](REFERENCE.md#flavours).
 
 Also asked as: *Pip install fails in my recipe with no network. How do I allow it?*
 
-The sandbox blocks outgoing network by default. Add `sandbox_network: off` to the recipe header to allow it for that recipe; a build-wide default can be set with `bits build --sandbox-network on|off` or `sandbox_network:` in the defaults, but the recipe's own field always wins. The field is ignored when the sandbox is off.
+The sandbox blocks outgoing network by default. Add `sandbox_network: off` to the recipe header to allow it for that recipe; a build-wide default can be set with `bits build --sandbox-network on|off` or `sandbox_network:` in the defaults, but the recipe's own field always wins (a deliberate exception for now, see REFERENCE "Per-recipe network control"). The field is ignored when the sandbox is off.
 
 See: [Per-recipe network control](REFERENCE.md#per-recipe-network-control), [Build sandbox](REFERENCE.md#build-sandbox).
 

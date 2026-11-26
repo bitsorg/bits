@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Improvement]** REFERENCE and FAQ say that a recipe lifting the sandbox's network block (`sandbox_network: off`) is a deliberate exception for now: no command-line or defaults setting can keep it on, so reviewing a recipe includes that line.
 - **[Fix]** The macOS build sandbox no longer lets a build read the user's credentials: `~/.bits` (store and GitLab tokens), `~/.ssh`, `~/.aws`, `~/.netrc`, `~/.gnupg`, `~/.docker/config.json` and the keychains, under `$HOME` and the account's own home, are denied after the disk-wide read allow (a work dir inside one stays readable). A recipe that clones over ssh or reads `~/.netrc` itself now fails in the sandbox.
 - **[Fix]** `bits publish PACKAGE --cvmfs-target` makes its working copy and its tar under the work dir (`TMP/`, or `--scratch-dir`), not the system temp dir, and removes the copy whatever stops the publish: a multi-GB package could fill a small `/tmp` twice over, and a failed copy or relocation left it there. A work dir it may not write needs `--scratch-dir`.
 - **[Fix]** `bits cvmfs-publish` unpacks a tarball only when no member is absolute or climbs out (`..`), and without restoring its owners, as the build's own unpack does: publish took it unchecked.

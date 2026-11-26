@@ -4660,6 +4660,8 @@ make install
 
 The field is silently ignored when `--sandbox=off`. The build-wide default comes from `bits build --sandbox-network on|off`, then `sandbox_network:` in the active defaults, then `on`; a recipe's own field always wins.
 
+That a recipe can lift the block is a deliberate exception, for now: builds that fetch during their build (pip, gem, git-lfs) need it, and neither the command line nor the defaults can keep it on for them. The block therefore stops a build's mistakes, not a recipe written to reach out: reviewing a recipe includes its `sandbox_network:` line. This is expected to change once bits-store serves what such builds fetch.
+
 #### Docker-in-Docker (DinD)
 
 If `bits --docker` is invoked from inside an existing Docker container (for example, a GitLab CI job that itself runs inside Docker), adding a nested podman layer is still possible but requires the outer Docker container to have been started with:
