@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** Stamping a legacy `b3://` object's sha256 keeps its other metadata (`bits-by`, who uploaded it) and content type: the metadata self-copy replaced all of it with the sha256 alone.
 - **[Fix]** With a write store, a new counter revision is reserved in the store (its rev-index marker) when it is picked, before the build; one another hash took meanwhile is skipped for the next free number. Two builds of one version running at once both took the same number, and one replaced the other's install path. bits-store markers are write-once; an S3 store's are where it supports `If-None-Match`, else the last writer wins. A build that fails keeps its number for a retry of the same hash (others skip it). A store that cannot be asked keeps the number, as before.
 - **[Change]** A native build (no `--docker`) runs its script without the run's credentials (tokens, keys, URLs holding a login, proxies and package indexes included), as a container build already does: a recipe gets one only with `-e NAME`. It inherited all but the S3 keys. (ALICE's xjalienfs tests need `-e JALIEN_TOKEN_CERT -e JALIEN_TOKEN_KEY`.)
 - **[Change]** `bits build -e NAME` without a value hands the build script NAME's value from bits' environment, as `docker run -e NAME` does, without it appearing on a command line; it set NAME empty.

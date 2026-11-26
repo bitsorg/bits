@@ -1504,9 +1504,12 @@ class Boto3RemoteSync(RemoteSync):
     try:
       # The managed copy, server-side: CopyObject is refused above 5 GB, and an
       # object that cannot be stamped is re-hashed on every publish.
-      self.s3.copy({"Bucket": self.writeStore, "Key": key}, self.writeStore, key,
-                   ExtraArgs={"Metadata": {_SHA256_META: sha},
-                              "MetadataDirective": "REPLACE"})
+      # REPLACE sets all of it: keep what the object had (bits-by, its type).
+      meta = {k: v for k, v in (head.get("Metadata") or {}).items() if k.lower() != _SHA256_META}
+      extra = {"Metadata": dict(meta, **{_SHA256_META: sha}), "MetadataDirective": "REPLACE"}
+      if head.get("ContentType"):
+        extra["ContentType"] = head["ContentType"]
+      self.s3.copy({"Bucket": self.writeStore, "Key": key}, self.writeStore, key, ExtraArgs=extra)
     except Exception as exc:  # pylint: disable=broad-except
       debug("could not stamp sha256 metadata on %s: %s", key, exc)
     return sha
