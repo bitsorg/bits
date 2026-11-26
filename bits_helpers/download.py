@@ -150,6 +150,9 @@ def makedirs(path):
     # No shell: the path holds names taken from a source URL.
     os.makedirs(path, exist_ok=True)
 
+URL_TIMEOUT = 120   # s without an answer, per connection or read
+
+
 def downloadUrllib2(source, destDir, work_dir, dest_filename=None):
     try:
         dest = "/".join([destDir.rstrip("/"), dest_filename if dest_filename else basename(source)])
@@ -159,21 +162,30 @@ def downloadUrllib2(source, destDir, work_dir, dest_filename=None):
             source = m.group(1)+m.group(4)
             headers['Authorization'] = "Basic %s" % base64.b64encode(m.group(3).encode()).decode()
         req = Request(source, headers=headers)
-        s = urlopen(req)
+        s = urlopen(req, timeout=URL_TIMEOUT)   # a stalled server holds a worker and its sentinel
         tmpfile = "{}.{:f}.tmp".format(dest, time())
-        f = open(tmpfile, "wb")
-        # Read in blocks to avoid using too much memory.
-        block_sz = 8192 * 16
-        while True:
-            buffer = s.read(block_sz)
-            if not buffer:
-                break
-            f.write(buffer)
-        f.close()
-        if not exists(dest):
-            rename(tmpfile, dest)
-        else:
-            unlink(tmpfile)
+        try:
+            size = 0
+            with s, open(tmpfile, "wb") as f:
+                # Read in blocks to avoid using too much memory.
+                block_sz = 8192 * 16
+                while True:
+                    buffer = s.read(block_sz)
+                    if not buffer:
+                        break
+                    f.write(buffer)
+                    size += len(buffer)
+            expected = (getattr(s, "headers", None) or {}).get("Content-Length")
+            if expected is not None and int(expected) != size:
+                raise OSError("got %d of %s bytes" % (size, expected))   # cut short
+            if not exists(dest):
+                rename(tmpfile, dest)
+            else:
+                unlink(tmpfile)
+        except BaseException:
+            if exists(tmpfile):
+                unlink(tmpfile)
+            raise
     except URLError as e:
         debug("Error while downloading {}: {}".format(source, e))
         return False

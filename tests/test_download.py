@@ -127,5 +127,21 @@ class UrllibTest(unittest.TestCase):
     self.assertEqual(seen, [("https://example.org/x.tgz", "Basic dXNlcjpwdw==")])
 
 
+  def test_a_body_cut_short_is_not_kept(self):
+    import io
+    asked = []
+
+    class Cut(io.BytesIO):
+      headers = {"Content-Length": "10"}
+
+    def urlopen(req, *a, **kw):
+      asked.append(kw.get("timeout"))
+      return Cut(b"only")
+    with patch("bits_helpers.download.urlopen", side_effect=urlopen):
+      self.assertFalse(dl.downloadUrllib2("https://example.org/x.tgz", self.work, self.work))
+    self.assertEqual(os.listdir(self.work), [])          # no file, no .tmp left
+    self.assertEqual(asked, [dl.URL_TIMEOUT])
+
+
 if __name__ == "__main__":
   unittest.main()
