@@ -115,6 +115,18 @@ class TarballTest(unittest.TestCase):
       self.publish(store_has=False)
     self.assert_installed_untouched()
 
+  def test_a_tarball_from_an_old_bits_is_refused(self):
+    src = os.path.join(self.work, "old")
+    package_tree(os.path.join(src, PP), BUILD, "%s/INSTALLROOT/%s/%s" % (BUILD, H, PP))
+    with open(os.path.join(src, PP, "relocate-me.sh"), "w") as f:   # as before 2026-07-11
+      f.write("#!/bin/bash -e\n. ${THISDIR}/etc/profile.d/.bits-pkginfo\n")
+    with tarfile.open(self.tar, "w:gz") as tf:
+      tf.add(src, ".")
+    self.keep_in_work_dir()
+    with self.assertRaisesRegex(SystemExit, "older than 2026-07-11"):
+      self.publish()
+    self.assert_installed_untouched()
+
   def test_a_dry_run_sends_nothing(self):
     for local in (True, False):
       if local:

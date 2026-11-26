@@ -166,6 +166,46 @@ class CertifiedTest(unittest.TestCase):
     with self.assertRaisesRegex(SystemExit, "none"):
       cp._locate_pkgroot(tree())
 
+  def test_a_relocation_script_from_an_old_bits_is_refused(self):
+    script = os.path.join(self.t, "relocate-me.sh")
+    with open(script, "w") as f:
+      f.write(". ${THISDIR}/etc/profile.d/.bits-pkginfo\n")
+    target = "/cvmfs/r/lcg/GCC/14"
+    with self.assertRaisesRegex(SystemExit, "GCC@14: .*older than 2026-07-11"):
+      cp.refuse_old_relocation(script, "GCC@14", target)
+    with open(os.path.join(os.path.dirname(cp.__file__), "relocate-me.sh")) as f:
+      current = f.read()
+    with open(script, "w") as f:
+      f.write(current)
+    os.makedirs(os.path.join(self.t, "etc", "profile.d"))
+    with open(os.path.join(self.t, "etc", "profile.d", ".bits-pkginfo"), "w") as f:
+      f.write('PKG_DIR="/cvmfs/r/lcg"\n')                  # a --cvmfs-prefix build
+    cp.refuse_old_relocation(script, "GCC@14", target)        # this bits' own: fine
+    with open(script, "w") as f:                              # as between the two dates
+      f.write(current.replace("|${PKG_DIR}|g;s|${PKG_DIR}|$INSTALL_BASE|g",
+                              "|$INSTALL_BASE|g;s|${PKG_DIR}|$INSTALL_BASE|g"))
+    with self.assertRaisesRegex(SystemExit, "older than 2026-10-09"):
+      cp.refuse_old_relocation(script, "GCC@14", target)
+    cp.refuse_old_relocation(script, "GCC@14", "/cvmfs/other/GCC/14")   # not in its target
+
+  def test_publish_one_reports_an_old_tarball_as_its_failure(self):
+    old = os.path.join(self.t, "old")
+    os.makedirs(os.path.join(old, "tc", "GCC", "14-1"))
+    for name, text in ((".meta.json", "{}"), ("relocate-me.sh", "true\n")):
+      with open(os.path.join(old, "tc", "GCC", "14-1", name), "w") as f:
+        f.write(text)
+    with tarfile.open(self.local, "w:gz") as tf:
+      tf.add(old, ".")
+    tm = {"prefix": "/cvmfs/r/g", "path": "{prefix}/{pkg}/{version}/{arch}"}
+    ctx = {"repo": "r", "tars_root": self.t, "arch": "el9", "tmpl_prefix": "", "templates": tm,
+           "prefix_fallback": "/cvmfs/r", "tmp_dir": self.t, "submit": True}
+    with mock.patch.object(cp, "tar_path", lambda s, r, a: self.local), \
+         mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
+         mock.patch.object(cp, "_publish_tar") as sent, \
+         self.assertRaisesRegex(SystemExit, "older than 2026-07-11"):
+      cp.publish_one(self.spec(checksum_file(self.local)), ctx)
+    sent.assert_not_called()
+
   def test_an_old_manifest_without_the_field(self):
     self.assertEqual(self.certified(None), self.local)
 

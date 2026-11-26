@@ -28,7 +28,8 @@ class PackageTmpTest(unittest.TestCase):
     os.makedirs(os.path.join(root, "lib"))
     with open(os.path.join(root, ".build-hash"), "w") as f:
       f.write("ab" * 20)
-    for name, text in ((".meta.json", "{}"), ("relocate-me.sh", relocate)):
+    for name, text in ((".meta.json", "{}"),
+                       ("relocate-me.sh", ': "$BITS_RELOCATE_STRIP_PP"\n' + relocate)):
       with open(os.path.join(root, name), "w") as f:
         f.write(text)
     store = os.path.join(work, "TARS", "el9", "store", "ab", "ab" * 20)

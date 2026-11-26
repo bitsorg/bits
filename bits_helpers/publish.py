@@ -989,6 +989,7 @@ def doPublish(args, parser):
             if not exists(relocate_script):
                 error("relocate-me.sh not found in %s's tarball — was it built with bits?", pkg_id)
                 sys.exit(1)
+            cvmfs_publish.refuse_old_relocation(relocate_script, pkg_id, cvmfs_target)
             info("Relocating to %s …", cvmfs_target)
             from bits_helpers.cmd import credential_free_env
             # the package's own script: none of the job's credentials (PREPUB_API_TOKEN)

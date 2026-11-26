@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits cvmfs publish` and `bits publish PACKAGE` refuse a tarball packed by a bits older than 2026-07-11: its own `relocate-me.sh`, which publishing runs, has no `BITS_RELOCATE_STRIP_PP` and would double `<arch>/<pkg>/<ver>` in the published paths. One packed before 2026-10-09 is refused where the target contains its build's `PKG_DIR` (a `--cvmfs-prefix` build), which that script rewrites twice. Rebuild such a package.
 - **[Fix]** `bits publish --release-view NAME -n` only says where it would place the view; it built the view for real.
 - **[Fix]** `bits cvmfs publish` does not rewrite a dependency path in a `.bits-relocate` entry that leaves the package through a directory link, as `relocate-me.sh` now refuses one.
 - **[Fix]** `bits publish PACKAGE --cvmfs-target … -n` only says what it would publish, from where and to where; it unpacked, relocated and submitted the package to prepub for real.

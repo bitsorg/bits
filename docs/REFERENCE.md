@@ -2462,7 +2462,7 @@ The shell reads `prefix` and `cvmfs_modules_template` as plain `key: value` line
 modules template that is not `<absolute directory with {arch} or {install_dir}>/{pkg}`,
 or a file without `prefix`, gives `bits q`, `enter` and `load` no CVMFS modules.
 
-Before a package is unpacked, its tarball's sha256 must be the one certified for it: the entry of the store's signed manifests (`--trust-manifest URLS`, default the store's, found as a build finds them; `none` uses the build manifest alone), else, for a build not signed yet, the build manifest's `tarball_sha256`. A local tarball that differs is replaced by the certified object fetched from the store (`--store`, comma-separated, default `$BITS_REMOTE_STORE`, else `$REMOTE_STORE`); without one the package is refused.
+Before a package is unpacked, its tarball's sha256 must be the one certified for it: the entry of the store's signed manifests (`--trust-manifest URLS`, default the store's, found as a build finds them; `none` uses the build manifest alone), else, for a build not signed yet, the build manifest's `tarball_sha256`. A local tarball that differs is replaced by the certified object fetched from the store (`--store`, comma-separated, default `$BITS_REMOTE_STORE`, else `$REMOTE_STORE`); without one the package is refused. A tarball packed by a bits older than 2026-07-11 is refused too (by `bits publish PACKAGE` as well): its `relocate-me.sh` cannot place it on CVMFS; so is one older than 2026-10-09 whose target contains its build's `PKG_DIR` (a `--cvmfs-prefix` build). Rebuild such a package.
 
 `bits cvmfs publish` places every package of the build with the build's own CVMFS
 templates (recorded in its manifest). A group that sets `cvmfs_packages_template`

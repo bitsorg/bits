@@ -594,7 +594,8 @@ class TestPublishOneLayout(unittest.TestCase):
         with open(os.path.join(root, "etc", "modulefiles", "GCC"), "w") as fh:
             fh.write("#%Module1.0\n")
         with open(os.path.join(root, "relocate-me.sh"), "w") as fh:
-            fh.write('printf %%s "$BITS_CVMFS_TEMPLATES" > "%s"\nenv > "%s"\n'
+            fh.write(': "$BITS_RELOCATE_STRIP_PP"\n'
+                     'printf %%s "$BITS_CVMFS_TEMPLATES" > "%s"\nenv > "%s"\n'
                      % (os.path.join(t, "seen.json"), os.path.join(t, "env")))
         tars = os.path.join(t, "TARS", "tc", "store", "ab", "abc")
         os.makedirs(tars)

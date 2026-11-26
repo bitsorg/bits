@@ -1463,6 +1463,25 @@ def fetch_store_tarball(spec, stores, arch, fetch_dir, want=None):
     return None
 
 
+def refuse_old_relocation(script, label, target):
+    """Stop unless the tarball's *script* (relocate-me.sh) can place a package at
+    *target*: one from a bits before 2026-07-11 has no BITS_RELOCATE_STRIP_PP and
+    doubles <arch>/<pkg>/<ver>; one before 2026-10-09 rewrites again a target that
+    contains the build's PKG_DIR (a --cvmfs-prefix build)."""
+    with open(script, errors="replace") as fh:
+        text = fh.read()
+    if "BITS_RELOCATE_STRIP_PP" not in text:
+        why = "2026-07-11, whose relocate-me.sh cannot strip <arch>/<pkg>/<ver>"
+    else:
+        pkg_dir = _pkginfo(os.path.dirname(script))[0]
+        if not pkg_dir or pkg_dir not in target or \
+           "|${PKG_DIR}|g;s|${PKG_DIR}|$INSTALL_BASE|g" in text:
+            return
+        why = "2026-10-09, whose relocate-me.sh rewrites %s again in %s" % (pkg_dir, target)
+    raise SystemExit("%s: its tarball was packed by a bits older than %s: not published. "
+                     "Rebuild the package with this bits." % (label, why))
+
+
 def unpack_package(tar_gz, dest, label, package=None, vdir=None):
     """Unpack a package tarball into *dest*, refusing absolute or climbing member paths
     (the build's tar-slip guard, build_template.sh); the package root (.meta.json)."""
@@ -1574,6 +1593,7 @@ def publish_one(spec, ctx):
         reloc = os.path.join(pkgroot, "relocate-me.sh")
         if os.path.isfile(reloc):
             own = "/cvmfs/%s/%s" % (ctx["repo"], path)
+            refuse_old_relocation(reloc, "%s@%s" % (pkg, vdir), own)
             stray = relocate_dependencies(pkgroot, dependency_targets(pkgroot, ctx))
             if stray:
                 print("WARNING: %s@%s: %d file(s) name the build area outside the package "
