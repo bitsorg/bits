@@ -111,6 +111,45 @@ class CertifiedTest(unittest.TestCase):
     self.assertTrue(cp.unpack_package(self.stored, tempfile.mkdtemp(dir=self.t), "ok")
                     .endswith(os.path.join("tc", "GCC", "14-1")))
 
+  def signed(self, sha, signed, store="b3://bucket"):
+    ctx = {"store": store, "arch": "el9", "signed": {("tc", H): signed}}
+    return cp.certified_tarball(self.spec(sha), ctx, self.local, os.path.join(self.t, "fetch"))
+
+  def test_the_signed_manifest_wins_over_the_build_manifest(self):
+    with self.store({"b3://bucket": self.stored}), mock.patch("sys.stderr") as err:
+      got = self.signed(checksum_file(self.local), checksum_file(self.stored))
+    self.assertEqual(checksum_file(got), checksum_file(self.stored))   # not the local one
+    self.assertIn("another tarball", "".join(str(c) for c in err.write.call_args_list))
+
+  def test_a_signed_entry_checks_an_old_manifest_too(self):
+    self.assertEqual(self.signed(None, checksum_file(self.local)), self.local)
+    with self.store({"b3://bucket": None}), self.assertRaisesRegex(SystemExit, "no store"):
+      self.signed(None, checksum_file(self.stored))
+
+  def test_the_signed_manifests_are_the_stores_by_default(self):
+    seen = {}
+
+    def srcs(store, prefix, endpoint, work_dir, arches):
+      seen.setdefault("stores", []).append((store, prefix, endpoint or None))
+      return ["https://s/%s-tc.json" % prefix], set()
+
+    def index(args, work_dir):
+      seen["trust"] = args.trustManifest
+      return {("tc", H): "sha256:x"}
+    with mock.patch("bits_helpers.build.trust_manifest_srcs", srcs), \
+         mock.patch("bits_helpers.build.trusted_reuse_index", index):
+      no_ep = {k: "" for k in ("BITS_S3_ENDPOINT_URL", "S3_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3",
+                               "AWS_ENDPOINT_URL")}   # what another test's S3 setup exported
+      with mock.patch.dict(os.environ, dict(no_ep, BITS_S3_B_ENDPOINT_URL="https://s3.b")):
+        self.assertEqual(cp.signed_index("bits-store+https://s/store::rw,b3://b", self.t, ["tc"],
+                                         prefix="STAGING/m"), {("tc", H): "sha256:x"})
+      self.assertEqual(cp.signed_index("", self.t, ["tc"], "https://a/m.json, /m2.json"),
+                       {("tc", H): "sha256:x"})
+    self.assertEqual(seen["stores"], [("bits-store+https://s/store", "STAGING/m", None),
+                                      ("b3://b", "STAGING/m", "https://s3.b")])   # every store
+    self.assertEqual(seen["trust"], "https://a/m.json,/m2.json")
+    self.assertEqual(cp.signed_index("", self.t, ["tc"]), {})            # nothing to ask
+
   def test_an_old_manifest_without_the_field(self):
     self.assertEqual(self.certified(None), self.local)
 

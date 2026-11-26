@@ -764,6 +764,22 @@ def trust_manifest_srcs(store, prefixes, endpoint, work_dir, arch):
   return sorted(chosen.values()), set()
 
 
+def stores_trust_manifest_srcs(stores, prefix, s3_endpoint, work_dir, arches):
+  """``(sources, guessed)``: the signed manifests of every read store in *stores* (a
+  b3:// one at its own endpoint), as :func:`trust_manifest_srcs` finds them."""
+  # Endpoint precedence matches the S3 client: --s3-endpoint > env > CERN S3.
+  ep = (s3_endpoint or os.environ.get("BITS_S3_ENDPOINT_URL") or os.environ.get("S3_ENDPOINT_URL")
+        or os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL"))
+  from bits_helpers.sync import store_urls, bucket_endpoint
+  srcs, guessed = [], set()
+  for store in store_urls(stores):
+    sep = (bucket_endpoint(store[5:].split("/", 1)[0]) if store.startswith("b3://") else None) or ep
+    s, g = trust_manifest_srcs(store, prefix, sep, work_dir, arches)
+    srcs += [x for x in s if x not in srcs]
+    guessed |= g
+  return srcs, guessed
+
+
 def trust_arches(args):
   """The architectures a build's packages are stored under, whose signed manifests a
   store that cannot be listed (bits-store) is asked for by name: its own and its
@@ -4049,21 +4065,10 @@ def doBuild(args, parser):
   # (`bits sign` publishes exactly these). So `require_signed_reuse: true`
   # alone is enough.
   if getattr(args, "requireSignedReuse", False) and not getattr(args, "trustManifest", None):
-    # Endpoint precedence matches the S3 client: --s3-endpoint > env > CERN S3.
-    _ep = (getattr(args, "s3Endpoint", None)
-           or os.environ.get("BITS_S3_ENDPOINT_URL") or os.environ.get("S3_ENDPOINT_URL")
-           or os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL"))
-    _prefix = _system_opt("trust_manifest_prefix", "MANIFESTS/common-manifest")
-    # The signed manifests of every read store (a b3:// one at its own endpoint).
-    from bits_helpers.sync import store_urls, bucket_endpoint
-    _srcs, _guessed = [], set()
-    for _store in store_urls(getattr(args, "remoteStore", "")):
-      _sep = (bucket_endpoint(_store[5:].split("/", 1)[0])
-              if _store.startswith("b3://") else None) or _ep
-      _s, _g = trust_manifest_srcs(_store, _prefix, _sep, getattr(args, "workDir", None),
-                                   trust_arches(args))
-      _srcs += [x for x in _s if x not in _srcs]
-      _guessed |= _g
+    _srcs, _guessed = stores_trust_manifest_srcs(
+      getattr(args, "remoteStore", ""),
+      _system_opt("trust_manifest_prefix", "MANIFESTS/common-manifest"),
+      getattr(args, "s3Endpoint", None), getattr(args, "workDir", None), trust_arches(args))
     if _guessed:
       args._guessedTrustManifests = _guessed     # names guessed, may not exist
     if _srcs:

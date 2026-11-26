@@ -1377,14 +1377,40 @@ def _publish_mtime(spec, ctx):
     return int(time.time())
 
 
+def signed_index(store, work_dir, arches, sources=None, prefix=None):
+    """{(arch, hash): tarball_sha256} of the signed manifests: *sources* (comma-separated),
+    else those of every store in *store*, found as a build finds them (*prefix*: the
+    defaults' trust_manifest_prefix). Every group's: each certifies the object it names.
+    Empty when there are none or they cannot be verified (the build's warnings say why)."""
+    from bits_helpers import build
+    if sources is None:
+        stores = ",".join(u.strip().split("::")[0] for u in (store or "").split(",") if u.strip())
+        srcs, guessed = build.stores_trust_manifest_srcs(
+            stores, prefix or "MANIFESTS/common-manifest", None, work_dir, arches)
+    else:
+        srcs, guessed = [s.strip() for s in sources.split(",") if s.strip()], set()
+    if not srcs:
+        return {}
+    import types
+    args = types.SimpleNamespace(trustManifest=",".join(srcs), trustGroups=None,
+                                 _guessedTrustManifests=guessed, writeStore="")
+    return build.trusted_reuse_index(args, work_dir)
+
+
 def certified_tarball(spec, ctx, tar_gz, fetch_dir):
-    """*tar_gz* when its sha256 is the one the manifest certifies (tarball_sha256), else
-    that object fetched from the store (ctx["store"]) into *fetch_dir*. The build may
-    have packed its own copy of a hash the store already held: what goes to CVMFS is
-    what was certified. A manifest without the field (older bits) is taken as it is."""
+    """*tar_gz* when its sha256 is the one certified, else that object fetched from the
+    store (ctx["store"]) into *fetch_dir*. Certified: the signed manifests' entry for
+    the package (ctx["signed"]), else the build manifest's tarball_sha256 (a build not
+    signed yet); a manifest without either (older bits) is taken as it is."""
     from bits_helpers.checksum import checksum_file
     label = "%s@%s" % (spec.get("package"), spec.get("version"))
-    want = spec.get("tarball_sha256")
+    arch = spec.get("effective_architecture") or ctx["arch"]
+    signed = (ctx.get("signed") or {}).get((arch, spec.get("hash")))
+    if signed and spec.get("tarball_sha256") not in (None, signed):
+        print("WARNING: %s: the build manifest names another tarball (%s) than the signed "
+              "manifest (%s): the signed one is published" % (label, spec["tarball_sha256"],
+                                                              signed), file=sys.stderr)
+    want = signed or spec.get("tarball_sha256")
     if not want:
         print("WARNING: %s: the manifest records no tarball_sha256; %s is published unchecked"
               % (label, tar_gz), file=sys.stderr)
@@ -1392,7 +1418,6 @@ def certified_tarball(spec, ctx, tar_gz, fetch_dir):
     if checksum_file(tar_gz) == want:
         return tar_gz
     stores = [u.strip().split("::")[0] for u in (ctx.get("store") or "").split(",") if u.strip()]
-    arch = spec.get("effective_architecture") or ctx["arch"]
     got = fetch_store_tarball(spec, stores, arch, fetch_dir, want=want)
     if not got:
         raise SystemExit("%s: %s is not the tarball the manifest certifies (%s), and no store "
@@ -1745,6 +1770,10 @@ def main(argv=None):
                     help="the store to fetch a package's certified tarball from when the "
                          "work dir's is another packing; comma-separated, tried in order "
                          "(default $BITS_REMOTE_STORE, else $REMOTE_STORE)")
+    ap.add_argument("--trust-manifest", default=os.environ.get("BITS_TRUST_MANIFEST", ""),
+                    help="signed manifests whose sha256 a package's tarball must have when "
+                         "they list it (comma-separated; default: the store's, as a build "
+                         "finds them; 'none': only the build manifest's)")
     ap.add_argument("--tmpl-prefix", default="")
     ap.add_argument("--prefix-fallback", default=os.environ.get("CVMFS_PREFIX_FALLBACK", ""))
     ap.add_argument("--stratum0-url", default=os.environ.get("BITS_STRATUM0_URL", ""))
@@ -1885,6 +1914,13 @@ def main(argv=None):
            "submit": not a.dry_run, "tmp_dir": os.path.join(
                os.environ.get("BITS_WORK_DIR", "/tmp"), "tmp")}
     os.makedirs(ctx["tmp_dir"], exist_ok=True)
+    if a.trust_manifest != "none":   # what the signed manifests certify overrides the file's
+        ctx["signed"] = signed_index(a.store, os.path.dirname(os.path.abspath(a.tars_root)),
+                                     sorted({p.get("effective_architecture") or a.arch
+                                             for p in pkgs} | {a.arch}),
+                                     a.trust_manifest or None,
+                                     (_man.get("system") or {}).get("trust_manifest_prefix"))
+        sys.stderr.write("[publish] signed manifests: %d entr(y/ies)\n" % len(ctx["signed"]))
     if a.compress:
         ctx["compress"] = compressor(ctx, ctx["publish_path"])
 
