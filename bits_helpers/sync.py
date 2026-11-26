@@ -1683,13 +1683,8 @@ class Boto3RemoteSync(RemoteSync):
     links_path = resolve_links_path(effective_arch(spec, self.architecture), spec["package"])
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
 
-    # Remove existing symlinks: we'll fetch the ones from the remote next.
-    parent = os.path.join(self.workdir, links_path)
-    for fname in os.listdir(parent):
-      path = os.path.join(parent, fname)
-      if os.path.islink(path):
-        os.unlink(path)
-
+    # Local version links are kept, as by the HTTP backend: a hash-only store lists
+    # none, and the revision scan that follows needs this work dir's own.
     # Fetch symlink manifest and create local symlinks to match.
     debug("Fetching symlink manifest")
     n_symlinks = 0

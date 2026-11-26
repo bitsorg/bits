@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A `b3://` read store keeps this work dir's version links, as the HTTP backend does: it removed them all and a hash-only store gives none back, so the revision scan found no local revision and a second local variant of a version took `local1` again, replacing the first one's install.
 - **[Fix]** An HTTP store download writes its own temporary file (per process and thread): two fetches of one file, by two bits runs in one work dir, wrote into the same `<file>.tmp`.
 - **[Fix]** A read store and a write store of different kinds always get one helper each: an `rsync` or `s3://` read store with a `b3://` write store handed the b3 URL to the rsync or s3cmd backend as its write store.
 - **[Fix]** A restricted build whose revision marker bits-store refuses is kept on this host with a warning, as when the build itself is refused: the marker error stopped it.
