@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """bits cvmfs-publish publishes the tarball the manifest certifies: the work dir's
 when its sha256 is the manifest's tarball_sha256, else that object fetched from the
-store (the build packed its own copy of a hash the store already held), else nothing."""
+store (the build packed its own copy of a hash the store already held), else nothing;
+and nothing without a recorded sha256."""
 
 import io
 import json
@@ -89,6 +90,19 @@ class CertifiedTest(unittest.TestCase):
         self.certified(checksum_file(self.stored))
     with self.assertRaisesRegex(SystemExit, r"no store \(--store: none\)"):
       self.certified(checksum_file(self.stored), store="")
+
+  def test_refused_when_nothing_records_its_sha256(self):
+    with self.assertRaisesRegex(SystemExit, "not published"):
+      self.certified(None)
+
+  def test_an_installed_package_records_its_tarball(self):
+    from bits_helpers.build import _record_package
+    tar = make_tar(os.path.join(self.t, "TARS", "tc", "store", H[:2], H, NAME), b"x")
+    args = mock.Mock(architecture="tc")
+    _record_package(args, self.spec(None), "already_installed", self.t)
+    self.assertEqual(args.manifest.add_package.call_args[0][2], tar)
+    _record_package(args, dict(self.spec(None), revision="2"), "already_installed", self.t)
+    self.assertIsNone(args.manifest.add_package.call_args[0][2])   # none of that name
 
   def test_without_a_checksum_the_object_named_for_the_revision(self):
     with self.store({"https://a": self.stored}):       # stores it as GCC-14-2
@@ -205,9 +219,6 @@ class CertifiedTest(unittest.TestCase):
          self.assertRaisesRegex(SystemExit, "older than 2026-07-11"):
       cp.publish_one(self.spec(checksum_file(self.local)), ctx)
     sent.assert_not_called()
-
-  def test_an_old_manifest_without_the_field(self):
-    self.assertEqual(self.certified(None), self.local)
 
   def test_publish_one_publishes_the_certified_tree(self):
     tm = {"prefix": "/cvmfs/r/g", "path": "{prefix}/{pkg}/{version}/{arch}"}

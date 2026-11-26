@@ -217,8 +217,8 @@ def _git_remote_url(directory: str):
 def _tarball_sha256(tarball_path: str, packed_here: bool = True):
     """Return the SHA-256 digest of *tarball_path* (``sha256:<hex>``), or ``None``.
 
-    A tarball this build packed may be read from its checksum sidecar; one taken
-    from a store is always hashed, its own bytes being what matters."""
+    One in the work dir may be read from its checksum sidecar; one just taken from
+    a store is always hashed, its own bytes being what matters."""
     if not tarball_path or not os.path.isfile(tarball_path):
         return None
     try:

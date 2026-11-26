@@ -122,7 +122,7 @@ def verify_package(entry: dict, arch: str,
 
     if not tarball or not expected_sha:
         if outcome == "already_installed":
-            return SKIP, "already_installed — no output tarball expected"
+            return SKIP, "already_installed — no tarball recorded"
         return SKIP, "no tarball recorded in manifest"
 
     path = _find_tarball(tarball, pkg_hash, arch, search_roots)

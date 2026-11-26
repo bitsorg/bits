@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import bits_helpers
 from bits_helpers.checksum import checksum_file, tarball_checksum
@@ -85,6 +86,13 @@ class TestTarballChecksum(unittest.TestCase):
                 self.assertEqual(tarball_checksum(self.tar), self.real)
         os.remove(self.tar + ".sha256")
         self.assertEqual(tarball_checksum(self.tar), self.real)
+
+    def test_hashed_once_then_read_from_the_sidecar(self):
+        self.assertEqual(tarball_checksum(self.tar), self.real)
+        with open(self.tar + ".sha256") as f:
+            self.assertEqual(f.read(), "%s 100\n" % self.real)
+        with mock.patch("bits_helpers.checksum.checksum_file", side_effect=AssertionError):
+            self.assertEqual(tarball_checksum(self.tar), self.real)
 
 
 if __name__ == "__main__":

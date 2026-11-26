@@ -14,6 +14,7 @@ import unittest
 
 import json
 
+from bits_helpers.checksum import checksum_file
 from bits_helpers.cvmfs_publish import (
     expand_tmpl, repo_relative_path, relativise_symlinks, sanitize,
     resolve_pkg_path, tree_fingerprint)
@@ -607,7 +608,7 @@ class TestPublishOneLayout(unittest.TestCase):
                "arch": "el9-gcc14-opt", "tmpl_prefix": "", "templates": tm,
                "prefix_fallback": "/cvmfs/r", "tmp_dir": t}
         spec = {"package": "GCC", "version": "14", "revision": "1",
-                "effective_architecture": "tc"}
+                "effective_architecture": "tc", "tarball_sha256": checksum_file(tar)}
         paths = []
         secrets = {"PREPUB_API_TOKEN": "p", "CI_JOB_TOKEN": "c", "AWS_SECRET_ACCESS_KEY": "s",
                    "BITS_SIGN_KEY": "k", "CI_REGISTRY_PASSWORD": "r", "CI_JOB_JWT_V2": "j"}
@@ -669,7 +670,7 @@ class TestPublishOneLayout(unittest.TestCase):
                "prefix_fallback": "/cvmfs/r", "tmp_dir": t,
                "build_time": "2026-01-02T00:00:00Z"}
         spec = {"package": "zlib", "version": "1.3", "revision": "1",
-                "completed_at": "2026-10-08T14:08:00Z"}
+                "completed_at": "2026-10-08T14:08:00Z", "tarball_sha256": checksum_file(tar)}
         times = {}
         def publish(c, p, tarfn, label, **k):
             with tarfile.open(tarfn) as tf:
@@ -759,7 +760,8 @@ class TestCompressedTars(unittest.TestCase):
                "templates": {"prefix": "/cvmfs/r", "path": "{prefix}/{pkg}/{version}"},
                "prefix_fallback": "/cvmfs/r", "tmp_dir": t,
                "compress": shutil.which("gzip")}   # pigz's stand-in: same -1, same output
-        spec = {"package": "zlib", "version": "1.3", "revision": "1"}
+        spec = {"package": "zlib", "version": "1.3", "revision": "1",
+                "tarball_sha256": checksum_file(tar)}
         seen = {}
         def publish(c, p, tarfn, label, encoding="", **k):
             with tarfile.open(tarfn, "r:gz") as tf:
@@ -1257,6 +1259,7 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         tar = cp_tar_path(spec, ctx)
         os.makedirs(os.path.dirname(tar), exist_ok=True)
         subprocess.run(["tar", "-czf", tar, "-C", src, arch], check=True)
+        ctx.setdefault("signed", {})[(arch, spec.get("hash"))] = checksum_file(tar)   # signed
 
     def test_merged_view_links_files_into_the_packages(self):
         import bits_helpers.cvmfs_publish as cp

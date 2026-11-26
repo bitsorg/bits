@@ -118,17 +118,17 @@ _SIDECAR_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def tarball_checksum(path: str) -> str:
-    """``'sha256:hexdigest'`` of a package tarball this node packed.
+    """``'sha256:hexdigest'`` of a package tarball in the work dir (not a fresh download).
 
     The build writes ``<tarball>.sha256`` (``sha256:<hex> <size>``) while it
     packs, so the manifest and the store upload need not read a large tarball
     again. The sidecar is used only while it still describes the file — the
-    same size, and not older than it; otherwise the file is hashed. Never for
-    a downloaded tarball, which must be verified against its own bytes.
+    same size, and not older than it; otherwise the file is hashed, and gets a
+    sidecar, so an installed package's tarball is not read on every build.
     """
+    side = path + ".sha256"
+    st = os.stat(path)
     try:
-        st = os.stat(path)
-        side = path + ".sha256"
         if os.stat(side).st_mtime >= st.st_mtime:
             with open(side) as fh:
                 digest, size = fh.read().split()
@@ -136,7 +136,16 @@ def tarball_checksum(path: str) -> str:
                 return digest
     except (OSError, ValueError):
         pass
-    return checksum_file(path)
+    digest = checksum_file(path)
+    now = os.stat(path)
+    if (now.st_ino, now.st_size, now.st_mtime_ns) == (st.st_ino, st.st_size, st.st_mtime_ns):
+        try:   # unchanged while it was read
+            with open(side + ".tmp", "w") as fh:
+                fh.write("%s %d\n" % (digest, st.st_size))
+            os.replace(side + ".tmp", side)
+        except OSError as exc:
+            debug("no checksum sidecar for %s: %s", path, exc)
+    return digest
 
 
 def checksum_file(path: str, algorithm: str = "sha256") -> str:

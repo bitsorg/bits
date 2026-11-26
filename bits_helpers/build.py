@@ -412,6 +412,16 @@ def _load_trusted_index(src, work_dir, accept_groups):
     return None, {}
 
 
+def _record_package(args, spec, outcome, work_dir):
+  """Add *spec* to the build manifest, with its tarball in this work dir when there is
+  one: its sha256 is what cvmfs-publish checks, for an installed package too."""
+  arch = effective_arch(spec, args.architecture)
+  tar = os.path.join(work_dir, resolve_store_path(arch, spec["hash"]),
+                     "%s-%s.%s.tar.gz" % (spec["package"], ver_rev(spec), arch))
+  args.manifest.add_package(spec, outcome, tar if os.path.isfile(tar) else None,
+                            effective_architecture=arch)
+
+
 def trusted_reuse_index(args, work_dir):
   """Return the verified {(effective_architecture, hash): tarball_sha256} index
   for --require-signed-reuse.
@@ -2123,22 +2133,8 @@ def doFinalSync(spec, specs, args, syncHelper):
       _rh.add(spec["hash"])
 
   if getattr(args, "manifest", None) is not None:
-    from bits_helpers.utilities import resolve_store_path, ver_rev
-    from bits_helpers.arch import effective_arch
     _cached = spec.get("cachedTarball", "")
-    _outcome = "from_store" if _cached else "built_from_source"
-    # Locate the local tarball for checksum recording.
-    _arch = effective_arch(spec, args.architecture)
-    _tarball_name = "{}-{}.{}.tar.gz".format(
-      spec["package"], ver_rev(spec), _arch)
-    _tarball_path = os.path.join(
-      args.workDir,
-      resolve_store_path(_arch, spec["hash"]),
-      _tarball_name,
-    )
-    args.manifest.add_package(spec, _outcome,
-                               _tarball_path if os.path.isfile(_tarball_path) else None,
-                               effective_architecture=_arch)
+    _record_package(args, spec, "from_store" if _cached else "built_from_source", args.workDir)
 
   # Touch the sentinel so the cleanup command counts this package as recently
   # used, and record the package's disk usage in it (computed once, here) so
@@ -2511,8 +2507,7 @@ def build_one_package(p, ctx):
         package_info("%s: Already installed at %s (%s)", package_label(spec), _existing,
                      _linked["hash"][:12])
         if getattr(args, "manifest", None) is not None:
-          args.manifest.add_package(spec, "already_installed",
-                                    effective_architecture=effective_arch(spec, args.architecture))
+          _record_package(args, spec, "already_installed", workDir)
         return
       _runtime_work = workDir
       if args.docker:
@@ -2532,8 +2527,7 @@ def build_one_package(p, ctx):
       package_info("%s: Linked from %s (%s policy) to %s", package_label(spec),
                    _linked["source"], cfg.symlink_policy, _local_reuse)
       if getattr(args, "manifest", None) is not None:
-        args.manifest.add_package(spec, "already_installed",
-                                  effective_architecture=effective_arch(spec, args.architecture))
+        _record_package(args, spec, "already_installed", workDir)
       return
   except (OSError, ValueError) as exc:
     dieOnError(True, "Cannot symlink package %s: %s" % (p, exc))
@@ -2570,8 +2564,7 @@ def build_one_package(p, ctx):
         spec.setdefault("deps_hash", "")
         package_info("%s: Reusing CVMFS overlay module %s (not built)", package_label(spec), _mid)
         if getattr(args, "manifest", None) is not None:
-          args.manifest.add_package(spec, "already_installed",
-                                    effective_architecture=effective_arch(spec, args.architecture))
+          _record_package(args, spec, "already_installed", workDir)
         return
 
   # Warn if a package declares architecture: share but has arch-specific
@@ -2979,8 +2972,7 @@ def build_one_package(p, ctx):
                   "tarball — rebuild to publish it.", spec["package"], spec["version"])
       # Record in the build manifest that this package was already installed.
       if getattr(args, "manifest", None) is not None:
-        args.manifest.add_package(spec, "already_installed",
-                                  effective_architecture=effective_arch(spec, args.architecture))
+        _record_package(args, spec, "already_installed", workDir)
       # Touch the sentinel so the cleanup command knows this package was used.
       try:
         from bits_helpers.cleanup import touch_sentinel as _touch_sentinel

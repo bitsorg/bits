@@ -1411,7 +1411,7 @@ def certified_tarball(spec, ctx, tar_gz, fetch_dir):
     """*tar_gz* when its sha256 is the one certified, else that object fetched from the
     store (ctx["store"]) into *fetch_dir*. Certified: the signed manifests' entry for
     the package (ctx["signed"]), else the build manifest's tarball_sha256 (a build not
-    signed yet); a manifest without either (older bits) is taken as it is."""
+    signed yet); refused with neither."""
     from bits_helpers.checksum import checksum_file
     label = "%s@%s" % (spec.get("package"), spec.get("version"))
     arch = spec.get("effective_architecture") or ctx["arch"]
@@ -1422,9 +1422,9 @@ def certified_tarball(spec, ctx, tar_gz, fetch_dir):
                                                               signed), file=sys.stderr)
     want = signed or spec.get("tarball_sha256")
     if not want:
-        print("WARNING: %s: the manifest records no tarball_sha256; %s is published unchecked"
-              % (label, tar_gz), file=sys.stderr)
-        return tar_gz
+        raise SystemExit("%s: neither a signed manifest nor the build manifest records the "
+                         "sha256 of its tarball: not published. Sign the build, or build it "
+                         "again with this bits." % label)
     if checksum_file(tar_gz) == want:
         return tar_gz
     stores = [u.strip().split("::")[0] for u in (ctx.get("store") or "").split(",") if u.strip()]

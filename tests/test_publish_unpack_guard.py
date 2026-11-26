@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from bits_helpers.checksum import checksum_file
 import bits_helpers.cvmfs_publish as cp
 
 
@@ -29,7 +30,8 @@ class UnpackGuardTest(unittest.TestCase):
     tm = {"prefix": "/cvmfs/r/g", "path": "{prefix}/{pkg}/{version}/{arch}"}
     ctx = {"repo": "r", "tars_root": t, "arch": "el9", "tmpl_prefix": "", "templates": tm,
            "prefix_fallback": "/cvmfs/r", "tmp_dir": os.path.join(t, "pub"), "submit": True}
-    spec = {"package": "GCC", "version": "14", "revision": "1", "effective_architecture": "tc"}
+    spec = {"package": "GCC", "version": "14", "revision": "1", "effective_architecture": "tc",
+            "tarball_sha256": checksum_file(tar)}
     with mock.patch.object(cp, "tar_path", lambda s, r, a: tar), \
          mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
          mock.patch.object(cp, "_publish_tar", lambda *a, **k: "J"):

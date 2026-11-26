@@ -12,6 +12,7 @@ import unittest
 from unittest import mock
 
 import bits_helpers
+from bits_helpers.checksum import checksum_file
 import bits_helpers.cvmfs_publish as cp
 
 W, A, PH = "/w/sw", "el9-gcc14-opt", "abc"
@@ -177,7 +178,8 @@ class TestRelocateDependencies(unittest.TestCase):
             with tarfile.open(tarfn) as tf:
                 tf.extractall(out)
             return "J"
-        spec = {"package": "Athena", "version": "25.0.1", "revision": "1"}
+        spec = {"package": "Athena", "version": "25.0.1", "revision": "1",
+                "tarball_sha256": checksum_file(tar)}
         with mock.patch.object(cp, "tar_path", lambda s, r, a: tar), \
              mock.patch.object(cp, "_publish_tar", publish):
             cp.publish_one(spec, dict(CTX, tars_root=self.t, tmp_dir=self.t))
