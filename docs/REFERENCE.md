@@ -272,8 +272,11 @@ Reuse from the remote archive (tier 3) is controlled by these `bits build` optio
   manifest that cannot be fetched trusts nothing. Besides signature and expiry,
   a numbered manifest (`sequence`, as the orchestrator writes them) is checked
   against the highest number this node has verified for its issuer and
-  architecture (`~/.bits/trust-sequence.json`, or `$BITS_TRUST_SEQUENCE_STATE`):
-  an older one put back is refused. On a runner whose home is fresh for every job
+  architecture, as signed by that key (another trusted key cannot use up an issuer's
+  numbers) (`~/.bits/trust-sequence.json`, or `$BITS_TRUST_SEQUENCE_STATE`):
+  an older one put back is refused. Each key counts on its own: a key no longer
+  used should leave the trust directory, as until then its last manifest can be put
+  back, bounded by `expires`. On a runner whose home is fresh for every job
   (docker or Kubernetes executors), point `$BITS_TRUST_SEQUENCE_STATE` at a kept
   directory; without that only `expires` bounds a rollback, and bits warns about a
   manifest that has none.

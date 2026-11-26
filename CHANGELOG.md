@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A node remembers a signed manifest's sequence per issuer, architecture and signing key: another trusted key naming the same issuer with a high number can no longer make the node refuse that issuer's real manifests. What a node remembered before is carried over.
 - **[Fix]** `bits cvmfs publish --wait` waits for all its jobs within one `--wait-timeout` (prepub runs them together); past it, each job left is asked once more, not waited for. Each job had the whole timeout in turn, so a run could wait hours.
 - **[Fix]** `bits cvmfs publish` and `bits publish PACKAGE` publish the package's own directory of a tarball that packs more than one `.meta.json`: the one at `<package>/<version>`, else the only shallowest one; several at that depth stop the publish. It took the first one the directory walk met.
 - **[Feature]** `bits store ls|rm --stale-rev-markers [--older-than DAYS]`: the revision claims (`MANIFESTS/rev-index/`) that no stored tarball carries, older than DAYS (default 7), left by builds that failed; narrowed by `--arch`, `--package` and `--version`. S3 stores.

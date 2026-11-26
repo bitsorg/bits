@@ -347,7 +347,8 @@ def check_sequence(data, raw, kid, state_path=None):
   """Anti-rollback: None if the manifest may be trusted, else why not.
 
   A numbered manifest (``sequence``) belongs to its issuer's numbering for its
-  architecture (``issuer``, else the signing key). This node remembers the
+  architecture (``issuer``, else the signing key), under the key that signed it:
+  one key cannot use up another's issuer. This node remembers the
   highest number it verified in each (``~/.bits/trust-sequence.json``, or
   BITS_TRUST_SEQUENCE_STATE, on the build user's persistent home): a lower one
   is an older manifest put back, the same one with other bytes a second
@@ -364,7 +365,9 @@ def check_sequence(data, raw, kid, state_path=None):
   if numbered and (not isinstance(seq, int) or isinstance(seq, bool) or seq < 1):
     return "its sequence %r is not a positive integer" % (seq,)
   issuer = data.get("issuer")
-  key = "%s %s" % (issuer if isinstance(issuer, str) and issuer else kid, arch)
+  issuer = issuer if isinstance(issuer, str) and issuer else kid
+  key = "%s by %s %s" % (issuer, kid, arch)
+  legacy = "%s %s" % (issuer, arch)     # before the key was part of it: carried over once
   marker = "numbered-by %s %s" % (kid, arch)
   digest = hashlib.sha256(raw).hexdigest()
   path = state_path or _sequence_state_path()
@@ -389,7 +392,8 @@ def check_sequence(data, raw, kid, state_path=None):
       if not numbered:
         return ("this key has signed numbered %s manifests, so an unnumbered one is older"
                 % (arch or "unnamed") if state.get(marker) else None)
-      seen = state.get(key) if isinstance(state.get(key), dict) else None
+      seen = state.get(key, state.get(legacy))
+      seen = seen if isinstance(seen, dict) else None
       if seen and not isinstance(seen.get("sequence"), int):
         seen = None                                   # a damaged entry: start it again
       if seen:

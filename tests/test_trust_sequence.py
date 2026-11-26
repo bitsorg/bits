@@ -93,6 +93,28 @@ class SequenceTest(unittest.TestCase):
             self.assertFalse(self.trusted(self.manifest("p2", 39,
                                                         issuer="bits-orchestrator/prod")))
 
+    def test_another_key_cannot_use_up_an_issuer(self):
+        self.assertTrue(self.trusted(self.manifest("p", 40, issuer="bits-orchestrator/prod")))
+        other = Ed25519PrivateKey.generate()
+        with open(os.path.join(os.environ["BITS_TRUST_KEYS"], "other.pem"), "wb") as fh:
+            fh.write(other.public_key().public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
+        mine, self.priv = self.priv, other
+        self.assertTrue(self.trusted(self.manifest("x", 10**9, issuer="bits-orchestrator/prod")))
+        self.priv = mine
+        self.assertTrue(self.trusted(self.manifest("p41", 41, issuer="bits-orchestrator/prod")))
+
+    def test_what_a_node_remembered_before_is_carried_over(self):
+        self.assertTrue(self.trusted(self.manifest("p", 40, issuer="bits-orchestrator/prod")))
+        with open(self.state) as fh:
+            state = json.load(fh)
+        state = {(k.split(" by ")[0] + " " + k.split()[-1] if " by " in k else k): v
+                 for k, v in state.items()}                    # as an older bits wrote it
+        with open(self.state, "w") as fh:
+            json.dump(state, fh)
+        with self.assertLogs("bits", "WARNING"):
+            self.assertFalse(self.trusted(self.manifest("p39", 39, issuer="bits-orchestrator/prod")))
+
     def test_a_damaged_entry_starts_again(self):
         self.assertTrue(self.trusted(self.manifest("a", 2)))
         with open(self.state) as fh:
