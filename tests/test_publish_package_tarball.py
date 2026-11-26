@@ -4,6 +4,7 @@
 target in a working copy: the installed tree (already relocated to the work dir) is
 left as it is, and a tarball the build removed is fetched from the store."""
 
+import json
 import os
 import shutil
 import tarfile
@@ -13,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from bits_helpers import publish
+from bits_helpers.checksum import checksum_file
 
 H = "5a" * 20
 PP = "el9/zlib/1.3-1"
@@ -59,12 +61,17 @@ class TarballTest(unittest.TestCase):
     self.installed = sorted((dp, f, open(os.path.join(dp, f)).read())
                             for dp, _d, fs in os.walk(self.root) for f in fs)
 
+  def record(self, sha, package="zlib"):
+    """A build manifest recording *sha* as the tarball of *package* (hash H)."""
+    write(os.path.join(self.work, "MANIFESTS", "bits-manifest-1.json"),
+          json.dumps({"packages": [{"package": package, "hash": H, "tarball_sha256": sha}]}))
+
   def keep_in_work_dir(self):
     d = os.path.join(self.work, "TARS", "el9", "store", H[:2], H)
     os.makedirs(d)
     shutil.copy(self.tar, d)
 
-  def publish(self, store_has=True, no_relocate=False, dry_run=False):
+  def publish(self, store_has=True, no_relocate=False, dry_run=False, recorded=True, signed=None):
     args = SimpleNamespace(publishView=None, fromManifest=None, package="zlib", version=None,
                            workDir=self.work, architecture="el9", cvmfsTarget=TARGET,
                            scratchDir=None, prepubUrl="https://prepub", prepubToken=None,
@@ -73,18 +80,23 @@ class TarballTest(unittest.TestCase):
                            dryRun=dry_run, publishStore="b3://bucket",
                            noRelocate=no_relocate)
     published, self.asked = {}, []
+    if recorded:
+      self.record(checksum_file(self.tar))
 
     def fetch(spec, stores, arch, fetch_dir, want=None):
-      self.asked.append((spec, stores, arch))
+      self.asked.append((spec, stores, arch, want))
       return self.tar if store_has else None
 
     def publish_tree(tree, *a, **kw):
       published.update({os.path.relpath(os.path.join(dp, f), tree): open(os.path.join(dp, f)).read()
                         for dp, _d, fs in os.walk(tree) for f in fs})
     with patch.object(publish, "_find_installroot", return_value=self.root), \
+         patch("bits_helpers.cvmfs_publish.signed_index", return_value=signed or {}) as idx, \
          patch("bits_helpers.cvmfs_publish.fetch_store_tarball", fetch), \
          patch.object(publish, "_publish_tree", publish_tree):
       publish.doPublish(args, Parser())
+    if not dry_run and not no_relocate:
+      self.assertEqual(idx.call_args[0][2], ["el9"])
     return published
 
   def assert_installed_untouched(self):
@@ -105,9 +117,38 @@ class TarballTest(unittest.TestCase):
   def test_fetched_from_the_store_when_the_build_removed_it(self):
     got = self.publish()
     self.assertEqual(got["lib/zlib.pc"], "libdir=%s/lib\n" % TARGET)
-    spec, stores, arch = self.asked[0]
-    self.assertEqual((spec["version"], spec["revision"], spec["hash"], stores, arch),
-                     ("1.3", "1", H, ["b3://bucket"], "el9"))
+    spec, stores, arch, want = self.asked[0]
+    self.assertEqual((spec["version"], spec["revision"], spec["hash"], stores, arch, want),
+                     ("1.3", "1", H, ["b3://bucket"], "el9", checksum_file(self.tar)))
+    self.assert_installed_untouched()
+
+  def test_the_certified_one_when_the_local_one_is_another(self):
+    self.keep_in_work_dir()
+    certified = self.tar
+    self.tar = os.path.join(self.work, "store-copy.tar.gz")   # what the store hands out
+    shutil.copy(certified, self.tar)
+    with open(os.path.join(self.work, "TARS", "el9", "store", H[:2], H,
+                           "zlib-1.3-1.el9.tar.gz"), "ab") as f:
+      f.write(b"repacked")
+    got = self.publish()
+    self.assertEqual(got["lib/zlib.pc"], "libdir=%s/lib\n" % TARGET)
+    self.assertEqual([a[3] for a in self.asked], [checksum_file(self.tar)])   # by its sha256
+
+  def test_the_signed_manifest_wins_over_the_build_manifest(self):
+    self.keep_in_work_dir()
+    self.record("sha256:" + "0" * 64)
+    self.tar = os.path.join(self.work, "zlib-1.3-1.el9.tar.gz")
+    got = self.publish(recorded=False, signed={("el9", H): checksum_file(self.tar)})
+    self.assertEqual(got["lib/zlib.pc"], "libdir=%s/lib\n" % TARGET)
+    self.assertEqual(self.asked, [])                         # the local one is the signed one
+
+  def test_refused_when_no_manifest_records_its_sha256(self):
+    self.keep_in_work_dir()
+    with self.assertRaisesRegex(SystemExit, "not published"):
+      self.publish(recorded=False)
+    self.record("sha256:" + "0" * 64)                        # another build's
+    with self.assertRaisesRegex(SystemExit, "no store"):
+      self.publish(recorded=False, store_has=False)
     self.assert_installed_untouched()
 
   def test_nothing_published_without_a_tarball(self):
@@ -152,8 +193,10 @@ class TarballTest(unittest.TestCase):
     write(os.path.join(root, ".build-hash"), H)
     tar = os.path.join(self.work, "TARS", "el9", "store", H[:2], H, "foo-1.0-1.el9.tar.gz")
     write(tar, "")
-    got = publish._package_tarball(SimpleNamespace(), self.work, root, "externals/foo", "1.0-1",
-                                   os.path.join(self.work, "fetch"))
+    self.record(checksum_file(tar), package="foo")
+    with patch("bits_helpers.cvmfs_publish.signed_index", return_value={}):
+      got = publish._package_tarball(SimpleNamespace(), self.work, root, "externals/foo",
+                                     "1.0-1", os.path.join(self.work, "fetch"))
     self.assertEqual(got, tar)
 
 

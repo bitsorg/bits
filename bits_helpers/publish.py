@@ -802,10 +802,33 @@ def doCertify(args, parser):
 # Main publish entry point
 # ---------------------------------------------------------------------------
 
+def _recorded_sha256(work_dir, package, pkg_hash):
+    """The tarball_sha256 the newest build manifest records for *package* of *pkg_hash*."""
+    import glob as _glob
+    import json as _json
+    def mtime(f):
+        try:
+            return os.path.getmtime(f)
+        except OSError:
+            return 0
+    files = [f for d in (join(work_dir, "MANIFESTS"), work_dir)
+             for f in _glob.glob(join(d, "bits-manifest-*.json")) if not f.endswith("latest.json")]
+    for f in sorted(files, key=mtime, reverse=True):
+        try:
+            with open(f) as fh:
+                packages = [e for e in (_json.load(fh).get("packages") or []) if isinstance(e, dict)]
+        except (OSError, ValueError, AttributeError, TypeError):
+            continue
+        for e in packages:
+            if e.get("package") == package and e.get("hash") == pkg_hash and e.get("tarball_sha256"):
+                return e["tarball_sha256"]
+    return None
+
+
 def _package_tarball(args, work_dir, installroot, package, version_dir, fetch_dir, fetch=True):
-    """The tarball of the installed build: the work dir's (TARS/<arch>/store/<h2>/<hash>),
-    else fetched from the stores (--remote-store), e.g. when the build removed it; without
-    *fetch*, None then."""
+    """The tarball of the installed build that the manifests certify (see
+    cvmfs_publish.certified_tarball): the work dir's (TARS/<arch>/store/<h2>/<hash>), else
+    fetched from the stores (--remote-store); without *fetch*, the work dir's or None."""
     arch = os.path.relpath(installroot, work_dir).split(os.sep)[0]
     try:
         with open(join(installroot, ".build-hash")) as f:
@@ -818,24 +841,29 @@ def _package_tarball(args, work_dir, installroot, package, version_dir, fetch_di
     package = basename(package)                 # a family's (externals/foo): foo
     name = "%s-%s.%s.tar.gz" % (package, version_dir, arch)
     local = join(work_dir, "TARS", arch, "store", pkg_hash[:2], pkg_hash, name)
-    if os.path.isfile(local) or not fetch:
+    if not fetch:
         return local if os.path.isfile(local) else None
     from bits_helpers.args import DEFAULT_S3_STORE
-    from bits_helpers.cvmfs_publish import fetch_store_tarball
+    from bits_helpers import cvmfs_publish
     from bits_helpers.sync import store_urls
     stores = [u.split("::")[0] for u in
               store_urls(getattr(args, "publishStore", None) or DEFAULT_S3_STORE)]
     version, _, revision = version_dir.rpartition("-")
     spec = {"package": package, "version": version or version_dir,
-            "revision": revision if version else "", "hash": pkg_hash}
-    got = fetch_store_tarball(spec, stores, arch, fetch_dir)
-    if not got:
-        error("No tarball of %s: not in %s, nor in the stores (%s). Give the --remote-store "
-              "that has it, or rebuild it without --aggressive-cleanup.", name,
-              os.path.dirname(local),
-              ", ".join(stores) or "none given")
-        sys.exit(1)
-    return got
+            "revision": revision if version else "", "hash": pkg_hash,
+            "effective_architecture": arch,
+            "tarball_sha256": _recorded_sha256(work_dir, package, pkg_hash)}
+    ctx = {"arch": arch, "store": ",".join(stores),
+           "signed": cvmfs_publish.signed_index(",".join(stores), work_dir, [arch])}
+    if os.path.isfile(local):
+        return cvmfs_publish.certified_tarball(spec, ctx, local, fetch_dir)
+    try:
+        return cvmfs_publish.certified_tarball(spec, ctx, None, fetch_dir)
+    except SystemExit as exc:
+        if "no store" not in str(exc):
+            raise
+        raise SystemExit("%s. Give the --remote-store that has it, or rebuild it without "
+                         "--aggressive-cleanup." % exc) from None
 
 
 def doPublish(args, parser):

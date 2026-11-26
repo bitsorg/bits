@@ -1408,8 +1408,8 @@ def signed_index(store, work_dir, arches, sources=None, prefix=None):
 
 
 def certified_tarball(spec, ctx, tar_gz, fetch_dir):
-    """*tar_gz* when its sha256 is the one certified, else that object fetched from the
-    store (ctx["store"]) into *fetch_dir*. Certified: the signed manifests' entry for
+    """*tar_gz* (None: there is none here) when its sha256 is the one certified, else that
+    object fetched from the store (ctx["store"]) into *fetch_dir*. Certified: the signed manifests' entry for
     the package (ctx["signed"]), else the build manifest's tarball_sha256 (a build not
     signed yet); refused with neither."""
     from bits_helpers.checksum import checksum_file
@@ -1425,15 +1425,17 @@ def certified_tarball(spec, ctx, tar_gz, fetch_dir):
         raise SystemExit("%s: neither a signed manifest nor the build manifest records the "
                          "sha256 of its tarball: not published. Sign the build, or build it "
                          "again with this bits." % label)
-    if checksum_file(tar_gz) == want:
+    if tar_gz and checksum_file(tar_gz) == want:
         return tar_gz
     stores = [u.strip().split("::")[0] for u in (ctx.get("store") or "").split(",") if u.strip()]
     got = fetch_store_tarball(spec, stores, arch, fetch_dir, want=want)
     if not got:
-        raise SystemExit("%s: %s is not the tarball the manifest certifies (%s), and no store "
-                         "(--store: %s) has it" % (label, tar_gz, want, ", ".join(stores) or "none"))
-    print("%s: the local tarball is another packing of the hash; publishing the certified "
-          "one from the store" % label, file=sys.stderr)
+        raise SystemExit("%s: %s the tarball the manifest certifies (%s), and no store "
+                         "(%s) has it" % (label, "%s is not" % tar_gz if tar_gz else "no work dir has",
+                                          want, ", ".join(stores) or "none given"))
+    if tar_gz:
+        print("%s: the local tarball is another packing of the hash; publishing the "
+              "certified one from the store" % label, file=sys.stderr)
     return got
 
 

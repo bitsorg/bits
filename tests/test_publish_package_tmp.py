@@ -3,6 +3,7 @@
 """`bits publish PACKAGE --cvmfs-target` makes its working copy and its tar under the
 work dir, not the system temp dir (often small), and removes them whatever stops it."""
 
+import json
 import os
 import shutil
 import tarfile
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from bits_helpers import publish
+from bits_helpers.checksum import checksum_file
 
 
 class Parser:
@@ -36,6 +38,9 @@ class PackageTmpTest(unittest.TestCase):
     os.makedirs(store)
     with tarfile.open(os.path.join(store, "zlib-1.3-1.el9.tar.gz"), "w:gz") as tf:
       tf.add(root, "el9/zlib/1.3-1")
+    with open(os.path.join(work, "bits-manifest-1.json"), "w") as f:
+      json.dump({"packages": [{"package": "zlib", "hash": "ab" * 20, "tarball_sha256":
+                               checksum_file(os.path.join(store, "zlib-1.3-1.el9.tar.gz"))}]}, f)
     args = SimpleNamespace(publishView=None, fromManifest=None, package="zlib", version=None,
                            workDir=work, architecture="el9", cvmfsTarget="/cvmfs/r/x", scratchDir=None,
                            prepubUrl="https://prepub", prepubToken=None, prepubRepo=None,
@@ -43,6 +48,7 @@ class PackageTmpTest(unittest.TestCase):
                            prepubTimeout=60, prepubNoVerifyTls=False, dryRun=False)
     tars = []
     with patch.object(publish, "_find_installroot", return_value=root), \
+         patch("bits_helpers.cvmfs_publish.signed_index", return_value={}), \
          patch.object(tempfile, "tempdir", systmp), \
          patch.object(publish, "_publish_tree",
                       lambda tree, *a, **kw: tars.append(kw.get("tmp_dir"))):

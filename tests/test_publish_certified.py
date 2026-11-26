@@ -88,7 +88,7 @@ class CertifiedTest(unittest.TestCase):
     for copy in (self.local, None, RuntimeError("down")):
       with self.store({"b3://bucket": copy}), self.assertRaisesRegex(SystemExit, "no store"):
         self.certified(checksum_file(self.stored))
-    with self.assertRaisesRegex(SystemExit, r"no store \(--store: none\)"):
+    with self.assertRaisesRegex(SystemExit, r"no store \(none given\)"):
       self.certified(checksum_file(self.stored), store="")
 
   def test_refused_when_nothing_records_its_sha256(self):
