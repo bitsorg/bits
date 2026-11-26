@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A package published to CVMFS (`bits publish PACKAGE`, `bits cvmfs publish`) carries its `.build-hash`, as an installation does, so `--symlink-packages-from` with the strict policy (the default) can reuse it; the tarball does not contain it (it is written at install).
 - **[Fix]** `relocate-me.sh` also refuses a `.bits-relocate` entry that leaves the package through a symbolic link in it, which `sed -i` would otherwise edit.
 - **[Improvement]** A build that takes again a revision claim of its own hash in an S3 store (one a failed build left) writes it again, so `bits store rm --stale-rev-markers`, which goes by a claim's age, never removes the claim of a build still running.
 - **[Improvement]** A build reads a version's revision markers from an S3 store (`b3://`) up to eight at a time, not one after another.

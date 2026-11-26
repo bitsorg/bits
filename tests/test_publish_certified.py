@@ -178,13 +178,14 @@ class CertifiedTest(unittest.TestCase):
     def publish_tar(c, p, tar, *a, **k):
       with tarfile.open(tar) as tf:
         published.append(tf.extractfile("./which").read())
+        published.append(tf.extractfile("./.build-hash").read())
       return "J"
     with self.store({"b3://b": self.stored}), \
          mock.patch.object(cp, "tar_path", lambda s, r, a: self.local), \
          mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
          mock.patch.object(cp, "_publish_tar", publish_tar):
       cp.publish_one(self.spec(checksum_file(self.stored)), ctx)
-    self.assertEqual(published, [b"certified"])
+    self.assertEqual(published, [b"certified", (H + "\n").encode()])
     left = sorted(f for f in os.listdir(self.t) if not f.endswith(".tar"))   # _publish_tar's own
     self.assertEqual(left, ["TARS", "store-copy"])                            # nothing else left
     with self.store({"b3://b": None}), \

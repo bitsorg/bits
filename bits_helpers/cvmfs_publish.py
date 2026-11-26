@@ -1552,6 +1552,10 @@ def publish_one(spec, ctx):
         os.makedirs(work_dir)
         tar_gz = certified_tarball(spec, ctx, tar_gz, os.path.join(pub_dir, "store"))
         pkgroot = unpack_package(tar_gz, work_dir, "%s@%s" % (pkg, vdir), pkg, vdir)
+        own_hash = os.path.join(pkgroot, ".build-hash")   # as an install has it: strict
+        if spec.get("hash") and not os.path.exists(own_hash):   # symlink reuse reads it
+            with open(own_hash, "w") as fh:
+                fh.write(spec["hash"] + "\n")
         if skip_pkg and not os.path.isfile(os.path.join(pkgroot, "etc", "modulefiles", pkg)):
             raise AlreadyPublished(path)   # no modulefile to add: skip the relocate
 

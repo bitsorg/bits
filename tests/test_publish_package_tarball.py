@@ -98,6 +98,7 @@ class TarballTest(unittest.TestCase):
     self.assertEqual(got["lib/zlib.pc"], "libdir=%s/lib\n" % TARGET)
     self.assertIn('PKG_DIR="%s"' % TARGET, got["etc/profile.d/.bits-pkginfo"])
     self.assertFalse([f for f in got if f.endswith(".unrelocated")])
+    self.assertEqual(got[".build-hash"], H + "\n")          # strict symlink reuse reads it
     self.assertEqual(self.asked, [])
     self.assert_installed_untouched()
 

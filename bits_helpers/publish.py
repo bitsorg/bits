@@ -971,6 +971,8 @@ def doPublish(args, parser):
             os.makedirs(tree)
             copy_dir = cvmfs_publish.unpack_package(tar_gz, tree, pkg_id, package, version_dir)
             info("working copy: %s", copy_dir)
+            # written at install, not packed: strict symlink reuse reads it on CVMFS
+            shutil.copy2(join(installroot, ".build-hash"), join(copy_dir, ".build-hash"))
             relocate_script = join(copy_dir, "relocate-me.sh")
             if not exists(relocate_script):
                 error("relocate-me.sh not found in %s's tarball — was it built with bits?", pkg_id)
