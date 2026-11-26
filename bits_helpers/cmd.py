@@ -59,13 +59,18 @@ def secret_free_env():
 # and a value that is a URL with credentials (CI_REPOSITORY_URL holds the job token).
 _CREDENTIAL = re.compile(r"TOKEN|SECRET|PASSW|PASSPHRASE|CREDENTIAL|JWT|_KEY$|AUTH_CONFIG", re.I)
 _URL_USERINFO = re.compile(r"://[^/@\s]+@")
+# What lends one without holding it: agents, askpass helpers, tickets, proxies. Those with
+# a default path (Kerberos, the grid proxy, kubeconfig) stay readable there: a sandbox's job.
+_LENDS = re.compile(r"^(SSH_AUTH_SOCK|SSH_AGENT_PID|GPG_AGENT_INFO|GIT_ASKPASS|SSH_ASKPASS|"
+                    r"NETRC|KUBECONFIG|DOCKER_CONFIG|AWS_CONFIG_FILE|KRB5CCNAME|X509_USER_PROXY|"
+                    r"X509_USER_CERT)$")
 
 
 def credential_free_env():
   """secret_free_env() without anything named as a credential or holding a URL with
   one: for a package's own scripts run where the publish credentials are."""
   return {k: v for k, v in secret_free_env().items()
-          if not _CREDENTIAL.search(k) and not _URL_USERINFO.search(v)}
+          if not _CREDENTIAL.search(k) and not _LENDS.match(k) and not _URL_USERINFO.search(v)}
 
 
 def getstatusoutput(command, timeout=None, cwd=None, env=None):
