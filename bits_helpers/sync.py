@@ -385,7 +385,8 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
   # Several stores, a read-only reader (http) with a writer, or two different
   # b3:// or bits-store+ stores, or one with another kind: one helper per store.
   if len(reads) > 1 or len(writes) > 1 or (write_url and (read_url.startswith("http") or (
-      read_url.startswith(("b3://", "bits-store+")) or write_url.startswith("bits-store+")) and read_url != write_url)):
+      read_url.startswith(("b3://", "bits-store+")) or write_url.startswith("bits-store+")) and read_url != write_url)) \
+      or (write_url and _store_kind(read_url) != _store_kind(write_url)):
     readers = [_reader_from_url(u, architecture, work_dir, insecure) for u in reads]
     writers = [_writer_from_url(w, architecture, work_dir, insecure) for w in writes]
     if len(readers) == 1 and len(writers) == 1:
@@ -404,6 +405,11 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
   if read_url:
     return RsyncRemoteSync(read_url, write_url, architecture, work_dir)
   return NoRemoteSync()
+
+
+def _store_kind(url):
+  """Which backend serves *url*: its scheme, rsync for a plain path or host:path."""
+  return next((k for k in ("http", "bits-store+", "s3://", "b3://") if url.startswith(k)), "rsync")
 
 
 def _no_cvmfs_read(url):
