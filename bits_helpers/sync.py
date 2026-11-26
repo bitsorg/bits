@@ -1599,7 +1599,8 @@ class Boto3RemoteSync(RemoteSync):
       return None
     from bits_helpers import rev_index
     key = rev_index.marker_key(arch, package, version, revision)
-    if not self._s3_key_exists(key):
+    existed = self._s3_key_exists(key)
+    if not existed:
       from botocore.exceptions import ClientError, ParamValidationError
       put = dict(Bucket=self.writeStore, Key=key, Body=pkg_hash.encode("utf-8"))
       try:                     # write-once (If-None-Match) where the store has it
@@ -1611,8 +1612,31 @@ class Boto3RemoteSync(RemoteSync):
       except ParamValidationError:     # a botocore without it
         self.s3.put_object(**put)
     # Read back: without write-once, of two builds writing at once the last one wins.
-    return self.s3.get_object(Bucket=self.writeStore, Key=key)["Body"] \
-               .read().decode("utf-8", "replace").strip()
+    got = self.s3.get_object(Bucket=self.writeStore, Key=key)
+    holder = got["Body"].read().decode("utf-8", "replace").strip()
+    if existed and holder == pkg_hash:   # ours, from a build that failed: fresh again for
+      self._refresh_claim(key, pkg_hash, got.get("ETag"))   # --stale-rev-markers (its age)
+    return holder
+
+  def _refresh_claim(self, key, pkg_hash, etag):
+    """Write *key* again, only if it is still the object read (If-Match), where the
+    store has conditional writes."""
+    from botocore.exceptions import ClientError, ParamValidationError
+    put = dict(Bucket=self.writeStore, Key=key, Body=pkg_hash.encode("utf-8"))
+    try:
+      try:
+        self.s3.put_object(IfMatch=etag, **put) if etag else self.s3.put_object(**put)
+      except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("PreconditionFailed", "412"):
+          return                                   # another's now: left alone
+        if exc.response.get("Error", {}).get("Code") not in ("NotImplemented", "501"):
+          raise
+        self.s3.put_object(**put)
+      except ParamValidationError:                 # a botocore without If-Match
+        self.s3.put_object(**put)
+    except Exception as exc:  # pylint: disable=broad-except
+      warning("rev-index: could not refresh the claim %s (%s): `bits store rm "
+              "--stale-rev-markers` may take it while this build runs", key, exc)
 
   def read_rev_markers(self, package, version, arch):
     """Return ``{revision: hash}`` from the rev-index markers for (arch, pkg,

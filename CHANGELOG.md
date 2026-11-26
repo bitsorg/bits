@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Improvement]** A build that takes again a revision claim of its own hash in an S3 store (one a failed build left) writes it again, so `bits store rm --stale-rev-markers`, which goes by a claim's age, never removes the claim of a build still running.
 - **[Improvement]** A build reads a version's revision markers from an S3 store (`b3://`) up to eight at a time, not one after another.
 - **[Improvement]** A reused tarball that was packed on this host or passed the signed-reuse check is unpacked without being decompressed once more to list its members first (the tar-slip guard stays for every other one).
 - **[Improvement]** A source archive extracted before and unchanged since (its size and modification time, recorded in `.bits_extracted`) is not read again to work out its strip depth: a resumed or repeated build of a large source no longer decompresses it first.

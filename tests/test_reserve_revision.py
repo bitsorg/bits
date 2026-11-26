@@ -62,7 +62,7 @@ class Boto3ClaimTest(unittest.TestCase):
       if Key not in objects:
         raise ClientError({"Error": {"Code": "404"}}, "head_object")
 
-    def put(Bucket, Key, Body, IfNoneMatch=None):
+    def put(Bucket, Key, Body, IfNoneMatch=None, IfMatch=None):
       if racer is not None:                      # another build wrote it since our HEAD
         objects.setdefault(Key, racer)
       if IfNoneMatch and not conditional:
@@ -74,7 +74,8 @@ class Boto3ClaimTest(unittest.TestCase):
     s = sync.Boto3RemoteSync("b3://r", "b3://w", ARCH, "/tmp/x")
     s.writeStore = "w"
     s.s3 = MagicMock(head_object=head, put_object=put,
-                     get_object=lambda Bucket, Key: {"Body": MagicMock(read=lambda: objects[Key])})
+                     get_object=lambda Bucket, Key: {"Body": MagicMock(read=lambda: objects[Key]),
+                                                     "ETag": '"e"'})
     return s
 
   def test_claims(self):
@@ -89,6 +90,23 @@ class Boto3ClaimTest(unittest.TestCase):
     plain = {}                                  # no write-once: written, and read back
     self.assertEqual(self.store(plain, conditional=False).claim_rev_marker(
       "zlib", "v1.3", "3", ARCH, MINE), MINE)
+
+  def test_a_claim_taken_again_is_written_again(self):
+    key = rev_index.marker_key(ARCH, "zlib", "v1.3", "3")
+    objects = {key: MINE.encode()}               # from a build that failed, days ago
+    s = self.store(objects)
+    put = s.s3.put_object
+    s.s3.put_object = MagicMock(side_effect=put)
+    self.assertEqual(s.claim_rev_marker("zlib", "v1.3", "3", ARCH, MINE), MINE)
+    s.s3.put_object.assert_called_once_with(Bucket="w", Key=key, Body=MINE.encode(), IfMatch='"e"')
+    s.s3.put_object.reset_mock()
+    objects.clear()                              # a new claim: written once
+    self.assertEqual(s.claim_rev_marker("zlib", "v1.3", "3", ARCH, MINE), MINE)
+    self.assertEqual(s.s3.put_object.call_count, 1)
+    s.s3.put_object.reset_mock()
+    objects[key] = OTHER.encode()                # another's: left alone
+    self.assertEqual(s.claim_rev_marker("zlib", "v1.3", "3", ARCH, MINE), OTHER)
+    s.s3.put_object.assert_not_called()
 
   def test_giving_up_keeps_the_first_number(self):
     taken = Markers({str(n): OTHER for n in range(3, 40)})
