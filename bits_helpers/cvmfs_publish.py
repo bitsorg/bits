@@ -1449,10 +1449,15 @@ def publish_one(spec, ctx):
             raise AlreadyPublished(path)   # published; no tar here for its modulefile
         return []   # no tar (system-provided): the caller reports it as SKIPPED
 
+    # The build's tar-slip guard (build_template.sh): no member may land outside.
+    names = subprocess.run(["tar", "-tzf", tar_gz], check=True, stdout=subprocess.PIPE).stdout
+    if re.search(rb"(^|\n)(/|(.*/)?\.\.(/|\n|$))", names):
+        raise SystemExit("%s@%s: %s has absolute or climbing member paths: not unpacked"
+                         % (pkg, vdir, tar_gz))
     work_dir = tempfile.mkdtemp(prefix="pub-", dir=ctx.get("tmp_dir") or None)
     jobs = []
     try:
-        subprocess.run(["tar", "-xzf", tar_gz, "-C", work_dir], check=True)
+        subprocess.run(["tar", "-xzf", tar_gz, "--no-same-owner", "-C", work_dir], check=True)
         pkgroot = _locate_pkgroot(work_dir)
         if skip_pkg and not os.path.isfile(os.path.join(pkgroot, "etc", "modulefiles", pkg)):
             raise AlreadyPublished(path)   # no modulefile to add: skip the relocate

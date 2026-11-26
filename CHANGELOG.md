@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits cvmfs-publish` unpacks a tarball only when no member is absolute or climbs out (`..`), and without restoring its owners, as the build's own unpack does: publish took it unchecked.
 - **[Fix]** `bits cvmfs-publish` repeats a submission that met a 5xx, or a network error before its upload began (any, for a staged one), up to five times with a fresh signature, when it names the path it publishes (`identity_path`, which prepub re-checks): one 502 failed the package and the run. An upload prepub cuts off is still not repeated.
 - **[Improvement]** `bits cvmfs-publish` reads and hashes each package's tree for its fingerprint only on a dry run, which prints it: every real publish read and hashed everything it published once more for nothing.
 - **[Fix]** An HTTP(S)/FTP source download gives up after 120 s without an answer, keeps nothing when the body is shorter than its Content-Length, and leaves no temporary file on an error: a stalled server held the worker (and every build waiting on its sentinel), and a truncated archive was cached as complete.
