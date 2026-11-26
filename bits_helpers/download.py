@@ -137,11 +137,14 @@ def packCheckout(tempdir, dest, *exports):
         where the code is checked out in a temporary directory and then tarred
         up.
     """
-    export = " ".join(['"%s"' % x for x in exports])
-    packCommand = """cd %(tempdir)s; tar -zcf "%(dest)s" %(export)s """
-    packCommand = packCommand % locals()
-    errorMessage = "Error while creating a tar archive for checked out area"
-    return executeWithErrorCheck(packCommand, errorMessage)
+    import subprocess      # no shell: dest and the export name come from the URL
+    r = subprocess.run(["tar", "-zcf", dest, "--"] + list(exports), cwd=tempdir,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if r.returncode:
+        info("Error while creating a tar archive for checked out area:\n%s",
+             r.stdout.decode(errors="replace"))
+        return False
+    return True
 
 def makedirs(path):
     # No shell: the path holds names taken from a source URL.
@@ -336,23 +339,32 @@ def downloadGit(source, dest, work_dir):
                  "gitroot": gitroot, "dest": dest,
                  "exportpath": exportpath})
     makedirs(exportpath)
-    if "submodules" in args:
-        args["submodules"] = " git submodule update --recursive --init &&"
-    else:
-        args["submodules"] = ""
-    command = format("cd %(exportpath)s &&"
-                     "git init &&"
-                     "git pull --tags %(protocol)s%(gitroot)s refs/heads/%(branch)s &&"
-                     "git remote add origin %(protocol)s%(gitroot)s &&"
-                     "git reset --hard %(tag)s && %(submodules)s"
-                     "find . ! -path '%(filter)s' -delete &&"
-                     "rm -rf .git .gitattributes .gitignore", **args)
-    error, output = getstatusoutput(command % args)
-    if error:
-        warning("Error while downloading sources from %s using git.\n\n"
-            "%s\n\n"
-            "resulted in:\n%s" % (gitroot, command % args, output))
+    url = protocol + gitroot
+    # Argument lists, no shell: the URL's parts are not commands, nor options.
+    if any(str(x).startswith("-") for x in (url, args["branch"], args["tag"])):
+        warning("Refusing git source %s: a part of it starts with '-'", source)
         return False
+    steps = [["git", "init"],
+             ["git", "pull", "--tags", url, "refs/heads/" + args["branch"]],
+             ["git", "remote", "add", "origin", url],
+             ["git", "reset", "--hard", args["tag"], "--"]]
+    if "submodules" in args:
+        steps.append(["git", "submodule", "update", "--recursive", "--init"])
+    steps.append(["find", ".", "!", "-path", args["filter"], "-delete"])
+    import subprocess
+    for step in steps:
+        r = subprocess.run(step, cwd=exportpath, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if r.returncode:
+            warning("Error while downloading sources from %s using git.\n\n%s\n\nresulted in:\n%s",
+                    gitroot, " ".join(step), r.stdout.decode(errors="replace"))
+            return False
+    for name in (".git", ".gitattributes", ".gitignore"):
+        target = join(exportpath, name)
+        if os.path.isdir(target) and not os.path.islink(target):
+            import shutil
+            shutil.rmtree(target)
+        elif os.path.lexists(target):
+            os.unlink(target)
     return packCheckout(args["tempdir"], args["dest"], args["export"])
 
 
