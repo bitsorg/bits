@@ -9,6 +9,7 @@ they run on any platform without requiring podman to be installed.
 
 from pathlib import Path
 import os
+import shlex
 import sys
 import types
 import unittest
@@ -324,7 +325,6 @@ class WrapPodmanDockerTests(unittest.TestCase):
             _opts(sandbox="podman"),
             workdir="/sw",
             docker_active=True,
-            container_workdir="/container/bits/sw",
             docker_image="alisw/slc8-builder:latest",
         )
         self.assertIn("podman run", result)
@@ -342,7 +342,6 @@ class WrapPodmanDockerTests(unittest.TestCase):
             _opts(sandbox="podman"),
             workdir="/sw",
             docker_active=True,
-            container_workdir="/container/bits/sw",
             docker_image="alisw/slc8-builder:latest",
         )
         self.assertNotIn("--network=none", result)
@@ -358,7 +357,6 @@ class WrapPodmanDockerTests(unittest.TestCase):
                 _opts(sandbox="podman"),
                 workdir="/sw",
                 docker_active=True,
-                container_workdir="/container/bits/sw",
                 docker_image="alisw/slc8-builder:latest",
             )
         self.assertTrue(any("DinD" in str(w) or "already running inside" in str(w)
@@ -372,10 +370,76 @@ class WrapPodmanDockerTests(unittest.TestCase):
             bad_cmd, _spec(), _opts(sandbox="podman"),
             workdir="/sw",
             docker_active=True,
-            container_workdir="/container/bits/sw",
             docker_image="alisw/slc8-builder:latest",
         )
         self.assertEqual(result, bad_cmd)
+
+
+class NestedFormsTests(unittest.TestCase):
+
+    def passed(self, extra):
+        return shlex.split(sandbox._nested_passthrough("docker run --rm " + extra + " img "))
+
+    def test_forms(self):
+        self.assertEqual(self.passed("-v/a:/b -eFOO=1 --volume=/c:/d:U --env=BAR "
+                                     "-v /e:/f:ro,noexec -v x:y:/g -v /anon --tmpfs /t:size=1m "
+                                     "--mount type=bind,src=/h,dst=/i,readonly "
+                                     "--mount type=volume,source=v,target=/j "
+                                     "--network host -w /x --label k=v"),
+                         ["-v", "/b:/b", "-e", "FOO", "-v", "/d:/d:U", "-e", "BAR",
+                          "-v", "/f:/f:ro,noexec", "-v", "/g:/g", "-v", "/anon:/anon",
+                          "-v", "/t:/t", "-v", "/i:/i:ro", "-v", "/j:/j"])
+
+    def test_what_cannot_be_passed_is_refused(self):
+        for extra in ("--env-file /f", "--volumes-from c", "--mount type=bind,src=/a",
+                      "-v /a:rel", "'unbalanced"):
+            with self.assertRaises(ValueError, msg=extra):
+                self.passed(extra)
+
+    @patch("bits_helpers.sandbox.detect_dind", return_value=False)
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
+    def test_the_build_stops_rather_than_run_unsandboxed(self, _r, _d):
+        cmd = "docker run --rm --env-file /f img bash -ex /build.sh"
+        with self.assertRaises(SystemExit):
+            wrap_build_command(cmd, _spec(), _opts(sandbox="podman"), workdir="/sw",
+                               docker_active=True, docker_image="img")
+
+
+class NestedPassthroughTests(unittest.TestCase):
+    """The nested podman sees what the outer container has: its volumes at their
+    container paths, read-only kept, and its variables by name, never by value."""
+
+    def outer(self):
+        from bits_helpers.build import container_mounts, shell_env
+        ro = "-v /sw/SOURCES:/container/bits/sw/SOURCES:ro "
+        return (
+            "docker run --rm --entrypoint= --user $(id -u):$(id -g) "
+            + container_mounts("/sw", "/container/bits/sw", ro, "/cfg", "/sw/SPECS/el9/zlib/1",
+                               "/opt/bits")
+            + "-v /cvmfs:/cvmfs:ro -v /ref/mirror:/mirror:ro "
+            + '-v "$PWD/$(readlink O2 || echo O2)":/O2:rw '
+            + shell_env([("PKGNAME", "zlib"), ("SECRET_HINT", "a b'c")], "-e ")
+            + " -e JALIEN_TOKEN -e HOME=/tmp alisw/slc9-builder:latest bash -ex /build.sh")
+
+    @patch("bits_helpers.sandbox.detect_dind", return_value=False)
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
+    def test_volumes_and_variables_passed(self, _r, _d):
+        outer = self.outer()
+        result = wrap_build_command(outer, _spec(), _opts(sandbox="podman"), workdir="/sw",
+                                    docker_active=True, docker_image="img")
+        nested = result[result.index("podman run"):]
+        argv = shlex.split(nested)
+        vols = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+        self.assertEqual(vols, ["/container/bits/sw:/container/bits/sw",
+                                "/container/bits/sw/SOURCES:/container/bits/sw/SOURCES:ro",
+                                "/pkgdist.bits:/pkgdist.bits:ro", "/build.sh:/build.sh:ro",
+                                "/bits:/bits:ro", "/cvmfs:/cvmfs:ro", "/mirror:/mirror:ro",
+                                "/O2:/O2:rw"])
+        names = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
+        self.assertEqual(names, ["PKGNAME", "SECRET_HINT", "JALIEN_TOKEN", "HOME"])
+        self.assertNotIn("a b", nested)
+        self.assertEqual(argv[-4:], ["img", "bash", "-ex", "/build.sh"])
+        self.assertTrue(result.startswith(outer[:outer.rindex("bash -ex /build.sh")]))
 
 
 # ---------------------------------------------------------------------------

@@ -3493,7 +3493,6 @@ def build_one_package(p, ctx):
       args,
       workdir=abspath(args.workDir),
       docker_active=bool(getattr(args, "docker", False)),
-      container_workdir=container_workDir if getattr(args, "docker", False) else None,
       docker_image=getattr(args, "dockerImage", None),
       pkg_env=_pkg_env,
       build_workdir=abspath(build_work_dir(spec, args)),

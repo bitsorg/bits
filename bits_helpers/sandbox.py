@@ -47,10 +47,11 @@ import sys
 import shutil
 import subprocess
 import tempfile
-from shlex import quote
+import re
+from shlex import quote, split
 from typing import Optional
 
-from bits_helpers.log import warning, debug
+from bits_helpers.log import debug, dieOnError, warning
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +472,43 @@ def failure_hint(build_command: str) -> str:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _nested_passthrough(outer: str) -> str:
+    """The outer ``docker run``'s volumes and variables, as the nested podman takes them:
+    each volume at its container path (its options kept), each variable by name (its
+    value is in the outer container's environment). ValueError for what it cannot pass."""
+    out, it = [], iter(split(outer))
+    for word in it:
+        if word[:2] in ("-v", "-e") and len(word) > 2 and not word.startswith("--"):
+            flag, value = word[:2], word[2:].lstrip("=")          # -v/a:/b, -eFOO=1
+        else:
+            flag, eq, value = word.partition("=")
+            if flag in ("--env-file", "--volumes-from"):
+                raise ValueError(flag)
+            if flag not in ("-v", "--volume", "-e", "--env", "--mount", "--tmpfs"):
+                continue
+            value = value if eq else next(it, "")
+        if flag in ("-e", "--env"):
+            name = value.split("=", 1)[0]
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                out.append("-e %s " % name)
+            continue
+        if flag == "--mount":
+            fields = dict(kv.partition("=")[::2] for kv in value.split(","))
+            dest = fields.get("target") or fields.get("destination") or fields.get("dst") or ""
+            opts = "ro" if ("readonly" in fields or "ro" in fields) and \
+                fields.get("readonly", fields.get("ro")) in ("", "true", "1") else ""
+        elif flag == "--tmpfs":
+            dest, opts = value.split(":")[0], ""
+        else:
+            parts = value.split(":")
+            opts = parts.pop() if len(parts) > 2 and not parts[-1].startswith("/") else ""
+            dest = parts[-1]
+        if not dest.startswith("/"):
+            raise ValueError("%s %s" % (flag, value))
+        out.append("-v %s " % quote("%s:%s%s" % (dest, dest, ":" + opts if opts else "")))
+    return "".join(out)
+
+
 def wrap_build_command(
     build_command: str,
     spec: dict,
@@ -478,7 +516,6 @@ def wrap_build_command(
     *,
     workdir: str,
     docker_active: bool = False,
-    container_workdir: Optional[str] = None,
     docker_image: Optional[str] = None,
     pkg_env: Optional[dict] = None,
     build_workdir: Optional[str] = None,
@@ -504,9 +541,6 @@ def wrap_build_command(
     :param docker_active:
         True when ``bits build --docker`` is in effect.  Triggers nested-podman
         mode instead of wrapping the host command.
-    :param container_workdir:
-        The workdir path *inside* the Docker container (e.g. ``/container/bits/sw``).
-        Required when *docker_active* is True.
     :param docker_image:
         The Docker image name.  Used as the nested podman image when no
         ``--sandbox-image`` was given.
@@ -605,8 +639,6 @@ def wrap_build_command(
         # container for the recipe script.  The outer container launches with
         # ``bash -ex /build.sh`` as its command; we replace that with a nested
         # ``podman run … bash -ex /build.sh``.
-        inner_workdir = container_workdir or workdir
-
         if detect_dind():
             warning(
                 "bits is already running inside a Docker container (DinD). "
@@ -616,18 +648,6 @@ def wrap_build_command(
                 "If builds fail with 'user namespaces not supported', "
                 "disable sandboxing with --sandbox=off for this job."
             )
-
-        nested_cmd = (
-            "podman run --rm --userns=keep-id "
-            "-v {wd}:{wd} "
-            "{net}"
-            "{img} "
-            "bash -ex /build.sh"
-        ).format(
-            wd=quote(inner_workdir),
-            net=network_flag,
-            img=quote(image),
-        )
 
         # Replace only the last occurrence of the inner Docker entrypoint
         marker = "bash -ex /build.sh"
@@ -639,6 +659,22 @@ def wrap_build_command(
                 spec.get("package", "?"),
             )
             return build_command
+        try:
+            passed = _nested_passthrough(build_command[:idx])
+        except ValueError as exc:   # never a build that looks sandboxed and is not
+            dieOnError(True, "sandbox: the nested podman cannot be given the build container's "
+                       "%s; use -v / -e in --docker-extra-args, or --sandbox=off" % exc)
+        nested_cmd = (
+            "podman run --rm --entrypoint= --userns=keep-id "
+            "{passed}"
+            "{net}"
+            "{img} "
+            "bash -ex /build.sh"
+        ).format(
+            passed=passed,
+            net=network_flag,
+            img=quote(image),
+        )
         return build_command[:idx] + nested_cmd
 
     else:
