@@ -30,6 +30,16 @@ class CredentialReadTest(unittest.TestCase):
       rule = '(deny file-read* (subpath "%s"))' % os.path.join(home, rel)
       self.assertGreater(text.index(rule), allow, rel)
 
+  def test_the_configured_key_and_token_files_too(self):
+    keys = os.path.join(tempfile.gettempdir(), "elsewhere", "s3keys")
+    token = os.path.join(tempfile.gettempdir(), "elsewhere", "store-token")
+    gitlab = os.path.join(tempfile.gettempdir(), "elsewhere", "gitlab-token")
+    with patch.dict(os.environ, {"BITS_AWS_KEYS_FILE": keys, "BITS_GITLAB_TOKEN_FILE": gitlab}), \
+         patch("bits_helpers.source_store.TOKEN_FILE", token):
+      text = self.profile(os.path.join(tempfile.gettempdir(), "sw"))
+    for f in (keys, token, gitlab):
+      self.assertIn('(deny file-read* (subpath "%s"))' % f, text)
+
   def test_a_work_dir_under_one_stays_readable(self):
     home = tempfile.mkdtemp()
     self.addCleanup(shutil.rmtree, home)

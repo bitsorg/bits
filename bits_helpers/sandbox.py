@@ -317,7 +317,19 @@ def _sbpl_quote(path: str) -> str:
 
 # Read anything but the credentials a recipe has no use for (a later rule wins).
 CREDENTIAL_PATHS = (".bits", ".ssh", ".aws", ".netrc", ".gnupg",
-                    ".docker/config.json", "Library/Keychains")
+                    ".docker/config.json", "Library/Keychains", ".git-credentials",
+                    ".pypirc", ".npmrc", ".config/gh", ".kube", ".config/gcloud",
+                    ".cargo/credentials.toml", ".cargo/credentials")
+
+
+def _configured_credential_files() -> list:
+    """The key and token files bits is configured with, wherever they are."""
+    from bits_helpers.forge import DEFAULT_GITLAB_TOKEN_FILE
+    from bits_helpers.source_store import TOKEN_FILE
+    from bits_helpers.sync import _keys_file
+    gitlab = os.environ.get("BITS_GITLAB_TOKEN_FILE") or DEFAULT_GITLAB_TOKEN_FILE
+    store = os.environ.get("BITS_STORE_TOKEN_FILE") or TOKEN_FILE
+    return [os.path.abspath(os.path.expanduser(f)) for f in (_keys_file(), store, gitlab) if f]
 
 
 def _credential_read_rules(builddir: str) -> list:
@@ -327,13 +339,12 @@ def _credential_read_rules(builddir: str) -> list:
     except KeyError:                       # a uid with no passwd entry
         account = os.path.expanduser("~")
     homes = dict.fromkeys((os.path.expanduser("~"), account))
+    paths = [os.path.join(home, rel) for home in homes for rel in CREDENTIAL_PATHS]
     rules = []
-    for home in homes:
-        for rel in CREDENTIAL_PATHS:
-            p = os.path.join(home, rel)
-            if (os.path.realpath(builddir) + os.sep).startswith(os.path.realpath(p) + os.sep):
-                continue                   # the build's own dir stays readable
-            rules += ["(deny file-read* (subpath %s))" % _sbpl_quote(d) for d in _both(p)]
+    for p in dict.fromkeys(paths + _configured_credential_files()):
+        if (os.path.realpath(builddir) + os.sep).startswith(os.path.realpath(p) + os.sep):
+            continue                       # the build's own dir stays readable
+        rules += ["(deny file-read* (subpath %s))" % _sbpl_quote(d) for d in _both(p)]
     return rules
 
 
