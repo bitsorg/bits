@@ -996,75 +996,76 @@ def doPublish(args, parser):
             shutil.rmtree(copy_dir)
         os.makedirs(copy_dir)
     else:
-        # Use a temp dir that auto-cleans on abnormal exit; we remove it
-        # explicitly on success.
-        _tmpparent = tempfile.mkdtemp(prefix="bits-cvmfs-")
+        # Under the work dir, not the system temp dir (often small): removed below.
+        os.makedirs(join(work_dir, "TMP"), exist_ok=True)
+        _tmpparent = tempfile.mkdtemp(prefix="bits-cvmfs-", dir=join(work_dir, "TMP"))
         copy_dir   = join(_tmpparent, pkg_id)
         os.makedirs(copy_dir)
 
-    info("working copy: %s", copy_dir)
+    try:   # the working copy goes, whatever stops the publish
+        info("working copy: %s", copy_dir)
 
-    info("Copying installation tree …")
-    rsync_copy = ["rsync", "-a", installroot + "/", copy_dir + "/"]
-    subprocess.run(rsync_copy, check=True)
+        info("Copying installation tree …")
+        rsync_copy = ["rsync", "-a", installroot + "/", copy_dir + "/"]
+        subprocess.run(rsync_copy, check=True)
 
-    if no_relocate:
+        if no_relocate:
+            # ------------------------------------------------------------------
+            # 3. Skip relocation: package was built with --cvmfs-prefix so all
+            #    embedded paths are already correct for CVMFS.
+            # ------------------------------------------------------------------
+            info("--no-relocate: skipping relocation (package built at final CVMFS path)")
+        else:
+            # ------------------------------------------------------------------
+            # 3. Relocate working copy to final CVMFS target path.
+            # ------------------------------------------------------------------
+            info("Relocating to %s …", cvmfs_target)
+            from bits_helpers.cmd import credential_free_env
+            # the package's own script: none of the job's credentials (PREPUB_API_TOKEN)
+            env = {**credential_free_env(), "INSTALL_BASE": cvmfs_target}
+            result = subprocess.run(
+                ["bash", "-e", relocate_script],
+                cwd=copy_dir,
+                env=env,
+                check=False,
+            )
+            if result.returncode != 0:
+                error("relocate-me.sh failed (exit %d)", result.returncode)
+                sys.exit(result.returncode)
+
         # ------------------------------------------------------------------
-        # 3. Skip relocation: package was built with --cvmfs-prefix so all
-        #    embedded paths are already correct for CVMFS.
+        # 4. cvmfs-prepub path — each independent directory tree is
+        #     tar'd and submitted to *its own* CVMFS path.  The package payload
+        #     and the modulefiles live in different trees (install_dir vs
+        #     module_dir), so a single tar would land the modulefiles inside the
+        #     package tree; they are submitted as a separate job to --module-target.
         # ------------------------------------------------------------------
-        info("--no-relocate: skipping relocation (package built at final CVMFS path)")
-    else:
-        # ------------------------------------------------------------------
-        # 3. Relocate working copy to final CVMFS target path.
-        # ------------------------------------------------------------------
-        info("Relocating to %s …", cvmfs_target)
-        from bits_helpers.cmd import credential_free_env
-        # the package's own script: none of the job's credentials (PREPUB_API_TOKEN)
-        env = {**credential_free_env(), "INSTALL_BASE": cvmfs_target}
-        result = subprocess.run(
-            ["bash", "-e", relocate_script],
-            cwd=copy_dir,
-            env=env,
-            check=False,
+        from bits_helpers.prepub import resolve_token
+
+        prepub_cfg = _PrepubConfig(
+            url=prepub_url, token=resolve_token(prepub_token),
+            webhook=prepub_webhook, no_verify_tls=prepub_no_verify_tls,
+            bearer_auth=prepub_bearer_auth,
+            poll_interval=prepub_poll_interval, timeout=prepub_timeout,
         )
-        if result.returncode != 0:
-            error("relocate-me.sh failed (exit %d)", result.returncode)
-            sys.exit(result.returncode)
 
-    # ------------------------------------------------------------------
-    # 4. cvmfs-prepub path — each independent directory tree is
-    #     tar'd and submitted to *its own* CVMFS path.  The package payload
-    #     and the modulefiles live in different trees (install_dir vs
-    #     module_dir), so a single tar would land the modulefiles inside the
-    #     package tree; they are submitted as a separate job to --module-target.
-    # ------------------------------------------------------------------
-    from bits_helpers.prepub import resolve_token
+        # Package payload tree.
+        repo, subpath = _resolve_repo_subpath(prepub_repo, prepub_path, cvmfs_target, parser)
+        debug("prepub repo=%s  path=%s", repo, subpath)
 
-    prepub_cfg = _PrepubConfig(
-        url=prepub_url, token=resolve_token(prepub_token),
-        webhook=prepub_webhook, no_verify_tls=prepub_no_verify_tls,
-        bearer_auth=prepub_bearer_auth,
-        poll_interval=prepub_poll_interval, timeout=prepub_timeout,
-    )
+        # Modulefiles tree (independent of relocation): published to module_dir when
+        # --module-target is given, so they reach the separate modules tree even when
+        # the package itself is published with --no-relocate.
+        module_target = getattr(args, "moduleTarget", None)
+        module_dir = join(copy_dir, "etc", "modulefiles")
+        publish_modules = bool(module_target) and os.path.isdir(module_dir) and os.listdir(module_dir)
 
-    # Package payload tree.
-    repo, subpath = _resolve_repo_subpath(prepub_repo, prepub_path, cvmfs_target, parser)
-    debug("prepub repo=%s  path=%s", repo, subpath)
-
-    # Modulefiles tree (independent of relocation): published to module_dir when
-    # --module-target is given, so they reach the separate modules tree even when
-    # the package itself is published with --no-relocate.
-    module_target = getattr(args, "moduleTarget", None)
-    module_dir = join(copy_dir, "etc", "modulefiles")
-    publish_modules = bool(module_target) and os.path.isdir(module_dir) and os.listdir(module_dir)
-
-    try:
-        _publish_tree(copy_dir, repo, subpath, prepub_cfg, "package %s" % pkg_id)
+        _publish_tree(copy_dir, repo, subpath, prepub_cfg, "package %s" % pkg_id,
+                      tmp_dir=os.path.dirname(copy_dir))
         if publish_modules:
             mrepo, msub = _resolve_repo_subpath(None, None, module_target, parser)
             _publish_tree(module_dir, mrepo, msub, prepub_cfg,
-                          "modulefiles for %s" % pkg_id)
+                          "modulefiles for %s" % pkg_id, tmp_dir=os.path.dirname(copy_dir))
         elif module_target:
             info("No modulefiles under %s; nothing to publish to module tree.", module_dir)
     finally:
@@ -1106,13 +1107,13 @@ def _resolve_repo_subpath(prepub_repo, prepub_path, cvmfs_target, parser):
         parser.error(str(exc))
 
 
-def _publish_tree(tree_dir, repo, subpath, cfg, what):
+def _publish_tree(tree_dir, repo, subpath, cfg, what, tmp_dir=None):
     """Tar *tree_dir* and submit it to ``<repo>/<subpath>`` via cvmfs-prepub,
     polling to completion. This is the single per-tree primitive: the package
     payload, the modulefiles tree and a release view are each published with it,
     to their own independent CVMFS path."""
     from bits_helpers.prepub import poll_job, submit_job
-    tar_fd, tar_path = tempfile.mkstemp(prefix="bits-prepub-", suffix=".tar.gz")
+    tar_fd, tar_path = tempfile.mkstemp(prefix="bits-prepub-", suffix=".tar.gz", dir=tmp_dir)
     os.close(tar_fd)
     try:
         info("Packaging %s as tar → %s/%s …", what, repo, subpath)
