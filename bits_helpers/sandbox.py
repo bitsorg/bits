@@ -487,11 +487,12 @@ def wrap_build_command(
     if mode == "container":
         if allow_network:
             return build_command
-        if not build_command.startswith("docker run "):   # never looks sandboxed and is not
-            raise ValueError("sandbox: not a docker run command: %s" % build_command[:80])
+        run = re.match(r"(docker|podman) run ", build_command)
+        if not run:   # never looks sandboxed and is not
+            raise ValueError("sandbox: not a docker/podman run command: %s" % build_command[:80])
         # Instead of any network the command names (bits' own --network=host).
-        rest = re.sub(r" --net(?:work)?(?:=| +)\S+(?= )", "", build_command[len("docker run "):])
-        return "docker run --network=none " + rest
+        rest = re.sub(r" --net(?:work)?(?:=| +)\S+(?= )", "", build_command[run.end():])
+        return run.group(0) + "--network=none " + rest
 
     if mode == "podman" and not image:
         # No container image available.  If the user explicitly requested podman

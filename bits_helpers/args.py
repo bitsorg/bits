@@ -82,9 +82,13 @@ def _host_online_cpus():
 
 
 def _is_rootless_podman():
-  """True when `docker` is podman (podman-docker) run by a non-root user."""
+  """True when the container engine is podman (or `docker` is podman-docker), run
+  by a non-root user."""
+  from bits_helpers.container_engine import engine
   if platform.system() != "Linux" or os.geteuid() == 0:
     return False
+  if engine() == "podman":
+    return True
   try:
     out = commands.run(["docker", "--version"], capture_output=True,
                        text=True, timeout=30).stdout
@@ -490,6 +494,7 @@ def add_deps_arguments(subparsers, ctx):
   build's --docker option, it may be useful to resolve dependencies inside that
   container as well, as which system packages are picked up may differ.
   """)
+  _add_container_engine(deps_docker)
   deps_docker.add_argument("--docker", dest="docker", action="store_true",
                            help="Check for available system packages inside a Docker container.")
   deps_docker.add_argument("--docker-image", dest="dockerImage", metavar="IMAGE", default=None,
@@ -548,6 +553,7 @@ def add_doctor_arguments(subparsers, ctx):
   build's --docker option, it may be useful to resolve dependencies inside that
   container as well, as which system packages are picked up may differ.
   """)
+  _add_container_engine(doctor_docker)
   doctor_docker.add_argument("--docker", dest="docker", action="store_true",
                              help="Check for available system packages inside a Docker container.")
   doctor_docker.add_argument("--docker-image", dest="dockerImage", metavar="IMAGE", default=None,
@@ -866,6 +872,7 @@ def add_status_arguments(subparsers, ctx):
       title="Use a Docker container",
       description="As bits build --docker: the system packages and the container "
                   "fingerprint (in the toolchain's hash) come from the container.")
+  _add_container_engine(status_docker)
   status_docker.add_argument("--docker", dest="docker", action="store_true",
                              help="Check for system packages inside a Docker container.")
   status_docker.add_argument("--docker-image", dest="dockerImage", metavar="IMAGE", default=None,
@@ -1690,6 +1697,7 @@ def add_build_arguments(subparsers, ctx):
   system: docker_tag, containers.tag. BITS_LEGACY_REGISTRY=1 (set by the aliBuild
   wrapper) uses containers.legacy_image. Images are fetched if unavailable.
   """)
+  _add_container_engine(build_docker)
   build_docker.add_argument("--docker", dest="docker", action="store_true",
                             help="Build inside a Docker container.")
   build_docker.add_argument("--docker-image", dest="dockerImage", metavar="IMAGE", default=None,
@@ -2339,11 +2347,20 @@ def _with_release_base(defaults):
   return defaults
 
 
+def _add_container_engine(group):
+  group.add_argument("--container-engine", dest="containerEngine", choices=("docker", "podman"),
+                     default=None,
+                     help=("The engine containers run with (default: $BITS_CONTAINER_ENGINE, "
+                           "else docker). podman runs them rootless: no root daemon."))
+
+
 def _finalise_docker(args, parser):
   """The container options of build, doctor, deps and status: --docker implied by
   an image or extra args, the docker run arguments, the image and the platform."""
   if args.dockerImage or args.docker_extra_args:
     args.docker = True
+  from bits_helpers.container_engine import choose
+  choose(getattr(args, "containerEngine", None))
 
   args.docker_extra_args = shlex.split(args.docker_extra_args)
   args.docker_extra_args.append("--network=host")
@@ -2392,8 +2409,9 @@ def _finalise_docker(args, parser):
   if args.docker and args.architecture.startswith("osx"):
     parser.error("cannot use `-a %s` and --docker" % args.architecture)
 
-  if args.docker and commands.getstatusoutput("which docker")[0]:
-    parser.error("cannot use --docker as docker executable is not found")
+  from bits_helpers.container_engine import engine
+  if args.docker and commands.getstatusoutput("which %s" % engine())[0]:
+    parser.error("cannot use --docker as %s executable is not found" % engine())
 
   # If specified, used the docker image requested, otherwise, if running
   # in docker the docker image is given by the first part of the

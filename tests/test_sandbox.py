@@ -300,7 +300,7 @@ class WrapContainerTests(unittest.TestCase):
 
     def test_not_a_docker_run_is_refused(self):
         with self.assertRaises(ValueError):
-            self.wrap(cmd="podman run img bash -ex /build.sh")
+            self.wrap(cmd="nerdctl run img bash -ex /build.sh")
 
 
 class LocalReadOnlyTests(unittest.TestCase):

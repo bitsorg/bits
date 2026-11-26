@@ -11,3 +11,4 @@ os.environ["BITS_GIT_MIRROR"] = ""
 os.environ["BITS_SOURCE_STORE"] = ""
 os.environ["BITS_SOURCE_STORE_RESTRICTED"] = ""
 os.environ["BITS_CRATES_REGISTRY"] = ""
+os.environ.pop("BITS_CONTAINER_ENGINE", None)   # docker, unless a test chooses

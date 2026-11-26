@@ -99,15 +99,17 @@ def _has_subids(path, user, uid):
 
 
 def check_container_engine():
-  """Checks for `docker` (real docker, or podman behind it). Empty if absent."""
+  """Checks for the container engine (docker, podman behind it, or podman)."""
   from bits_helpers.args import _is_rootless_podman, _rootless_podman_controllers
-  if not shutil.which("docker"):
-    return [("container engine", SKIP, "docker not found (only needed for --docker builds)")]
-  _, version = _run(["docker", "--version"], stdout_only=True)   # not podman-docker's banner
-  podman = "podman" in version.lower()
+  from bits_helpers.container_engine import engine as container_engine
+  cmd = container_engine()
+  if not shutil.which(cmd):
+    return [("container engine", SKIP, "%s not found (only needed for --docker builds)" % cmd)]
+  _, version = _run([cmd, "--version"], stdout_only=True)   # not podman-docker's banner
+  podman = cmd == "podman" or "podman" in version.lower()
   engine = "podman" if podman else "docker"
   checks = []
-  rc, out = _run(["docker", "info"], timeout=60)
+  rc, out = _run([cmd, "info"], timeout=60)
   if rc:
     checks.append(("container engine", WARN, "%s does not respond (needed for --docker "
                    "builds): %s" % (engine, out.splitlines()[-1] if out else "no output")))

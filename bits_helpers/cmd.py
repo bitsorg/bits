@@ -12,6 +12,7 @@ from subprocess import Popen, PIPE, STDOUT, TimeoutExpired
 from textwrap import dedent
 
 # Internal
+from bits_helpers.container_engine import engine
 from bits_helpers.log import debug, dieOnError, error
 
 def decode_with_fallback(data):
@@ -127,7 +128,7 @@ class DockerRunner:
       # "sleep inf" pauses forever, until we kill it.
       envOpts = [opt for k, v in self._extra_env.items() for opt in ("-e", f"{k}={v}")]
       volumes = [opt for v in self._extra_volumes for opt in ("-v", v)]
-      cmd = ["docker", "run", "--detach"] + envOpts + volumes + ["--rm", "--entrypoint="]
+      cmd = [engine(), "run", "--detach"] + envOpts + volumes + ["--rm", "--entrypoint="]
       if self._platform:
         cmd += ["--platform", self._platform]
       cmd += self._docker_run_args
@@ -145,7 +146,7 @@ class DockerRunner:
       for env in self._extra_env.items():
         envOpts.append("-e")
         envOpts.append(f"{env[0]}={env[1]}")
-      exec_cmd = ["docker", "container", "exec"] + envOpts + [self._container, "bash", "-c", cmd]
+      exec_cmd = [engine(), "container", "exec"] + envOpts + [self._container, "bash", "-c", cmd]
       return getstatusoutput(exec_cmd, cwd=cwd)
 
     return getstatusoutput_docker
@@ -154,7 +155,7 @@ class DockerRunner:
     if self._container is not None:
       # 'docker container stop' sends SIGTERM, which doesn't work on 'sleep'
       # for some reason. Kill it directly instead, so we don't have to wait.
-      getstatusoutput("docker container kill " + quote(self._container))
+      getstatusoutput(engine() + " container kill " + quote(self._container))
     self._container = None
     return False   # propagate any exception that may have occurred
 

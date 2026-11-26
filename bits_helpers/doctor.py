@@ -169,13 +169,16 @@ def _check_compiler() -> Tuple[str, str]:
 
 
 def _check_docker_daemon() -> Tuple[str, str]:
-    """PASS if the Docker daemon is running and reachable."""
-    err, out = getstatusoutput("docker info --format '{{.ServerVersion}}'")
+    """PASS if the container engine (docker or podman) answers."""
+    from bits_helpers.container_engine import engine
+    err, out = getstatusoutput(engine() + " info --format '{{.ServerVersion}}'")
+    if err:   # podman (also behind `docker`) has its version elsewhere
+        err, out = getstatusoutput(engine() + " info --format '{{.Version.Version}}'")
     if not err and out.strip():
-        return PASS, "Docker daemon running (server version %s)" % out.strip()
+        return PASS, "%s running (server version %s)" % (engine(), out.strip())
     if err:
-        return FAIL, "docker info failed — daemon not running or not installed"
-    return FAIL, "docker info returned unexpected output: %s" % out[:120]
+        return FAIL, "%s info failed — not running or not installed" % engine()
+    return FAIL, "%s info returned unexpected output: %s" % (engine(), out[:120])
 
 
 def _check_podman() -> Tuple[str, str]:

@@ -1162,6 +1162,7 @@ Build in a container with your own image, for another Linux or CPU, and isolate 
 | Option | Description |
 |--------|-------------|
 | `--docker` | Build inside a Docker container. |
+| `--container-engine docker\|podman` | The engine containers run with (default: `$BITS_CONTAINER_ENGINE`, else `docker`). `podman` runs them rootless (see [Rootless podman](#22-docker-support)); also for `bits deps`, `bits doctor` and `bits status`. |
 | `--docker-image IMAGE` | Docker image to use. Implies `--docker`. Default: derived from the architecture and registry (see [§22](#22-docker-support)). |
 | `--docker-extra-args ARGS` | Extra arguments for `docker run`. Implies `--docker`. bits always adds `--network=host` and, unless given, `--cpuset-cpus=<host CPUs>`. |
 | `-v VOLUME` | Additional volume to mount in the container (repeatable; passed to `docker run`). |
@@ -1351,7 +1352,7 @@ bits doctor --runner [options]               # runner environment validation
 bits doctor --check-store PACKAGE ...        # pre-build store availability report
 ```
 
-**Setup mode** (no `PACKAGE`) checks the machine itself: the Python bits runs with and its modules (boto3 is required when a `b3://` store is given; qrcode, for the QR code `bits login` shows, is optional), running as root, git, a C++ compiler, the container engine behind `docker` (for rootless podman: delegated cgroup controllers, `/etc/subuid`/`/etc/subgid` ranges, storage not on AFS/NFS, SELinux), disk space, and each `--remote-store`/`--write-store` (reachability; for `b3://`, credentials and bucket access; for `s3://`, s3cmd and `~/.s3cfg`). Each check is PASS / WARN / FAIL / SKIP with a one-line fix; any FAIL gives exit code 1. `--json` is supported.
+**Setup mode** (no `PACKAGE`) checks the machine itself: the Python bits runs with and its modules (boto3 is required when a `b3://` store is given; qrcode, for the QR code `bits login` shows, is optional), running as root, git, a C++ compiler, the container engine (`--container-engine`, else `docker`; for rootless podman: delegated cgroup controllers, `/etc/subuid`/`/etc/subgid` ranges, storage not on AFS/NFS, SELinux), disk space, and each `--remote-store`/`--write-store` (reachability; for `b3://`, credentials and bucket access; for `s3://`, s3cmd and `~/.s3cfg`). Each check is PASS / WARN / FAIL / SKIP with a one-line fix; any FAIL gives exit code 1. `--json` is supported.
 
 **Recipe-check mode** (with `PACKAGE`) evaluates each package's `system_requirement` and `prefer_system` snippets in the dependency tree and reports which packages can be satisfied by the host and which will be built by bits. The `PACKAGE` positional argument is required in this mode.
 
@@ -4551,7 +4552,7 @@ Bits mounts into the container the work directory (read-write, except `SOURCES/`
 
 The build runs under your own user ID, with `HOME=/tmp` and `SHELL=/bin/bash`. Bits adds `--network=host` to `docker run` and, unless you pass them yourself in `--docker-extra-args`, `--cpuset-cpus=<all online host CPUs>` and a memory cap of host memory minus max(4 GiB, 10 %) (`BITS_DOCKER_MEMORY=<size>` sets the cap, `BITS_DOCKER_MEMORY=off` removes it).
 
-**Rootless podman.** When `docker` is podman run by a non-root user (for example via `podman-docker`), bits runs the container with `--userns=keep-id` instead of `--user`, disables SELinux labelling (`--security-opt=label=disable`) unless you pass a `--security-opt` yourself, and drops any CPU or memory limit whose cgroup controller is not delegated to your user, with a warning explaining how to delegate it. `bits doctor` checks this setup.
+**Rootless podman.** With `--container-engine podman` (or `BITS_CONTAINER_ENGINE=podman`), bits runs its containers with podman itself: no root daemon, and a recipe that leaves its container has only your own privileges. The same holds when `docker` is podman run by a non-root user (for example via `podman-docker`). Either way bits runs the container with `--userns=keep-id` instead of `--user`, disables SELinux labelling (`--security-opt=label=disable`) unless you pass a `--security-opt` yourself, and drops any CPU or memory limit whose cgroup controller is not delegated to your user, with a warning explaining how to delegate it. `bits doctor` checks this setup.
 
 ### workDir mount point inside the container
 

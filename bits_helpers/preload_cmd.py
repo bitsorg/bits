@@ -276,7 +276,8 @@ def _trace_docker(pkg_dir, exe, args, log_dir, image, cvmfs_mount="/cvmfs"):
     """Run the trace script inside *image* with /cvmfs bind-mounted + SYS_PTRACE."""
     import subprocess
     script = build_trace_script(pkg_dir, exe, args, "/out/strace.log")
-    cmd = ["docker", "run", "--rm", "-i",
+    from bits_helpers.container_engine import engine
+    cmd = [engine(), "run", "--rm", "-i",
            "--cap-add=SYS_PTRACE", "--security-opt", "seccomp=unconfined",
            "-v", "%s:%s:ro,rslave" % (cvmfs_mount, cvmfs_mount),
            "-v", "%s:/out" % log_dir, image, "bash", "-s"]

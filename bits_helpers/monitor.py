@@ -309,7 +309,8 @@ class BuildMonitor:
     @staticmethod
     def _docker_bin():
         from shutil import which
-        return which("docker") or which("podman")
+        from bits_helpers.container_engine import engine
+        return which(engine()) or which("docker") or which("podman")
 
     @staticmethod
     def _pct(s):

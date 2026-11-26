@@ -20,6 +20,7 @@ from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.cmd import credential_free_env
 from bits_helpers.sandbox import wrap_build_command
+from bits_helpers.container_engine import engine as container_engine
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, ver_rev, is_virtual_package, hook_names
 from bits_helpers.utilities import cli_environment
@@ -1827,7 +1828,11 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   if nice_ladder is not None:
     nice_token, nice_level = nice_ladder.acquire()
     if nice_level:  # nice 0 / default shares need no change
-      if getattr(args, "docker", False):
+      from bits_helpers.args import _rootless_podman_controllers
+      if getattr(args, "docker", False) and getattr(args, "rootless_podman", False) and \
+         "cpu" not in (_rootless_podman_controllers() or {"cpu"}):
+        debug("build-nice: the cpu controller is not delegated to this user: no --cpu-shares")
+      elif getattr(args, "docker", False):
         from bits_helpers.nice_ladder import cpu_shares_for_nice
         shares = cpu_shares_for_nice(nice_level)
         # Name the build container (unique per build) so the straggler watchdog
@@ -3426,13 +3431,14 @@ def build_one_package(p, ctx):
     spec["_own_paths"] = (own_paths(_pkg_env, abspath(args.workDir))
                           if getattr(args, "confineWorkDir", False) else None)
     build_command = (
-      "docker run --rm --entrypoint= {userArg}{jobLabel}"
+      "{engine} run --rm --entrypoint= {userArg}{jobLabel}"
       "{platformArg}"
       "{mounts}"
       "{cvmfsMount}"
       "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
       "-e HOME=/tmp -e SHELL=/bin/bash -e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
     ).format(
+      engine=container_engine(),
       userArg=("--userns=keep-id " if getattr(args, "rootless_podman", False)
                else "--user $(id -u):$(id -g) "),
       jobLabel=("--label bits-job=%s " % quote(_job_id)) if _job_id else "",

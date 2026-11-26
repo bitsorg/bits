@@ -45,7 +45,8 @@ def _image_trusts(image):
     try:
       if not image:
         raise OSError("no image")
-      env = subprocess.run(["docker", "image", "inspect", "--format", "{{json .Config.Env}}", image],
+      from bits_helpers.container_engine import engine
+      env = subprocess.run([engine(), "image", "inspect", "--format", "{{json .Config.Env}}", image],
                            capture_output=True, text=True, timeout=30).stdout
     except (OSError, subprocess.SubprocessError):
       env = ""
