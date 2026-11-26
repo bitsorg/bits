@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** Polling a prepub job stops at once on a 4xx (other than 429) with its status and body: a wrong secret, a clock skew against the signature, or an unknown job was polled again for up to 30 minutes (an hour with `--wait`).
 - **[Fix]** A `pip://` source runs `pip download` with an argument list, no shell, and `pip=` may name only `pip`, `pip3`, `pip3.N` or an absolute path to one of them: the URL's options went into a shell command run on the host. `pip_options` are no longer expanded by a shell (`$VAR`, `~`). No recipe in the workspace sets `pip=` or `pip_options`.
 - **[Fix]** A `git` source is fetched with argument lists, no shell: its branch, tag and repository went unquoted into one shell command run on the host, and a part starting with `-` is now refused (it would be read as an option).
 - **[Fix]** A source is copied into its build's source dir, and download dirs made, without a shell: the source URL's last segment went unquoted into `mkdir -p …; cp …`, run on the host, so a `;` or `$(…)` in it ran as a command.

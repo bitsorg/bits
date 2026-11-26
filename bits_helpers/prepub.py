@@ -484,6 +484,11 @@ def poll_job(
             time.sleep(min(poll_interval, remaining))
             continue
 
+        if 400 <= resp.status_code < 500 and resp.status_code != 429:
+            # Not a passing state: a wrong secret, clock skew or an unknown job stays so.
+            error("Job %s: polling answered HTTP %d: %s", job_id, resp.status_code,
+                  resp.text[:500])
+            raise SystemExit(1)
         if resp.status_code != 200:
             debug("Poll attempt %d: HTTP %d", attempt, resp.status_code)
             time.sleep(min(poll_interval, remaining))

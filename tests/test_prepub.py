@@ -318,6 +318,31 @@ class TestPollJob(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_stops_at_once_on_a_4xx(self):
+        import time
+
+        class _Refusing(_FakePrepubHandler):
+            def do_GET(self):
+                self.send_response(self.server.code)
+                self.send_header("Content-Length", "9")
+                self.end_headers()
+                self.wfile.write(b"bad token")
+        from bits_helpers.prepub import poll_job
+        for code in (401, 403, 404):
+            server = HTTPServer(("127.0.0.1", 0), _Refusing)
+            server.code = code
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                start = time.monotonic()
+                with self.assertRaises(SystemExit), self.assertLogs("bits", "ERROR") as logs:
+                    poll_job("http://127.0.0.1:%d" % server.server_address[1], "", "j",
+                             poll_interval=1, timeout=6)
+                self.assertLess(time.monotonic() - start, 3)
+                self.assertIn("HTTP %d: bad token" % code, logs.output[0])
+            finally:
+                server.shutdown()
+                server.server_close()
+
     def test_raises_on_timeout(self):
         """When the job never reaches a terminal state, poll_job must time out."""
         server, url = _start_fake_prepub(state="uploading")
