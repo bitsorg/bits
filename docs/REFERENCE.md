@@ -4602,11 +4602,11 @@ Sandboxing is **off by default** (`--sandbox=off`); opt in with `--sandbox=auto`
 |----------|-----------------|-----------|
 | Linux (local build, no `--docker`) | `off` | podman is **not** used (or even probed) for plain local builds |
 | macOS (local build) | `sandbox-exec` if available, otherwise `off` | Built-in SBPL sandbox profile; no VM, no overhead |
-| Any platform, `--docker` active | Nested podman inside the container if the builder image contains `podman`; otherwise `off`, with a warning | `podman run` launched from inside the Docker build container |
+| Any platform, `--docker` active | The build container itself | It sees only its mounts (read-only but for the work dir, or the package's own paths with `--confine-work-dir`) and runs with `--network=none` instead of `--network=host` unless the recipe allows the network. A recipe that fetches during its build (pip or cargo through bits-store, git-lfs) needs `sandbox_network: off` |
 
-> **Note.** On a local Linux build without `--docker`, `--sandbox=auto` resolves to `off` and bits never invokes `podman` (not even `podman info`). podman-based recipe isolation on Linux is only engaged when the build runs inside `--docker`, or when it is requested explicitly with `--sandbox=podman` / `--sandbox-image`.
+> **Note.** On a local Linux build without `--docker`, `--sandbox=auto` resolves to `off` and bits never invokes `podman` (not even `podman info`). podman is only used when it is requested explicitly with `--sandbox=podman` / `--sandbox-image` on a build without `--docker`.
 
-Nested in `--docker`, the podman container gets the outer container's volumes at their container paths (the read-only ones stay read-only: `SOURCES/`, the recipes, `/build.sh`, bits, the mirror) and its environment variables by name. Without `--docker`, the workDir is bind-mounted at the same absolute path inside the podman container so that all paths embedded in the build environment (`$WORK_DIR`, `$INSTALLROOT`, `$SOURCEDIR`, etc.) resolve correctly. bits itself, the recipes (`-c`), the package's git mirror and `/cvmfs` are mounted read-only at their paths too, and a development package's source read-write.
+With podman (no `--docker`), the workDir is bind-mounted at the same absolute path inside the podman container so that all paths embedded in the build environment (`$WORK_DIR`, `$INSTALLROOT`, `$SOURCEDIR`, etc.) resolve correctly. bits itself, the recipes (`-c`), the package's git mirror and `/cvmfs` are mounted read-only at their paths too, and a development package's source read-write.
 
 #### Sandbox modes
 
@@ -4614,8 +4614,8 @@ Pass `--sandbox MODE` to `bits build`:
 
 | Mode | Behaviour |
 |------|-----------|
-| `auto` | Pick the best available option: `sandbox-exec` on macOS, nested podman when `--docker` is active and the builder image contains `podman`, and `off` on a local Linux build (no `--docker`). On local Linux, podman is neither used nor probed — request it explicitly with `--sandbox=podman` if you want it. |
-| `podman` | Always use podman; fails with an error if it is not available. With `--docker`, `podman` must exist in the builder image. Without `--docker`, `podman info` must succeed on the host and `--sandbox-image` must name the image (otherwise sandboxing is disabled with a warning). |
+| `auto` | Pick the best available option: `sandbox-exec` on macOS, the build container when `--docker` is active, and `off` on a local Linux build (no `--docker`). On local Linux, podman is neither used nor probed — request it explicitly with `--sandbox=podman` if you want it. |
+| `podman` | With `--docker`, the same as `auto` (rootless podman cannot run inside the build container). Without `--docker`, podman; `podman info` must succeed on the host and `--sandbox-image` must name the image (otherwise sandboxing is disabled with a warning). |
 | `sandbox-exec` | macOS only. Fails with an error on Linux, and where a sandbox cannot start (inside another seatbelt sandbox, which cannot nest; `auto` is then `off`, with a warning). |
 | `off` | (default) No sandboxing. Recipe runs directly on the host. |
 
@@ -4630,10 +4630,10 @@ bits build --sandbox=podman --sandbox-image alisw/slc9-builder:latest ROOT
 bits build ROOT
 ```
 
-Giving `--sandbox-image` alone selects `--sandbox=podman`. When `--docker` is used, `--sandbox-image` defaults to the same image as `--docker-image`, so no extra flag is needed:
+Giving `--sandbox-image` alone selects `--sandbox=podman`. With `--docker` it is not needed:
 
 ```bash
-# Docker build with nested podman sandbox — same image used for both layers
+# Docker build: the build container is the sandbox
 bits build --docker --sandbox=auto --docker-image alisw/slc9-builder:latest ROOT
 ```
 
@@ -4662,18 +4662,6 @@ make install
 The field is silently ignored when `--sandbox=off`. The build-wide default comes from `bits build --sandbox-network on|off`, then `sandbox_network:` in the active defaults, then `on`; a recipe's own field always wins.
 
 That a recipe can lift the block is a deliberate exception, for now: builds that fetch during their build (pip, gem, git-lfs) need it, and neither the command line nor the defaults can keep it on for them. The block therefore stops a build's mistakes, not a recipe written to reach out: reviewing a recipe includes its `sandbox_network:` line. This is expected to change once bits-store serves what such builds fetch.
-
-#### Docker-in-Docker (DinD)
-
-If `bits --docker` is invoked from inside an existing Docker container (for example, a GitLab CI job that itself runs inside Docker), adding a nested podman layer is still possible but requires the outer Docker container to have been started with:
-
-```
---security-opt seccomp=unconfined
-```
-
-or an equivalent unprivileged user-namespace configuration. Without this, the kernel will reject the `clone(CLONE_NEWUSER)` call that podman uses for rootless containers.
-
-Bits detects that it is itself running inside a container and prints a warning when it adds the nested podman layer. If the outer container cannot be reconfigured, disable sandboxing for that job with `--sandbox=off`.
 
 ---
 
@@ -4787,16 +4775,8 @@ the target architecture.
 
 #### Sandbox interaction
 
-Nested QEMU + rootless podman (the DinD sandbox scenario) requires
-`--security-opt seccomp=unconfined` on the outer `docker run` and may still fail
-on older kernels without unprivileged user-namespace support.  Bits emits a warning
-when cross-compilation is active and `--sandbox` is not `off`.  For cross-compilation
-builds, `--sandbox=off` is the recommended setting unless the runner is known to
-support nested namespaces under QEMU:
-
-```bash
-bits build MyAnalysis -a aarch64-el9 --docker --sandbox=off
-```
+With `--docker` the sandbox is the emulated build container itself (no nested
+container), so cross-compilation needs nothing more than `--sandbox=auto`.
 
 ---
 

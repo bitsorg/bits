@@ -182,7 +182,7 @@ def _check_podman() -> Tuple[str, str]:
     """WARN if podman is missing (sandbox degrades to off); PASS if working."""
     err_which, _ = getstatusoutput(["which", "podman"])
     if err_which:
-        return WARN, "podman not found; --sandbox=auto will degrade to 'off'"
+        return WARN, "podman not found; --sandbox=podman (without --docker) is unavailable"
     # Confirm user namespaces work by running a trivial container.
     err_run, out_run = getstatusoutput("podman run --rm --quiet busybox true")
     if not err_run:

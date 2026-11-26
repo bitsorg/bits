@@ -1702,7 +1702,8 @@ def add_build_arguments(subparsers, ctx):
                             help=("Command-line arguments to pass to 'docker run'. "
                                   "Passed through verbatim -- separate multiple arguments "
                                   "with spaces, and make sure quoting is correct! Implies --docker. "
-                                  "bits always appends --network=host and, unless already present, "
+                                  "bits always appends --network=host (--network=none for a recipe "
+                                  "the sandbox keeps offline) and, unless already present, "
                                   "--cpuset-cpus=<host-online-CPUs> so that make -j "
                                   "see the full host core count. Pass --cpuset-cpus=... explicitly "
                                   "to override the automatic value."))
@@ -1740,10 +1741,10 @@ def add_build_arguments(subparsers, ctx):
   build_sandbox = build_parser.add_argument_group(title="Recipe sandbox", description="""\
   Run each recipe build script inside an isolated sandbox to limit the impact
   of malicious or buggy recipes.  On macOS, the built-in sandbox-exec is used
-  (no VM, no overhead).  On Linux, podman (rootless) is used only when --docker
-  is active (a nested podman container inside the builder image) or when
-  requested explicitly with --sandbox=podman; a plain local Linux build is not
-  sandboxed and never invokes podman. In the macOS sandbox a build may write
+  (no VM, no overhead).  With --docker the build container is the sandbox: it
+  sees only its mounts and runs without network unless the recipe allows it.
+  On Linux without --docker, podman (rootless) is used only when requested with
+  --sandbox=podman; a plain local Linux build is not sandboxed and never invokes podman. In the macOS sandbox a build may write
   only its own files in the work dir, the temp dirs and a few caches.
   """)
   build_sandbox.add_argument(
@@ -1754,10 +1755,9 @@ def add_build_arguments(subparsers, ctx):
           "'off' (default): no sandboxing, unless $BITS_SANDBOX=1 or `sandbox: on` "
           "in the active defaults asks for sandbox-exec on a macOS build without "
           "--docker ($BITS_SANDBOX=0 overrides the defaults). "
-          "'auto': sandbox-exec on macOS, nested podman when --docker is active "
-          "and podman is present in the builder image (else off), and off on a "
-          "local Linux build. "
-          "'podman': always use podman (requires --docker or --sandbox-image). "
+          "'auto': sandbox-exec on macOS, the build container (no network unless "
+          "the recipe allows it) with --docker, and off on a local Linux build. "
+          "'podman': as auto with --docker, else podman with --sandbox-image. "
           "'sandbox-exec': macOS only."
       ),
   )
@@ -1769,8 +1769,7 @@ def add_build_arguments(subparsers, ctx):
       "--sandbox-image", dest="sandboxImage", metavar="IMAGE", default=None,
       help=(
           "Container image to use for --sandbox=podman when not using --docker. "
-          "Implies --sandbox=podman. "
-          "Defaults to the --docker image when --docker is set."
+          "Implies --sandbox=podman."
       ),
   )
   build_sandbox.add_argument(

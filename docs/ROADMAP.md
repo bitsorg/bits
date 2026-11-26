@@ -138,9 +138,9 @@ correctly. For large stacks with many independent release lines this is the most
 significant technical gap in bits today.
 
 **Build isolation is opt-in, not the default.** The recipe sandbox is `off` by default.
-`--sandbox=auto` uses `sandbox-exec` on macOS and nested podman under `--docker`, but on
-a plain local Linux build it resolves to `off` — podman is only engaged with `--docker`
-or an explicit `--sandbox=podman` / `--sandbox-image`. In contrast, Nix achieves true
+`--sandbox=auto` uses `sandbox-exec` on macOS and the build container (no network)
+under `--docker`, but on a plain local Linux build it resolves to `off` — podman is only
+engaged with an explicit `--sandbox=podman` / `--sandbox-image`. In contrast, Nix achieves true
 hermetic isolation unconditionally — no implicit host-library leakage, no ambient
 `$PATH` contamination. A bits recipe can accidentally depend on a host library not
 declared in its recipe and still build successfully, masking a portability bug. CI

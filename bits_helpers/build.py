@@ -3470,20 +3470,7 @@ def build_one_package(p, ctx):
     env_vars = shell_env(buildEnvironment)
     build_command =  "env -- {} {} -e -x {}/build.sh 2>&1".format(env_vars, BASH, quote(scriptDir))
 
-  # Warn when cross-compiling (QEMU) with sandboxing enabled: nested podman
-  # inside a QEMU-emulated container requires seccomp=unconfined on the outer
-  # docker run and may still fail on kernels without unprivileged userns.
-  # Recommend --sandbox=off for cross-compilation builds.
-  if getattr(args, "dockerPlatform", None) and getattr(args, "sandbox", "off") != "off":
-    from bits_helpers.log import warning as _warn
-    _warn(
-        "Cross-compilation (--docker-platform %s) with --sandbox=%s: "
-        "nested QEMU + podman may fail unless the outer container is run with "
-        "--security-opt seccomp=unconfined.  Pass --sandbox=off if builds fail.",
-        args.dockerPlatform, args.sandbox,
-    )
-
-  # Apply recipe sandbox (podman / sandbox-exec) if configured.
+  # Apply recipe sandbox (the build container / podman / sandbox-exec) if configured.
   # sandbox=auto selects the best available mode; sandbox=off is a no-op.
   # Per-recipe: sandbox_network: on (default) blocks outgoing network;
   #             sandbox_network: off allows it.
@@ -3493,7 +3480,6 @@ def build_one_package(p, ctx):
       args,
       workdir=abspath(args.workDir),
       docker_active=bool(getattr(args, "docker", False)),
-      docker_image=getattr(args, "dockerImage", None),
       pkg_env=_pkg_env,
       build_workdir=abspath(build_work_dir(spec, args)),
       script_dir=abspath(scriptDir),

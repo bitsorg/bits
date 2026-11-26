@@ -19,7 +19,6 @@ from unittest.mock import patch, mock_open, MagicMock
 
 from bits_helpers import sandbox
 from bits_helpers.sandbox import (
-    detect_dind,
     podman_available,
     sandbox_exec_available,
     resolve_sandbox_mode,
@@ -58,49 +57,6 @@ DOCKER_CMD = (
     "-e WORK_DIR_OVERRIDE=/container/bits/sw "
     "alisw/slc8-builder:latest bash -ex /build.sh"
 )
-
-
-# ---------------------------------------------------------------------------
-# detect_dind
-# ---------------------------------------------------------------------------
-
-class DetectDindTests(unittest.TestCase):
-
-    @patch("sys.platform", "darwin")
-    def test_darwin_always_false(self):
-        self.assertFalse(detect_dind())
-
-    @patch("sys.platform", "linux")
-    @patch("os.path.exists", return_value=True)
-    def test_dockerenv_present(self, _exists):
-        self.assertTrue(detect_dind())
-
-    @patch("sys.platform", "linux")
-    @patch("os.path.exists", return_value=False)
-    def test_cgroup_docker_marker(self, _exists):
-        cgroup_content = "12:devices:/docker/abc123\n0::/\n"
-        with patch("builtins.open", mock_open(read_data=cgroup_content)):
-            self.assertTrue(detect_dind())
-
-    @patch("sys.platform", "linux")
-    @patch("os.path.exists", return_value=False)
-    def test_cgroup_kubepods_marker(self, _exists):
-        cgroup_content = "1:cpuset:/kubepods/besteffort/pod123\n"
-        with patch("builtins.open", mock_open(read_data=cgroup_content)):
-            self.assertTrue(detect_dind())
-
-    @patch("sys.platform", "linux")
-    @patch("os.path.exists", return_value=False)
-    def test_no_markers(self, _exists):
-        cgroup_content = "12:devices:/user.slice\n0::/\n"
-        with patch("builtins.open", mock_open(read_data=cgroup_content)):
-            self.assertFalse(detect_dind())
-
-    @patch("sys.platform", "linux")
-    @patch("os.path.exists", return_value=False)
-    def test_proc_unreadable(self, _exists):
-        with patch("builtins.open", side_effect=OSError):
-            self.assertFalse(detect_dind())
 
 
 # ---------------------------------------------------------------------------
@@ -167,12 +123,12 @@ class ResolveSandboxModeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             resolve_sandbox_mode("podman", False)
 
-    # explicit podman under --docker probes the image, not the host
-    @patch("bits_helpers.sandbox.podman_in_image", return_value=False)
-    def test_explicit_podman_docker_missing_in_image_raises(self, _p):
-        with self.assertRaises(ValueError) as ctx:
-            resolve_sandbox_mode("podman", True, image="img")
-        self.assertIn("builder image", str(ctx.exception))
+    # under --docker the build container is the sandbox: nothing is probed
+    @patch("bits_helpers.sandbox.podman_available")
+    def test_docker_is_the_container(self, _p):
+        for requested in ("auto", "podman"):
+            self.assertEqual("container", resolve_sandbox_mode(requested, True))
+        _p.assert_not_called()
 
     @patch("sys.platform", "darwin")
     @patch("bits_helpers.sandbox.sandbox_exec_refusal", return_value=None)
@@ -210,16 +166,6 @@ class ResolveSandboxModeTests(unittest.TestCase):
     @patch("bits_helpers.sandbox.sandbox_exec_available", return_value=False)
     def test_auto_macos_no_sandbox_exec(self, _s):
         self.assertEqual("off", resolve_sandbox_mode("auto", False))
-
-    # auto, with docker: podman is probed INSIDE the builder image, not the host
-    @patch("bits_helpers.sandbox.podman_in_image", return_value=True)
-    def test_auto_docker_podman_in_image(self, _p):
-        self.assertEqual("podman", resolve_sandbox_mode("auto", True, image="img"))
-
-    @patch("bits_helpers.sandbox.podman_in_image", return_value=False)
-    def test_auto_docker_no_podman_in_image(self, _p):
-        self.assertEqual("off", resolve_sandbox_mode("auto", True, image="img"))
-
 
 # ---------------------------------------------------------------------------
 # wrap_build_command — mode=off
@@ -314,134 +260,47 @@ class WrapPodmanLocalTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# wrap_build_command — podman, nested inside Docker
+# wrap_build_command — the build container (--docker)
 # ---------------------------------------------------------------------------
 
-class WrapPodmanDockerTests(unittest.TestCase):
+class WrapContainerTests(unittest.TestCase):
+    """With --docker the build container is the sandbox: no network unless allowed."""
 
-    @patch("bits_helpers.sandbox.detect_dind", return_value=False)
-    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
-    def test_replaces_inner_entrypoint(self, _r, _d):
-        result = wrap_build_command(
-            DOCKER_CMD, _spec(sandbox_network="on"),
-            _opts(sandbox="podman"),
-            workdir="/sw",
-            docker_active=True,
-            docker_image="alisw/slc8-builder:latest",
-        )
-        self.assertIn("podman run", result)
-        self.assertIn("--network=none", result)
-        # The original docker run prefix is preserved
-        self.assertIn("docker run", result)
-        # 'bash -ex /build.sh' appears only inside the nested podman call
-        self.assertIn("bash -ex /build.sh", result)
+    def wrap(self, cmd=DOCKER_CMD, **spec):
+        return wrap_build_command(cmd, _spec(**spec), _opts(sandbox="auto"), workdir="/sw",
+                                  docker_active=True)
 
-    @patch("bits_helpers.sandbox.detect_dind", return_value=False)
-    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
-    def test_network_allowed_in_docker(self, _r, _d):
-        result = wrap_build_command(
-            DOCKER_CMD, _spec(sandbox_network="off"),
-            _opts(sandbox="podman"),
-            workdir="/sw",
-            docker_active=True,
-            docker_image="alisw/slc8-builder:latest",
-        )
-        self.assertNotIn("--network=none", result)
+    def test_network_blocked_by_default(self):
+        self.assertEqual(self.wrap(),
+                         "docker run --network=none " + DOCKER_CMD[len("docker run "):])
 
-    @patch("bits_helpers.sandbox.detect_dind", return_value=True)
-    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
-    def test_dind_warning_emitted(self, _r, _d):
-        """DinD detection should trigger a warning (not an exception)."""
-        warnings = []
-        with patch("bits_helpers.sandbox.warning", side_effect=lambda *a, **kw: warnings.append(a)):
-            wrap_build_command(
-                DOCKER_CMD, _spec(sandbox_network="on"),
-                _opts(sandbox="podman"),
-                workdir="/sw",
-                docker_active=True,
-                docker_image="alisw/slc8-builder:latest",
-            )
-        self.assertTrue(any("DinD" in str(w) or "already running inside" in str(w)
-                            for w in warnings))
+    def test_network_allowed_when_off(self):
+        self.assertEqual(self.wrap(sandbox_network="off"), DOCKER_CMD)
+        opts = _opts(sandbox="auto", sandbox_network="off")       # the build-wide default
+        self.assertEqual(wrap_build_command(DOCKER_CMD, _spec(), opts, workdir="/sw",
+                                            docker_active=True), DOCKER_CMD)
 
-    @patch("bits_helpers.sandbox.detect_dind", return_value=False)
-    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
-    def test_missing_marker_returns_unchanged(self, _r, _d):
-        bad_cmd = "docker run alisw/slc8-builder:latest /custom_entry.sh"
-        result = wrap_build_command(
-            bad_cmd, _spec(), _opts(sandbox="podman"),
-            workdir="/sw",
-            docker_active=True,
-            docker_image="alisw/slc8-builder:latest",
-        )
-        self.assertEqual(result, bad_cmd)
+    def test_instead_of_the_network_the_command_names(self):
+        cmd = DOCKER_CMD.replace(" alisw/", " --network=host --net bridge --cpuset-cpus=0-7 alisw/")
+        got = shlex.split(self.wrap(cmd=cmd))
+        self.assertEqual([w for w in got if w.startswith("--net")], ["--network=none"])
+        self.assertIn("--cpuset-cpus=0-7", got)
+        self.assertEqual(self.wrap(cmd=cmd, sandbox_network="off"), cmd)
 
+    def test_the_real_extra_args_carry_network_host(self):
+        from bits_helpers.args import _finalise_docker
+        args = types.SimpleNamespace(dockerImage="img", docker_extra_args="", docker=False,
+                                     architecture="x86_64-el9", dockerPlatform=None)
+        _finalise_docker(args, None)
+        self.assertIn("--network=host", args.docker_extra_args)   # what the wrap replaces
 
-class NestedFormsTests(unittest.TestCase):
+    def test_off_leaves_it(self):
+        self.assertEqual(wrap_build_command(DOCKER_CMD, _spec(), _opts(sandbox="off"),
+                                            workdir="/sw", docker_active=True), DOCKER_CMD)
 
-    def passed(self, extra):
-        return shlex.split(sandbox._nested_passthrough("docker run --rm " + extra + " img "))
-
-    def test_forms(self):
-        self.assertEqual(self.passed("-v/a:/b -eFOO=1 --volume=/c:/d:U --env=BAR "
-                                     "-v /e:/f:ro,noexec -v x:y:/g -v /anon --tmpfs /t:size=1m "
-                                     "--mount type=bind,src=/h,dst=/i,readonly "
-                                     "--mount type=volume,source=v,target=/j "
-                                     "--network host -w /x --label k=v"),
-                         ["-v", "/b:/b", "-e", "FOO", "-v", "/d:/d:U", "-e", "BAR",
-                          "-v", "/f:/f:ro,noexec", "-v", "/g:/g", "-v", "/anon:/anon",
-                          "-v", "/t:/t", "-v", "/i:/i:ro", "-v", "/j:/j"])
-
-    def test_what_cannot_be_passed_is_refused(self):
-        for extra in ("--env-file /f", "--volumes-from c", "--mount type=bind,src=/a",
-                      "-v /a:rel", "'unbalanced"):
-            with self.assertRaises(ValueError, msg=extra):
-                self.passed(extra)
-
-    @patch("bits_helpers.sandbox.detect_dind", return_value=False)
-    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
-    def test_the_build_stops_rather_than_run_unsandboxed(self, _r, _d):
-        cmd = "docker run --rm --env-file /f img bash -ex /build.sh"
-        with self.assertRaises(SystemExit):
-            wrap_build_command(cmd, _spec(), _opts(sandbox="podman"), workdir="/sw",
-                               docker_active=True, docker_image="img")
-
-
-class NestedPassthroughTests(unittest.TestCase):
-    """The nested podman sees what the outer container has: its volumes at their
-    container paths, read-only kept, and its variables by name, never by value."""
-
-    def outer(self):
-        from bits_helpers.build import container_mounts, shell_env
-        ro = "-v /sw/SOURCES:/container/bits/sw/SOURCES:ro "
-        return (
-            "docker run --rm --entrypoint= --user $(id -u):$(id -g) "
-            + container_mounts("/sw", "/container/bits/sw", ro, "/cfg", "/sw/SPECS/el9/zlib/1",
-                               "/opt/bits")
-            + "-v /cvmfs:/cvmfs:ro -v /ref/mirror:/mirror:ro "
-            + '-v "$PWD/$(readlink O2 || echo O2)":/O2:rw '
-            + shell_env([("PKGNAME", "zlib"), ("SECRET_HINT", "a b'c")], "-e ")
-            + " -e JALIEN_TOKEN -e HOME=/tmp alisw/slc9-builder:latest bash -ex /build.sh")
-
-    @patch("bits_helpers.sandbox.detect_dind", return_value=False)
-    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
-    def test_volumes_and_variables_passed(self, _r, _d):
-        outer = self.outer()
-        result = wrap_build_command(outer, _spec(), _opts(sandbox="podman"), workdir="/sw",
-                                    docker_active=True, docker_image="img")
-        nested = result[result.index("podman run"):]
-        argv = shlex.split(nested)
-        vols = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
-        self.assertEqual(vols, ["/container/bits/sw:/container/bits/sw",
-                                "/container/bits/sw/SOURCES:/container/bits/sw/SOURCES:ro",
-                                "/pkgdist.bits:/pkgdist.bits:ro", "/build.sh:/build.sh:ro",
-                                "/bits:/bits:ro", "/cvmfs:/cvmfs:ro", "/mirror:/mirror:ro",
-                                "/O2:/O2:rw"])
-        names = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
-        self.assertEqual(names, ["PKGNAME", "SECRET_HINT", "JALIEN_TOKEN", "HOME"])
-        self.assertNotIn("a b", nested)
-        self.assertEqual(argv[-4:], ["img", "bash", "-ex", "/build.sh"])
-        self.assertTrue(result.startswith(outer[:outer.rindex("bash -ex /build.sh")]))
+    def test_not_a_docker_run_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.wrap(cmd="podman run img bash -ex /build.sh")
 
 
 class LocalReadOnlyTests(unittest.TestCase):

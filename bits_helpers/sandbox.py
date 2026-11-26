@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2015-2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Recipe sandbox: wrap build commands with podman (Linux) or sandbox-exec (macOS).
+"""Recipe sandbox: the build container (--docker), podman (Linux) or sandbox-exec (macOS).
 
 Sandbox modes
 -------------
@@ -13,16 +13,14 @@ off
 auto  (default)
     Choose the best available sandbox automatically:
 
-    * **Docker mode** (``--docker``): nested podman inside the container,
-      if podman is available in the builder image.  Falls back to ``off``
-      with a warning.
+    * **Docker mode** (``--docker``): the build container itself: it sees only
+      its mounts, and runs with ``--network=none`` unless the recipe allows it.
     * **macOS, no Docker**: ``sandbox-exec`` (built-in, zero overhead).
-    * **Linux, no Docker**: podman (rootless) if available; ``off`` otherwise.
+    * **Linux, no Docker**: ``off`` (podman only when asked for, with ``--sandbox-image``).
 
 podman
-    Always use podman.  Requires ``--docker`` or ``--sandbox-image`` to
-    supply the container image.  Raises ``ValueError`` if podman is not
-    found.
+    With ``--docker``, as ``auto``. Otherwise podman on the host with the
+    ``--sandbox-image``. Raises ``ValueError`` if podman is not found.
 
 sandbox-exec
     macOS only.  Raises ``ValueError`` on any other platform.
@@ -48,37 +46,15 @@ import shutil
 import subprocess
 import tempfile
 import re
-from shlex import quote, split
+from shlex import quote
 from typing import Optional
 
-from bits_helpers.log import debug, dieOnError, warning
+from bits_helpers.log import debug, warning
 
 
 # ---------------------------------------------------------------------------
 # Detection helpers
 # ---------------------------------------------------------------------------
-
-def detect_dind() -> bool:
-    """Return True if the current process appears to be running inside a container.
-
-    Checks for ``/.dockerenv``, then inspects ``/proc/1/cgroup`` for
-    docker/kubernetes markers.  Returns False on macOS or when ``/proc``
-    is unavailable.
-    """
-    if sys.platform == "darwin":
-        return False
-    if os.path.exists("/.dockerenv"):
-        return True
-    try:
-        with open("/proc/1/cgroup") as fh:
-            return any(
-                kw in line
-                for line in fh
-                for kw in ("docker", "kubepods", "containerd")
-            )
-    except OSError:
-        return False
-
 
 def podman_available() -> bool:
     """Return True if a working podman executable is on PATH.
@@ -145,60 +121,27 @@ def default_mode(env_value, defaults_value, docker_active: bool) -> str:
     return "sandbox-exec"
 
 
-_PODMAN_IN_IMAGE_CACHE: dict = {}
-
-
-def podman_in_image(image: str, docker_cmd: str = "docker") -> bool:
-    """Return True if ``podman`` is on PATH inside the builder *image*.
-
-    The nested-podman sandbox runs ``podman`` INSIDE the builder image, so the
-    host having podman is irrelevant. Probe the image once (result cached).
-    Note: a transient docker failure caches a negative for the run.
-    """
-    if not image:
-        return False
-    if image in _PODMAN_IN_IMAGE_CACHE:
-        return _PODMAN_IN_IMAGE_CACHE[image]
-    ok = False
-    try:
-        result = subprocess.run(
-            [docker_cmd, "run", "--rm", "--entrypoint=", image,
-             "sh", "-c", "command -v podman"],
-            capture_output=True, timeout=60,
-        )
-        ok = result.returncode == 0
-    except Exception:
-        ok = False
-    _PODMAN_IN_IMAGE_CACHE[image] = ok
-    return ok
-
-
 # ---------------------------------------------------------------------------
 # Mode resolution
 # ---------------------------------------------------------------------------
 
-def resolve_sandbox_mode(requested: str, docker_active: bool, image=None) -> str:
+def resolve_sandbox_mode(requested: str, docker_active: bool) -> str:
     """Return the effective sandbox mode.
 
     :param requested: one of ``"off"``, ``"auto"``, ``"podman"``, ``"sandbox-exec"``
     :param docker_active: True when ``--docker`` was passed to ``bits build``
-    :param image: builder image name; under ``--docker`` podman must exist INSIDE
-        it (the nested-podman sandbox), so availability is probed in the image,
-        not on the host.
     :raises ValueError: when an explicitly requested mode is unavailable
     """
     if requested == "off":
         return "off"
 
-    if requested == "podman":
-        # Under --docker the nested podman runs in the image; otherwise it runs
-        # on the host (rootless podman driving --sandbox-image).
-        available = podman_in_image(image) if docker_active else podman_available()
-        if not available:
-            raise ValueError(
-                "--sandbox=podman requested but podman is not available %s"
-                % ("in the builder image" if docker_active else "on this system")
-            )
+    # The build container is the sandbox (rootless podman cannot nest in it).
+    if docker_active and requested in ("auto", "podman"):
+        return "container"
+
+    if requested == "podman":   # on the host, driving --sandbox-image
+        if not podman_available():
+            raise ValueError("--sandbox=podman requested but podman is not available on this system")
         return "podman"
 
     if requested == "sandbox-exec":
@@ -212,20 +155,6 @@ def resolve_sandbox_mode(requested: str, docker_active: bool, image=None) -> str
         return "sandbox-exec"
 
     # --- auto ---
-    if docker_active:
-        # The build already runs inside a Docker container; add an additional
-        # nested-podman layer for recipe isolation -- but only if podman is
-        # actually present in the builder image (probing the host would wrongly
-        # pick podman for an image that lacks it, then fail at build time).
-        if podman_in_image(image):
-            return "podman"
-        warning(
-            "sandbox=auto with --docker: podman not found in the builder image, "
-            "sandboxing disabled. Install podman in the image to enable recipe "
-            "sandboxing."
-        )
-        return "off"
-
     # Local build (no outer Docker)
     if sys.platform == "darwin":
         if not sandbox_exec_available():
@@ -238,7 +167,7 @@ def resolve_sandbox_mode(requested: str, docker_active: bool, image=None) -> str
 
     # Linux, no outer Docker: do NOT use — or even probe — podman here.  Recipe
     # sandboxing with podman is only meaningful when a container image is
-    # available, i.e. inside --docker (the nested-podman branch above) or when
+    # available, i.e. inside --docker (the build container above) or when
     # the user explicitly asks for it via --sandbox=podman / --sandbox-image
     # (handled by the requested == "podman" branch). Returning "off" here keeps
     # an ordinary `bits build` from invoking `podman info` and from depending on
@@ -472,43 +401,6 @@ def failure_hint(build_command: str) -> str:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def _nested_passthrough(outer: str) -> str:
-    """The outer ``docker run``'s volumes and variables, as the nested podman takes them:
-    each volume at its container path (its options kept), each variable by name (its
-    value is in the outer container's environment). ValueError for what it cannot pass."""
-    out, it = [], iter(split(outer))
-    for word in it:
-        if word[:2] in ("-v", "-e") and len(word) > 2 and not word.startswith("--"):
-            flag, value = word[:2], word[2:].lstrip("=")          # -v/a:/b, -eFOO=1
-        else:
-            flag, eq, value = word.partition("=")
-            if flag in ("--env-file", "--volumes-from"):
-                raise ValueError(flag)
-            if flag not in ("-v", "--volume", "-e", "--env", "--mount", "--tmpfs"):
-                continue
-            value = value if eq else next(it, "")
-        if flag in ("-e", "--env"):
-            name = value.split("=", 1)[0]
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-                out.append("-e %s " % name)
-            continue
-        if flag == "--mount":
-            fields = dict(kv.partition("=")[::2] for kv in value.split(","))
-            dest = fields.get("target") or fields.get("destination") or fields.get("dst") or ""
-            opts = "ro" if ("readonly" in fields or "ro" in fields) and \
-                fields.get("readonly", fields.get("ro")) in ("", "true", "1") else ""
-        elif flag == "--tmpfs":
-            dest, opts = value.split(":")[0], ""
-        else:
-            parts = value.split(":")
-            opts = parts.pop() if len(parts) > 2 and not parts[-1].startswith("/") else ""
-            dest = parts[-1]
-        if not dest.startswith("/"):
-            raise ValueError("%s %s" % (flag, value))
-        out.append("-v %s " % quote("%s:%s%s" % (dest, dest, ":" + opts if opts else "")))
-    return "".join(out)
-
-
 def wrap_build_command(
     build_command: str,
     spec: dict,
@@ -516,7 +408,6 @@ def wrap_build_command(
     *,
     workdir: str,
     docker_active: bool = False,
-    docker_image: Optional[str] = None,
     pkg_env: Optional[dict] = None,
     build_workdir: Optional[str] = None,
     script_dir: Optional[str] = None,
@@ -535,15 +426,12 @@ def wrap_build_command(
         Parsed recipe dict.  Checked for the ``sandbox_network`` key.
     :param opts:
         Parsed CLI namespace.  Used for ``opts.sandbox`` (mode string) and
-        ``opts.sandboxImage`` (override image for podman).
+        ``opts.sandboxImage`` (the image for podman without --docker).
     :param workdir:
         Absolute host path of the bits work directory.
     :param docker_active:
-        True when ``bits build --docker`` is in effect.  Triggers nested-podman
-        mode instead of wrapping the host command.
-    :param docker_image:
-        The Docker image name.  Used as the nested podman image when no
-        ``--sandbox-image`` was given.
+        True when ``bits build --docker`` is in effect: the build container is
+        the sandbox, run with ``--network=none`` unless the recipe allows it.
     :param pkg_env:
         The package's build environment. With it, sandbox-exec lets the build
         write only the package's own files (:func:`package_write_paths`, in
@@ -586,8 +474,8 @@ def wrap_build_command(
                          in ("off", "false", "no", "0"))
 
     requested = getattr(opts, "sandbox", "auto")
-    image = getattr(opts, "sandboxImage", None) or docker_image
-    mode = resolve_sandbox_mode(requested, docker_active, image=image)
+    image = getattr(opts, "sandboxImage", None)
+    mode = resolve_sandbox_mode(requested, docker_active)
     debug(
         "Sandbox mode for %s: %s (requested=%s, docker=%s, sandbox_network=%s)",
         spec.get("package", "?"), mode, requested, docker_active, sandbox_network,
@@ -595,6 +483,15 @@ def wrap_build_command(
 
     if mode == "off":
         return build_command
+
+    if mode == "container":
+        if allow_network:
+            return build_command
+        if not build_command.startswith("docker run "):   # never looks sandboxed and is not
+            raise ValueError("sandbox: not a docker run command: %s" % build_command[:80])
+        # Instead of any network the command names (bits' own --network=host).
+        rest = re.sub(r" --net(?:work)?(?:=| +)\S+(?= )", "", build_command[len("docker run "):])
+        return "docker run --network=none " + rest
 
     if mode == "podman" and not image:
         # No container image available.  If the user explicitly requested podman
@@ -634,77 +531,30 @@ def wrap_build_command(
     # --- podman ---
     network_flag = "" if allow_network else "--network=none "
 
-    if docker_active:
-        # Nested podman: the Docker container runs a second-level podman
-        # container for the recipe script.  The outer container launches with
-        # ``bash -ex /build.sh`` as its command; we replace that with a nested
-        # ``podman run … bash -ex /build.sh``.
-        if detect_dind():
-            warning(
-                "bits is already running inside a Docker container (DinD). "
-                "Nested podman requires the outer container to have been "
-                "started with --security-opt seccomp=unconfined (or equivalent "
-                "unprivileged user-namespace support). "
-                "If builds fail with 'user namespaces not supported', "
-                "disable sandboxing with --sandbox=off for this job."
-            )
-
-        # Replace only the last occurrence of the inner Docker entrypoint
-        marker = "bash -ex /build.sh"
-        idx = build_command.rfind(marker)
-        if idx == -1:
-            warning(
-                "sandbox: could not locate inner build entrypoint in Docker command; "
-                "sandbox not applied for package %s.",
-                spec.get("package", "?"),
-            )
-            return build_command
-        try:
-            passed = _nested_passthrough(build_command[:idx])
-        except ValueError as exc:   # never a build that looks sandboxed and is not
-            dieOnError(True, "sandbox: the nested podman cannot be given the build container's "
-                       "%s; use -v / -e in --docker-extra-args, or --sandbox=off" % exc)
-        nested_cmd = (
-            "podman run --rm --entrypoint= --userns=keep-id "
-            "{passed}"
-            "{net}"
-            "{img} "
-            "bash -ex /build.sh"
-        ).format(
-            passed=passed,
-            net=network_flag,
-            img=quote(image),
-        )
-        return build_command[:idx] + nested_cmd
-
-    else:
-        # Local (no Docker): wrap the entire build_command string with podman.
-        # The workdir is mounted at the same absolute path so that all embedded
-        # paths (scriptDir, WORK_DIR_OVERRIDE, etc.) resolve correctly inside
-        # the container.
-        # bits (BITS_SCRIPT_DIR: its real path), the recipes, the git mirror and /cvmfs
-        # (reused packages) read-only; a development package's source as docker has it.
-        from bits_helpers.utilities import cli_environment   # -e NAME: podman takes it here
-        bits_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-        config_dir = getattr(opts, "configDir", None)
-        mirror = os.path.dirname(spec["reference"]) if spec.get("reference") else None
-        read_only = "".join("-v %s " % quote("%s:%s:ro" % (d, d))
-                            for d in dict.fromkeys((bits_dir, config_dir and os.path.abspath(config_dir),
-                                                    mirror, "/cvmfs"))
-                            if d and os.path.isdir(d))
-        if spec.get("is_devel_pkg") and os.path.isdir(spec.get("source") or ""):
-            read_only += "-v %s " % quote("%s:%s" % (spec["source"], spec["source"]))
-        return (
-            "podman run --rm --userns=keep-id "
-            "-v {wd}:{wd} {ro}"
-            "{net}{passed}"
-            "{img} "
-            "/bin/bash -c {cmd}"
-        ).format(
-            wd=quote(workdir),
-            ro=read_only,
-            net=network_flag,
-            passed="".join("-e %s " % quote(n) for n in cli_environment(getattr(opts, "environment", []))[1]),
-            img=quote(image),
-            cmd=quote(build_command),
-        )
+    # podman on the host (--sandbox-image): the work dir at its own path, so the build's
+    # paths resolve; bits (its real path, BITS_SCRIPT_DIR), the recipes, the git mirror
+    # and /cvmfs read-only; a development package's source read-write, as docker has it.
+    from bits_helpers.utilities import cli_environment   # -e NAME: podman takes it here
+    bits_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    config_dir = getattr(opts, "configDir", None)
+    mirror = os.path.dirname(spec["reference"]) if spec.get("reference") else None
+    read_only = "".join("-v %s " % quote("%s:%s:ro" % (d, d))
+                        for d in dict.fromkeys((bits_dir, config_dir and os.path.abspath(config_dir),
+                                                mirror, "/cvmfs"))
+                        if d and os.path.isdir(d))
+    if spec.get("is_devel_pkg") and os.path.isdir(spec.get("source") or ""):
+        read_only += "-v %s " % quote("%s:%s" % (spec["source"], spec["source"]))
+    return (
+        "podman run --rm --userns=keep-id "
+        "-v {wd}:{wd} {ro}"
+        "{net}{passed}"
+        "{img} "
+        "/bin/bash -c {cmd}"
+    ).format(
+        wd=quote(workdir),
+        ro=read_only,
+        net=network_flag,
+        passed="".join("-e %s " % quote(n) for n in cli_environment(getattr(opts, "environment", []))[1]),
+        img=quote(image),
+        cmd=quote(build_command),
+    )
