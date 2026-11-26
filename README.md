@@ -115,8 +115,8 @@ bits build --parallel 4 ROOT # build up to 4 independent packages at once (--bui
 | `bits use [<cmd> <args>]` | Save options per directory (`.bitsuse`) so you do not repeat them; with no arguments, show the active profile. |
 | `bits brew` | macOS: write the Homebrew `Brewfile` for the stack (`sw/<arch>/Brewfile`). |
 | `bits publish` | Relocate a built package (or, with `--release-view`, a release view) and hand it to CVMFS via cvmfs-prepub. |
-| `bits certify` | Make a build trusted for reuse: upload what is missing, approve with a passkey via bits-console, open the certification MR (where the orchestrator owns the store's certified set, it certifies the approved build and no MR is opened). |
-| `bits sign` | Merge build manifests into a signed common manifest (run by the manifests CI after `bits certify`; refused for a store the orchestrator signs). |
+| `bits certify` | Make a build trusted for reuse: upload what is missing, approve with a passkey via bits-console; the store's bits-orchestrator certifies the approved build. |
+| `bits sign` | Merge build manifests into a signed common manifest (in a store without bits-orchestrator, by its key holder or the manifests CI; refused for a store the orchestrator signs). |
 | `bits sbom <manifest>` | Export a build manifest as CycloneDX 1.6 and/or SPDX 2.3 JSON. |
 | `bits checksums` | Hash every tarball and patch of a recipe repository and pin git tags (`--write` records them). |
 | `bits overlay lcg` | Emit an LCG release view (`LCG_externals` + merged `setup.sh`) over a built closure (was `bits lcg-view`). |
@@ -297,7 +297,7 @@ bits verify --from-manifest alice-o2-20260411.json \
 ## Publishing, Certification & SBOMs
 
 ```bash
-# Make a build trusted for binary reuse (upload missing tarballs, passkey approval, certification MR)
+# Make a build trusted for binary reuse (upload missing tarballs, passkey approval)
 bits certify
 
 # Publish a release to CVMFS as a view over packages published once per architecture

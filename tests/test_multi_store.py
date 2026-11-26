@@ -218,8 +218,7 @@ class OperationsOnEveryStoreTest(unittest.TestCase):
   def test_certify_publishes_everywhere_and_certifies_the_first(self):
     from bits_helpers import publish
     bom = lambda sha: [(ARCH, {"packages": [{"hash": "h1", "tarball_sha256": sha}]})]
-    args = self._args(publishStore="b3://a,b3://b", approval="passkey", certifier=None,
-                      gitlabToken=None, certifyGroup=None, manifestsRemote=None, certifyRef=None)
+    args = self._args(publishStore="b3://a,b3://b", approval="passkey", certifyGroup=None)
     with patch.object(publish, "_orchestrator_marker", return_value={"manifests": "m"}) as mark, \
          patch.object(publish, "_publish_from_manifest",
                       side_effect=[("bid", bom("x"), {}), ("bid", bom("y"), {})]) as pub, \

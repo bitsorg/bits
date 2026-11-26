@@ -161,6 +161,14 @@ DEFAULT_S3_STORE = os.environ.get("BITS_S3_STORE") or site.get("store.operations
 BUILDERS_AUTO = 4
 
 
+class _RetiredAction(argparse.Action):
+  """An option kept only so saved command lines still parse: warned about, ignored.
+  *const* says why it is retired."""
+  def __call__(self, parser, namespace, values, option_string=None):
+    from bits_helpers.log import warning
+    warning("%s is retired and ignored: %s.", option_string, self.const)
+
+
 class _WarnAliasAction(argparse.Action):
   """Store the value (or const, for a nargs=0 flag); warn when a deprecated
   spelling is used. The canonical spelling is the first option string."""
@@ -1181,15 +1189,14 @@ def add_certify_arguments(subparsers, ctx):
   """`bits certify` — make the latest (or a given) build trusted."""
   p = subparsers.add_parser(
       "certify",
-      help="make a build trusted: upload, approve with a passkey, open the certification MR",
+      help="make a build trusted: upload, approve with a passkey; bits-orchestrator certifies it",
       description=(
           "Make a build trusted for binary reuse. Uploads whatever is still missing "
-          "from the store (~/.bits/s3keys), asks bits-console for a passkey approval "
-          "of this build (QR code + a code to compare, approved on your phone), then "
-          "opens the certification merge request in the manifests repo "
-          "(~/.bits/gitlab-token). Its CI signs the manifest. Group, manifests repo "
-          "and console URL default from the defaults' `system:` block, so a "
-          "configured community just runs `bits certify`."
+          "from the store (~/.bits/s3keys) and asks bits-console for a passkey approval "
+          "of this build (QR code + a code to compare, approved on your phone). The "
+          "store's bits-orchestrator then certifies it. Group and console URL default "
+          "from the defaults' `system:` block, so a configured community just runs "
+          "`bits certify`."
       ),
   )
   p.add_argument("--manifest", "--from-manifest", dest="fromManifest", nargs="?",
@@ -1197,16 +1204,12 @@ def add_certify_arguments(subparsers, ctx):
                  help="Build manifest to certify: a file path, or 'latest' (default, newest under WORKDIR/MANIFESTS).")
   p.add_argument("--group", dest="certifyGroup", metavar="GROUP", default=None,
                  help="Group to certify for (manifests/<group>/). Default: `system: certify_group:`.")
-  p.add_argument("--manifests-remote", dest="manifestsRemote", metavar="GIT_URL", default=None,
-                 help=("Git remote of the bits-manifests project (only host + path are used, for the "
-                       "HTTPS API). Default: `system: manifests_remote:`."))
-  p.add_argument("--ref", dest="certifyRef", metavar="REF", default=None,
-                 help="Target branch of the MR. Default: `system: certify_ref:`, else the repo's default branch.")
-  p.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,
-                 help="GitLab token for the MR (default: $BITS_CERTIFIER_TOKEN / $GITLAB_TOKEN / ~/.bits/gitlab-token).")
+  for retired in ("--manifests-remote", "--ref", "--gitlab-token", "--certifier"):
+    p.add_argument(retired, action=_RetiredAction, help=argparse.SUPPRESS,
+                   const="bits-orchestrator certifies, the merge request is retired")
   p.add_argument("--approval", dest="approval", choices=("passkey", "none"), default="passkey",
-                 help=("passkey (default): wait for a passkey approval via bits-console before the MR. "
-                       "none: open the MR only — for builds approved elsewhere (a console build; needs --certifier)."))
+                 help=("passkey (default): wait for a passkey approval via bits-console. "
+                       "none: only publish — for a build approved elsewhere (a console build)."))
   p.add_argument("--console", dest="console", metavar="URL", default=None,
                  help=("bits-console URL for the approval (default: $BITS_CONSOLE_URL, `system: console_url:`, "
                        "then the site's console.backend_url)."))
@@ -1214,9 +1217,6 @@ def add_certify_arguments(subparsers, ctx):
                  help="CA bundle for the console when it is not in this host's trust store (e.g. the CERN CA).")
   p.add_argument("--console-insecure", dest="consoleInsecure", action="store_true", default=False,
                  help="Allow http:// / skip TLS verification to the console (trusted testbed only).")
-  p.add_argument("--certifier", dest="certifier", metavar="USER", default=None,
-                 help=("Record USER as certified_by (when a bot opens the MR for a human already "
-                       "verified upstream, e.g. bits-console). Default: $GITLAB_USER_LOGIN."))
   ctx.remote_store(p, dest="publishStore",
                    help="S3 store the build is uploaded to / checked in; several, comma-"
                         "separated, each get it, the first is certified. Default: %(default)s")

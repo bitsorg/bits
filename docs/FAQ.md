@@ -881,13 +881,13 @@ See: [Investigating a mismatch](REFERENCE.md#investigating-a-mismatch).
 
 ### How do I make my build's binaries trusted so others can reuse them?
 
-Use `bits certify`: it uploads what the store is missing, gets a passkey approval through bits-console and opens the merge request (certification merge requests come from `bits certify`, not `bits publish`). `bits sign` signs a build manifest; it is the former `bits certify`. `bits certify --help` and `bits sign --help` list every option.
+Use `bits certify`: it uploads what the store is missing, gets a passkey approval through bits-console, and the store's bits-orchestrator certifies the build (certification is asked for by `bits certify`, not `bits publish`; the merge request is retired). `bits sign` signs a build manifest; it is the former `bits certify`. `bits certify --help` and `bits sign --help` list every option.
 
 See: [bits certify / bits sign](REFERENCE.md#bits-certify--bits-sign), [bits publish](REFERENCE.md#bits-publish).
 
 ### How do I sign a build from the command line (CLI)?
 
-Run `bits certify` where the build was made (`bits sign` is the manifests CI's step, not a user command). It needs the store's write keys (`~/.bits/s3keys`), the group (`--group` or `system: certify_group:`), the bits-console URL (`https://bits.cern.ch` at CERN; `--console-cafile` if the host does not trust its CA), and a passkey enrolled on bits-console's Signing tab whose owner is an admin of the group. bits prints a code, a QR code and a link; open the link on your phone, check the code, and approve with the passkey within 10 minutes. Where bits-orchestrator owns the store's certified set it then signs the build (see the Certifications tab); otherwise bits opens the certification merge request, which needs a GitLab token in `~/.bits/gitlab-token`.
+Run `bits certify` where the build was made (`bits sign` is for a store without bits-orchestrator, which `bits certify` refuses). It needs the store's write keys (`~/.bits/s3keys`), the group (`--group` or `system: certify_group:`), the bits-console URL (`https://bits.cern.ch` at CERN; `--console-cafile` if the host does not trust its CA), and a passkey enrolled on bits-console's Signing tab whose owner is an admin of the group. bits prints a code, a QR code and a link; open the link on your phone, check the code, and approve with the passkey within 10 minutes. bits-orchestrator, which owns the store's certified set, then signs the build (see the Certifications tab). A store without it is refused: the certification merge request is retired.
 
 ```bash
 bits certify --group lhcb

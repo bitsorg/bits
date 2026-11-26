@@ -684,7 +684,7 @@ Pass the same `--set` / `--day` values as the build so `{release}` and `{day}` r
 bits certify            # latest build: upload what is missing, approve with a passkey, certify
 ```
 
-`bits certify` is what a user runs to sign (certify) a build, so that other builds reuse its binaries. `bits sign`, the command formerly called `certify`, is run by the manifests-repo CI to merge the approved build manifests into the signed common manifest; it is not a user command. See [REFERENCE.md — Publishing and certifying a build](REFERENCE.md#publishing-and-certifying-a-build--bits-publish-bits-certify) and [Signing — bits sign](REFERENCE.md#signing--bits-sign).
+`bits certify` is what a user runs to sign (certify) a build, so that other builds reuse its binaries. `bits sign`, the command formerly called `certify`, merges build manifests into the signed common manifest in a store without bits-orchestrator (by its key holder or the manifests-repo CI); `bits certify` refuses such a store. See [REFERENCE.md — Publishing and certifying a build](REFERENCE.md#publishing-and-certifying-a-build--bits-publish-bits-certify) and [Signing — bits sign](REFERENCE.md#signing--bits-sign).
 
 #### Sign a build from the command line (CLI): prerequisites
 
@@ -698,9 +698,9 @@ Run `bits certify` where the build was made. It needs:
 | bits-console | `--console URL`, else `$BITS_CONSOLE_URL`, `system: console_url:`, then the site's (`https://bits.cern.ch` at CERN). When the host's Python does not trust the console's CA (the CERN CA, outside CERN machines), add `--console-cafile PEM`. |
 | A passkey | Enrolled on bits-console's **Signing** tab (**Enrol / add a passkey**), on a phone or any device that can open a link. Your first passkey needs an enrolment grant from a bits admin; another one needs step-up with an existing passkey. |
 | An approver | The passkey's owner must be an admin of the group in bits-console: you, or another admin of the group. |
-| Only when an MR is opened | Where bits-orchestrator does not own the store's certified set: a GitLab token that may open merge requests in the manifests repository (`~/.bits/gitlab-token`, chmod 600, `$BITS_CERTIFIER_TOKEN` or `--gitlab-token`) and the repository (`--manifests-remote` or `system: manifests_remote:`). |
+| bits-orchestrator | The store's certified set is bits-orchestrator's (the store has `MANIFESTS/orchestrator.json`); any other store is refused before anything is uploaded (the certification merge request is retired). |
 
-bits checks the group, the console URL and (for an MR) the token before it asks for an approval, and stops naming what is missing.
+bits checks the store, the group and the console URL before it asks for an approval, and stops naming what is missing.
 
 #### Sign a build from the command line (CLI): procedure
 
@@ -712,8 +712,7 @@ bits certify --group lhcb      # or `bits certify` when the defaults set certify
 2. It prints the build, the group and the number of packages, a six-character code to compare, a QR code and the approve link, then waits (`Waiting for approval (Ctrl-C to cancel)`).
 3. Open the link (or scan the QR code) on the device with your passkey. Check that the code on the page is the one in the terminal and that the packages are those you built, then approve with the passkey. Approve within 10 minutes; after that the request expires and `bits certify` must be run again.
 4. The terminal prints `pre-approved by <user>`, and then:
-   - where bits-orchestrator owns the store's certified set (the store has `MANIFESTS/orchestrator.json`), `Build … is pre-approved: … certifies it into … (no merge request)`. The orchestrator signs the build as soon as it is in the store; follow it on bits-console's **Certifications** tab. No GitLab token or manifests repository is needed.
-   - otherwise, `Certification MR opened on …` with its link. The manifests CI checks the approval and the MR author, and signs the build (`bits sign`) once the MR is merged.
+   `Build … is pre-approved: … certifies it into …`. The orchestrator signs the build as soon as it is in the store; follow it on bits-console's **Certifications** tab.
 
 When it stops:
 

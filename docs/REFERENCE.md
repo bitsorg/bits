@@ -294,8 +294,8 @@ Three commands, one per step:
 | Command | What it does | Credentials |
 |---|---|---|
 | `bits publish` | uploads the latest build (or `--manifest M`) to the S3 store, with its per-architecture BOMs | `~/.bits/s3keys` |
-| `bits certify` | makes that build trusted: uploads whatever is still missing, gets a passkey approval, opens the certification MR | `~/.bits/s3keys`, `~/.bits/gitlab-token`, a passkey |
-| `bits sign` | merges the BOMs, validates them against the store and signs — run by the manifests-repo CI | CI identity |
+| `bits certify` | makes that build trusted: uploads whatever is still missing and gets a passkey approval; the store's bits-orchestrator certifies it | `~/.bits/s3keys`, a passkey |
+| `bits sign` | merges the BOMs, validates them against the store and signs — in a store without bits-orchestrator, run by its key holder | the signing key |
 
 `bits certify` on its own:
 
@@ -305,31 +305,26 @@ Three commands, one per step:
    link, and a short code. Open the link on your phone, check that the code
    matches, and approve with your passkey. The approval binds the build's exact
    package hashes;
-3. opens a merge request in the manifests repo adding the BOMs under
-   `manifests/<group>/`, via the GitLab REST API with your token (works with SSH
-   push; only host + path are taken from the remote URL). The token comes from
-   `--gitlab-token`, `$BITS_CERTIFIER_TOKEN`/`$GITLAB_TOKEN` or
-   `~/.bits/gitlab-token` (chmod 600).
+bits-orchestrator then certifies the build from its pre-approval, as soon as the
+build is in the store. If the approval is refused or times out, nothing is certified.
 
-The manifests CI then checks the MR author and the approval, and signs (`bits sign`).
-If the approval is refused or times out, no MR is opened.
-
-Once bits-orchestrator owns the store's certified set, it puts
-`MANIFESTS/orchestrator.json` in the store and bits changes accordingly:
-`bits certify` stops after step 2 (the orchestrator certifies the build from its
-pre-approval, as soon as the build is in the store, so no token, manifests repo
-or MR is needed); `bits sign` refuses the store, as it does one whose marker
-cannot be read; `bits store rm --stale-boms --manifests-dir` and `bits compliance
+`bits certify` needs a store whose certified set bits-orchestrator owns: it has
+`MANIFESTS/orchestrator.json`. Any other store is refused before anything is
+uploaded; the certification merge request in a manifests repository is retired
+(`--manifests-remote`, `--ref`, `--gitlab-token` and `--certifier` are still accepted,
+with a warning, and ignored). In a store bits-orchestrator owns, `bits sign` refuses
+to sign, as it does in one whose marker cannot be read;
+`bits store rm --stale-boms --manifests-dir` and `bits compliance
 --enforce` request decertify actions from bits-console (`--console`, your
 GitLab token) instead of removing BOM files or re-signing with `--key`; and
 `bits store rm` never deletes the orchestrator's signed manifests, nor its marker
 unless named exactly with `--raw` and `--force`. `--enforce` asks for each restricted package to be taken out of the
 BOMs of every group you administer (`decertify-package`: each BOM is replaced by
-itself without it, so the builds' other packages stay certified). Going back to the manifests CI
-removes the marker, once the worker no longer owns the set (it would write it
-again): `bits store rm --raw MANIFESTS/orchestrator.json --force`.
+itself without it, so the builds' other packages stay certified). Signing a store
+without bits-orchestrator again removes the marker, once the worker no longer owns
+the set (it would write it again): `bits store rm --raw MANIFESTS/orchestrator.json --force`.
 
-`--group`, `--manifests-remote`, `--ref` and `--console` default from the active
+`--group` and `--console` default from the active
 defaults' `system:` block (`--console` after `$BITS_CONSOLE_URL`), and `--console`
 last from the site configuration's `console.backend_url` (`https://bits.cern.ch`
 at CERN), so a configured community just runs `bits certify`:
@@ -337,14 +332,13 @@ at CERN), so a configured community just runs `bits certify`:
 ```yaml
 system:
   certify_group:    ship
-  manifests_remote: https://gitlab.cern.ch/buncic/bits-manifests.git
   console_url:      https://bits.cern.ch
 ```
 
 These live under `system:` because they are publish policy, not part of any
-package hash. `--approval none` opens the MR without asking for an approval, for
-builds approved elsewhere (a bits-console build is pre-approved in the browser and
-its MR is opened by the console's bot with `--certifier`). `--console-cafile PEM`
+package hash. `--approval none` only publishes, without asking for an approval, for
+builds approved elsewhere (a bits-console build is pre-approved in the browser).
+`--console-cafile PEM`
 trusts a private CA; `--console-insecure` allows a plain-http console on a trusted
 testbed.
 
@@ -1591,7 +1585,7 @@ From the file (symlinks of a release view resolved) it finds its package, the `.
 | `--cafile FILE` | system | CA bundle for the backend's certificate. |
 | `--json` | off | The answer as JSON. |
 
-It authenticates with your GitLab token, as `bits certify` does (`~/.bits/gitlab-token` or `$BITS_GITLAB_TOKEN`); without one it shows the package only.
+It authenticates to bits-console with your GitLab token (`~/.bits/gitlab-token` or `$BITS_GITLAB_TOKEN`); without one it shows the package only.
 
 ---
 
@@ -2274,14 +2268,14 @@ bits publish [--manifest [FILE]] [--remote-store URL]       # bulk S3 upload
 | `--prepub-poll-interval SEC`, `--prepub-timeout SEC` | Status polling interval (default 10 s) and total wait (default 1800 s). |
 | `--prepub-no-verify-tls` | Skip TLS certificate verification (self-signed / dev only). |
 
-Certification merge requests are opened by `bits certify`, not
+Certification is asked for by `bits certify`, not
 `bits publish` (see [Publishing and certifying a build](#publishing-and-certifying-a-build--bits-publish-bits-certify)).
 
 ---
 
 ### bits certify / bits sign
 
-Make a build's binaries trusted for reuse: `bits certify` uploads what the store is missing, gets a passkey approval through bits-console and opens the merge request; `bits sign` signs a build manifest (the former `bits certify`). Both are described, with their options, under [Publishing and certifying a build](#publishing-and-certifying-a-build--bits-publish-bits-certify) and [Signing — `bits sign`](#signing--bits-sign); `bits certify --help` and `bits sign --help` list every option.
+Make a build's binaries trusted for reuse: `bits certify` uploads what the store is missing, gets a passkey approval through bits-console, and bits-orchestrator certifies it; `bits sign` signs a build manifest (the former `bits certify`). Both are described, with their options, under [Publishing and certifying a build](#publishing-and-certifying-a-build--bits-publish-bits-certify) and [Signing — `bits sign`](#signing--bits-sign); `bits certify --help` and `bits sign --help` list every option.
 
 ---
 
@@ -4125,8 +4119,8 @@ it, so until the build is certified and signed they rebuild those packages.
 #### Signing a manifest on a GitLab runner (no private server)
 
 A GitLab CI runner **dials out** to fetch jobs, so signing needs no
-inbound-reachable service. The manifests project's CI runs `bits sign` after
-`bits certify` opens the merge request. Either it signs through the signing
+inbound-reachable service. In a store without bits-orchestrator, the manifests project's CI can run
+`bits sign`. Either it signs through the signing
 service (`--sign-via-service`, no key stored in CI), or it uses `--key` with the
 Ed25519 **private** key in a Protected + Masked CI/CD variable and the job limited
 to **protected** refs, so fork/MR pipelines never see it. Consumers verify with

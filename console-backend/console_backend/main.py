@@ -237,16 +237,9 @@ def _checked_build(data, community, ref, variables, op="build"):
     if not authz.is_admin_for(user, community, resolved):
         audit.record("ops_denied", op=op, user=user, community=community, principal="human")
         raise HTTPException(403, "%s is not an admin for community %s" % (user, community))
-    # Propagate the VERIFIED human as the certifier for the downstream certify/sign
-    # step. We trigger the pipeline with the backend's ops token, so GITLAB_USER_LOGIN
-    # in the triggered job is the bot, not the human — a certify MR would then record
-    # the bot as certified_by and the bits-manifests sign step REFUSES it (the bot is
-    # not an admin for the group). Inject BITS_CERTIFIER = the identity we just
-    # authenticated AND admin-checked above; bits-certify.sh prefers it over
-    # GITLAB_USER_LOGIN. Strip any caller-supplied BITS_CERTIFIER first so the value
-    # is always server-verified and a caller cannot certify as someone else. (The
-    # signature itself remains separately gated by that human's passkey pre-approval.)
-    # BITS_QUEUE_ENTRY is the build queue's own mark of the pipelines it starts.
+    # The pipeline runs with the ops token (GITLAB_USER_LOGIN is the bot): BITS_CERTIFIER
+    # is the human authenticated and admin-checked above (a caller's own value is
+    # stripped). BITS_QUEUE_ENTRY is the build queue's own mark of its pipelines.
     variables.append({"key": "BITS_CERTIFIER", "value": user})
     return variables
 

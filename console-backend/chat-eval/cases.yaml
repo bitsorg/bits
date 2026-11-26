@@ -670,13 +670,13 @@
   must:
   - '`bits certify`'
   - passkey approval through bits-console
-  - opens the merge request
+  - bits-orchestrator certifies
   must_not:
-  - '`bits publish` opens the certification merge request'
-  answer: 'Use `bits certify`: it uploads what the store is missing, gets a passkey approval through bits-console
-    and opens the merge request (certification merge requests come from `bits certify`, not `bits publish`).
-    `bits sign` signs a build manifest; it is the former `bits certify`. `bits certify --help` and `bits
-    sign --help` list every option.'
+  - opens the merge request
+  answer: 'Use `bits certify`: it uploads what the store is missing, gets a passkey approval through bits-console,
+    and the store''s bits-orchestrator certifies the build (certification is asked for by `bits certify`,
+    not `bits publish`; the merge request is retired). `bits sign` signs a build manifest; it is the former
+    `bits certify`. `bits certify --help` and `bits sign --help` list every option.'
 - id: upgrade-apply-console-plan
   kind: docs
   question: I exported an upgrade plan CSV from the console. How do I apply it to my recipes?

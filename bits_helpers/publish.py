@@ -689,7 +689,7 @@ def _system_from_manifest(manifest_doc):
     Prefer a ``system`` snapshot recorded in the manifest; else load it live from
     the build's ``config_dir`` + ``defaults`` (works on the build host without a
     rebuild). Returns {} when unavailable. Used to default publish/certify knobs
-    (certify_group, manifests_remote) from the community's defaults.
+    (certify_group, console_url) from the community's defaults.
     """
     if isinstance(manifest_doc.get("system"), dict):
         return manifest_doc["system"]
@@ -706,22 +706,16 @@ def _system_from_manifest(manifest_doc):
         return {}
 
 
-def _preapprove_build(args, parser, build_id, bom, system, for_mr=True):
-    """Passkey pre-approval of this build via bits-console, before the MR (or,
-    without *for_mr*, as all that certifies it: see orchestrated.py).
+def _preapprove_build(args, parser, build_id, bom, system):
+    """Passkey pre-approval of this build via bits-console: all that certifies it
+    (bits-orchestrator certifies a pre-approved build, see orchestrated.py).
     *bom* is the list of (arch, bom_dict) just published; the approval binds their
-    packages. Exits (no MR) if it is refused or times out."""
-    from bits_helpers import forge, orchestrated
+    packages. Exits if it is refused or times out."""
+    from bits_helpers import orchestrated
     from bits_helpers.sign_console import preapprove_via_console
-    # Check everything the MR needs first: don't ask a human to approve a build
-    # whose MR then cannot be opened.
     if not args.certifyGroup:
         parser.error("certify: needs a group (--group or `system: certify_group:`) before "
                      "asking for an approval")
-    if for_mr and not (getattr(args, "manifestsRemote", None)
-                       and forge.resolve_gitlab_token(getattr(args, "gitlabToken", None))):
-        parser.error("certify: needs a group (--group), the manifests repo (--manifests-remote) "
-                     "and a GitLab token (~/.bits/gitlab-token) before asking for an approval")
     console = orchestrated.console_url(getattr(args, "console", None), system)
     if not console:
         parser.error("certify: the passkey approval needs the bits-console URL — --console, "
@@ -732,70 +726,6 @@ def _preapprove_build(args, parser, build_id, bom, system, for_mr=True):
                            insecure=getattr(args, "consoleInsecure", False))
 
 
-def _submit_certification_mr(args, parser, build_id, bom):
-    """Open a merge request adding this build's manifest(s) to the manifests repo.
-
-    *bom* is a list of ``(effective_architecture, bom_dict)`` — one per-platform
-    BOM per architecture the build produced ("shared" included) — committed as
-    one commit / one MR, each file named with its architecture so certification
-    can be scoped per platform straight from the file list.
-
-    Uses the GitLab REST API with the caller's PAT (works with SSH push — only the
-    host/path are parsed from the remote). The MR *author* is the PAT owner, whose
-    admin status CI validates before signing. Records nothing locally.
-    """
-    import json as _json
-    from bits_helpers import forge
-    group = getattr(args, "certifyGroup", None)
-    if not group:
-        parser.error("certify: no group — pass --group <group> or set `system: certify_group:`")
-    remote = getattr(args, "manifestsRemote", None)
-    if not remote:
-        parser.error("certify: no manifests repo — pass --manifests-remote <git URL> or set "
-                     "`system: manifests_remote:`")
-    api_url, project = forge.parse_git_remote(remote)
-    if not api_url:
-        parser.error("could not parse --manifests-remote: %s" % remote)
-    token = forge.resolve_gitlab_token(getattr(args, "gitlabToken", None))
-    if not token:
-        parser.error("no GitLab token to open the certification MR — set one in "
-                     "~/.bits/gitlab-token, $BITS_CERTIFIER_TOKEN, or pass --gitlab-token")
-    # Target the repo's actual default branch unless one was given, so this works
-    # whether the manifests repo defaults to main or master.
-    target = getattr(args, "certifyRef", None)
-    if not target:
-        try:
-            target = forge.gitlab_default_branch(api_url, token, project)
-        except Exception:
-            target = None
-        target = target or "main"
-    # Record the human certifier in the committed manifest (audit trail in the
-    # manifests-repo git history). Used when a bot opens the MR on behalf of a
-    # human whose authority was already verified upstream (e.g. bits-console).
-    certifier = getattr(args, "certifier", None) or os.environ.get("GITLAB_USER_LOGIN")
-    if certifier:
-        bom = [(a, dict(d, certified_by=[certifier])) for a, d in bom]
-    leaf = _run_leaf()                                   # host-UTC-rand, unique
-    branch = "certify/%s-%s" % (re.sub(r"[^A-Za-z0-9._-]", "_", build_id), leaf[:-5])
-    files = [("manifests/%s/%s.%s.%s" % (group, build_id, arch, leaf),
-              _json.dumps(doc, indent=1)) for arch, doc in bom]
-    title = "Certify %s (%s)" % (build_id, group)
-    try:
-        forge.gitlab_create_commit(api_url, token, project, branch, target,
-                                   files, None, title)
-        mr = forge.gitlab_create_merge_request(api_url, token, project, branch, target, title)
-    except Exception as exc:
-        parser.error("failed to open the certification MR on %s: %s" % (project, exc))
-    banner("Certification MR opened on %s: %s", project,
-           mr.get("web_url") or ("!%s" % mr.get("iid")))
-
-
-
-
-
-
-
-
 def _bom_shas(bom):
     """{(arch, hash): tarball sha256} of a published build's BOMs."""
     return {(arch, p.get("hash")): p.get("tarball_sha256")
@@ -803,23 +733,21 @@ def _bom_shas(bom):
 
 
 def _orchestrator_marker(store_url, work_dir, architecture):
-    """The store's orchestrator marker (see orchestrated.py), or None. A store that
-    cannot say is taken as unmarked: the MR is opened as before, and refused by the
-    manifests CI if the orchestrator does own the set."""
+    """The store's orchestrator marker (see orchestrated.py), or None when the store
+    has none or cannot say."""
     from bits_helpers import orchestrated
     try:
         return orchestrated.for_store(store_url, work_dir, architecture)
     except orchestrated.Unknown as exc:
-        warning("certify: %s; certifying through a merge request", exc)
+        warning("certify: %s", exc)
         return None
 
 
 def doCertify(args, parser):
-    """`bits certify`: make a build trusted — upload what is missing, get a passkey
-    approval via bits-console (unless --approval none), open the certification MR.
-    The manifests-repo CI then signs it (`bits sign`). In a store whose certified
-    set bits-orchestrator owns, the approval is the end: it certifies the build."""
-    from bits_helpers import forge, orchestrated
+    """`bits certify`: make a build trusted — upload what is missing and get a passkey
+    approval via bits-console (unless --approval none); bits-orchestrator, which owns
+    the store's certified set, then certifies it. (The merge-request path is retired.)"""
+    from bits_helpers import orchestrated
     from bits_helpers.args import DEFAULT_S3_STORE
     dry = getattr(args, "dryRun", False)
     passkey = getattr(args, "approval", "passkey") == "passkey"
@@ -829,17 +757,11 @@ def doCertify(args, parser):
     if not stores:
         parser.error(_NO_STORE)
     # Several stores: published to each, certified once, from the first (whose
-    # orchestrator marker decides how), as the build manifest records it.
-    marker = None if dry else _orchestrator_marker(stores[0], abspath(args.workDir), architecture)
-    if not passkey and not marker and not getattr(args, "certifier", None):
-        # Without an approval the MR merges but can never be signed; that is only
-        # right for a build approved elsewhere, whose MR a bot opens for a human.
-        parser.error("certify: --approval none is for builds already approved elsewhere "
-                     "(bits-console) and needs --certifier <user>")
-    # Fail before uploading when no MR could be opened anyway.
-    if not dry and not marker and not forge.resolve_gitlab_token(getattr(args, "gitlabToken", None)):
-        parser.error("certify: no GitLab token for the MR — ~/.bits/gitlab-token, "
-                     "$BITS_CERTIFIER_TOKEN or --gitlab-token")
+    # orchestrator marker says who certifies), as the build manifest records it.
+    marker = _orchestrator_marker(stores[0], abspath(args.workDir), architecture)
+    if not marker:          # refused before anything is uploaded (read-only: a dry run too)
+        parser.error("certify: no bits-orchestrator certifies the builds of %s (the merge "
+                     "request is retired); there its key holder signs with `bits sign`" % stores[0])
     res, ref = None, None
     for url in stores:
         got = _publish_from_manifest(architecture, abspath(args.workDir), url, parser,
@@ -856,9 +778,9 @@ def doCertify(args, parser):
                         "certified (signed reuse rejects the others)",
                         url, ref, ", ".join(differ), ref)
     if dry:
-        info("[dry-run] would then %sopen the certification MR (no MR when the store "
-             "says bits-orchestrator certifies)",
-             "ask bits-console for a passkey approval and " if passkey else "")
+        info("[dry-run] would then %sleave the build to %s",
+             "ask bits-console for a passkey approval and " if passkey else "",
+             orchestrated.describe(marker))
         return
     if not res:
         parser.error("certify: no build manifest (BOM) was published, so there is nothing to certify")
@@ -866,20 +788,13 @@ def doCertify(args, parser):
     system = system or {}
     # CLI > defaults `system:` for the certification target.
     args.certifyGroup = getattr(args, "certifyGroup", None) or system.get("certify_group")
-    args.manifestsRemote = getattr(args, "manifestsRemote", None) or system.get("manifests_remote")
-    args.certifyRef = getattr(args, "certifyRef", None) or system.get("certify_ref")
-    if marker:
-        if passkey:
-            _preapprove_build(args, parser, build_id, bom, system, for_mr=False)
-            banner("Build %s is pre-approved: %s certifies it into %s (no merge request)",
-                   build_id, orchestrated.describe(marker), marker["manifests"])
-        else:
-            banner("Build %s is published: %s certifies it once it is pre-approved "
-                   "(no merge request)", build_id, orchestrated.describe(marker))
-        return
     if passkey:
         _preapprove_build(args, parser, build_id, bom, system)
-    _submit_certification_mr(args, parser, build_id, bom)
+        banner("Build %s is pre-approved: %s certifies it into %s",
+               build_id, orchestrated.describe(marker), marker["manifests"])
+    else:
+        banner("Build %s is published: %s certifies it once it is pre-approved",
+               build_id, orchestrated.describe(marker))
 
 
 # ---------------------------------------------------------------------------

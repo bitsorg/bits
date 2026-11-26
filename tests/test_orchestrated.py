@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from bits_helpers import certify, compliance, orchestrated, publish, stale_boms
 
@@ -175,42 +175,52 @@ class CertifyTest(unittest.TestCase):
     def args(self, **over):
         base = dict(fromManifest="latest", dryRun=False, workDir="/tmp/sw", architecture="el9",
                     publishStore="https://s3.example/bkt", certifyGroup="lcg",
-                    manifestsRemote=None, certifyRef=None, gitlabToken=None,
                     approval="passkey", console="https://c", consoleCafile=None,
-                    consoleInsecure=False, certifier=None)
+                    consoleInsecure=False)
         base.update(over)
         return SimpleNamespace(**base)
 
-    def run_certify(self, marker, **over):
+    def run_certify(self, marker, up=None, **over):
         bom = [("el9", {"build_id": "bid", "packages": []})]
+        up = up or MagicMock(return_value=("bid", bom, {}))
         with patch.object(publish, "_orchestrator_marker", return_value=marker), \
-             patch.object(publish, "_publish_from_manifest", return_value=("bid", bom, {})), \
-             patch.object(publish, "_submit_certification_mr") as mr, \
-             patch("bits_helpers.forge.resolve_gitlab_token", return_value=None), \
+             patch.object(publish, "_publish_from_manifest", up), \
              patch("bits_helpers.sign_console.preapprove_via_console") as pre:
             publish.doCertify(self.args(**over), _Parser())
-        return pre, mr
+        return pre, up
 
-    def test_the_preapproval_is_the_end_no_token_no_mr(self):
-        pre, mr = self.run_certify(MARKER)
+    def test_the_preapproval_is_the_end(self):
+        pre, up = self.run_certify(MARKER)
         pre.assert_called_once()
-        mr.assert_not_called()
+        up.assert_called_once()
 
     def test_approval_none_only_publishes(self):
-        pre, mr = self.run_certify(MARKER, approval="none")
+        pre, up = self.run_certify(MARKER, approval="none")
         pre.assert_not_called()
-        mr.assert_not_called()
+        up.assert_called_once()
 
-    def test_unmarked_still_needs_the_token_for_the_mr(self):
-        with self.assertRaises(_Parser.Error):
-            self.run_certify(None)
+    def test_unmarked_is_refused_before_uploading(self):
+        for dry in (False, True):
+            up = MagicMock()
+            with self.assertRaisesRegex(_Parser.Error, "merge request is retired"):
+                self.run_certify(None, up=up, dryRun=dry)
+            up.assert_not_called()
 
-    def test_a_store_that_cannot_say_is_certified_through_an_mr(self):
+    def test_a_store_that_cannot_say_has_no_marker(self):
         with patch("bits_helpers.orchestrated.for_store",
                    side_effect=orchestrated.Unknown("cannot read")), \
              patch.object(publish, "warning") as warn:
             self.assertIsNone(publish._orchestrator_marker("b3://bkt", "/tmp/sw", "el9"))
-        self.assertIn("merge request", warn.call_args[0][0])
+        self.assertIn("cannot read", str(warn.call_args[0][1]))
+
+    def test_the_retired_options_still_parse(self):
+        from bits_helpers.args import doParseArgs
+        with patch("bits_helpers.log.warning") as warn, \
+             patch("sys.argv", ["bits", "certify", "--gitlab-token", "t", "--certifier", "me",
+                                "--manifests-remote", "git@h:p", "--ref", "main"]):
+            args, _parser = doParseArgs()
+        self.assertEqual(warn.call_count, 4)
+        self.assertFalse(hasattr(args, "gitlabToken"))
 
 
 class SignTest(unittest.TestCase):

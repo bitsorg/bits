@@ -283,70 +283,6 @@ class TestPublishFromManifest(unittest.TestCase):
                     manifest=self.man_path)
         self.assertEqual(self.writer.s3.uploads, [])   # no BOM on partial publish
 
-    def _cert_args(self, **over):
-        from types import SimpleNamespace
-        base = dict(manifestsRemote="ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git",
-                    gitlabToken="tok", certifyRef="main", certifyGroup="ship")
-        base.update(over)
-        return SimpleNamespace(**base)
-
-    def test_submit_certification_mr_opens_mr(self):
-        # One MR / one commit carrying one per-platform BOM file per arch, each
-        # file named with its architecture (per-platform certification scoping).
-        import bits_helpers.forge as forge
-        bom = [("x86_64-el9", {"build_id": "release_gcc15-abc", "packages": []}),
-               ("shared", {"build_id": "release_gcc15-abc", "packages": []})]
-        with patch.object(forge, "resolve_gitlab_token", return_value="tok"), \
-             patch.object(forge, "gitlab_create_commit", return_value={"id": "c1"}) as cc, \
-             patch.object(forge, "gitlab_create_merge_request",
-                          return_value={"iid": 7, "web_url": "https://gl/mr/7"}) as mr:
-            publish._submit_certification_mr(self._cert_args(), _Parser(),
-                                             "release_gcc15-abc", bom)
-        ca, _ = cc.call_args
-        # (api_url, token, project, branch, start_branch, files, content, message)
-        self.assertEqual(ca[0], "https://gitlab.cern.ch/api/v4")
-        self.assertEqual(ca[2], "buncic/bits-manifests")
-        paths = [p for p, _c in ca[5]]
-        self.assertEqual(len(paths), 2)
-        self.assertTrue(paths[0].startswith(
-            "manifests/ship/release_gcc15-abc.x86_64-el9."))
-        self.assertTrue(paths[1].startswith(
-            "manifests/ship/release_gcc15-abc.shared."))
-        ma, mk = mr.call_args
-        self.assertEqual(ma[4], "main")                 # target branch
-
-    def test_submit_certification_needs_group(self):
-        import bits_helpers.forge as forge
-        with patch.object(forge, "resolve_gitlab_token", return_value="tok"):
-            with self.assertRaises(_Parser._Err):
-                publish._submit_certification_mr(self._cert_args(certifyGroup=None),
-                                                 _Parser(), "b", {"packages": []})
-
-    def test_submit_certification_needs_token(self):
-        import bits_helpers.forge as forge
-        with patch.object(forge, "resolve_gitlab_token", return_value=None):
-            with self.assertRaises(_Parser._Err):
-                publish._submit_certification_mr(self._cert_args(gitlabToken=None),
-                                                 _Parser(), "b", {"packages": []})
-
-    def test_submit_certification_records_certifier(self):
-        # A bot opens the MR on behalf of a human whose authority was verified
-        # upstream (bits-console): --certifier stamps certified_by into every
-        # committed per-arch manifest (audit trail), without mutating the
-        # caller's bom.
-        import json as _json, bits_helpers.forge as forge
-        doc = {"build_id": "b1", "packages": []}
-        bom = [("x86_64-el9", doc)]
-        with patch.object(forge, "resolve_gitlab_token", return_value="tok"), \
-             patch.object(forge, "gitlab_create_commit", return_value={"id": "c1"}) as cc, \
-             patch.object(forge, "gitlab_create_merge_request",
-                          return_value={"iid": 1, "web_url": "u"}):
-            publish._submit_certification_mr(self._cert_args(certifier="alice"),
-                                             _Parser(), "b1", bom)
-        committed = _json.loads(cc.call_args[0][5][0][1])   # first file's content
-        self.assertEqual(committed["certified_by"], ["alice"])
-        self.assertNotIn("certified_by", doc)             # caller's dict untouched
-
     def _dopublish_args(self, **over):
         from types import SimpleNamespace
         base = dict(publishView=None, fromManifest="latest", package=None,
@@ -355,96 +291,70 @@ class TestPublishFromManifest(unittest.TestCase):
         base.update(over)
         return SimpleNamespace(**base)
 
+    MARKER = {"issuer": "bits-orchestrator/bkt", "manifests": "MANIFESTS/common-manifest",
+              "since": "2026-10-20T08:00:00Z"}
+
     def _certify_args(self, **over):
         from types import SimpleNamespace
         base = dict(fromManifest="latest", dryRun=False, workDir=self.work, architecture=ARCH,
                     publishStore="https://s3.example/mybucket", certifyGroup=None,
-                    manifestsRemote=None, certifyRef=None, gitlabToken=None,
                     approval="passkey", console=None, consoleCafile=None,
-                    consoleInsecure=False, certifier=None)
+                    consoleInsecure=False)
         base.update(over)
         return SimpleNamespace(**base)
 
+    def _certify(self, args, published=None, marker=MARKER):
+        with patch.object(publish, "_orchestrator_marker", return_value=marker), \
+             patch.object(publish, "_publish_from_manifest", return_value=published) as up, \
+             patch("bits_helpers.sign_console.preapprove_via_console") as pre:
+            publish.doCertify(args, _Parser())
+        return up, pre
+
     def test_publish_only_uploads_even_with_certify_defaults(self):
-        # `bits publish` never opens an MR, whatever the defaults configure.
-        system = {"certify_group": "ship", "manifests_remote": "ssh://h/g/p.git"}
+        # `bits publish` never asks for an approval, whatever the defaults configure.
+        system = {"certify_group": "ship", "console_url": "https://c"}
         with patch.object(publish, "_publish_from_manifest",
                           return_value=("bid", [], system)) as up, \
-             patch.object(publish, "_submit_certification_mr") as sub:
+             patch("bits_helpers.sign_console.preapprove_via_console") as pre:
             publish.doPublish(self._dopublish_args(), _Parser())
         up.assert_called_once()
-        sub.assert_not_called()
+        pre.assert_not_called()
 
-    def test_certify_uses_system_defaults_and_approves_before_mr(self):
-        calls = []
+    def test_certify_uses_system_defaults_and_approves(self):
         bom = [("x86_64-el9", {"build_id": "bid", "packages": []})]
-        system = {"certify_group": "ship", "manifests_remote": "ssh://h/g/p.git",
-                  "console_url": "https://c"}
-        with patch.object(publish, "_publish_from_manifest", return_value=("bid", bom, system)), \
-             patch.object(publish, "_submit_certification_mr",
-                          side_effect=lambda *a: calls.append("mr")), \
-             patch("bits_helpers.forge.resolve_gitlab_token", return_value="tok"), \
-             patch("bits_helpers.sign_console.preapprove_via_console",
-                   side_effect=lambda *a, **k: calls.append(("pre", a))):
-            args = self._certify_args()               # bare `bits certify`
-            publish.doCertify(args, _Parser())
-        self.assertEqual([c if c == "mr" else c[0] for c in calls], ["pre", "mr"])
-        self.assertEqual(calls[0][1][:4], ("https://c", "bid", ["ship"], [bom[0][1]]))
-        self.assertEqual((args.certifyGroup, args.manifestsRemote), ("ship", "ssh://h/g/p.git"))
+        system = {"certify_group": "ship", "console_url": "https://c"}
+        args = self._certify_args()               # bare `bits certify`
+        _up, pre = self._certify(args, ("bid", bom, system))
+        self.assertEqual(pre.call_args[0][:4], ("https://c", "bid", ["ship"], [bom[0][1]]))
+        self.assertEqual(args.certifyGroup, "ship")
 
     def test_certify_cli_overrides_defaults(self):
-        system = {"certify_group": "ship", "manifests_remote": "ssh://h/g/p.git"}
-        with patch.object(publish, "_publish_from_manifest", return_value=("bid", [], system)), \
-             patch.object(publish, "_submit_certification_mr") as sub, \
-             patch("bits_helpers.forge.resolve_gitlab_token", return_value="tok"):
-            args = self._certify_args(certifyGroup="lcg", approval="none", certifier="alice")
-            publish.doCertify(args, _Parser())
-        sub.assert_called_once()
-        self.assertEqual(args.certifyGroup, "lcg")
+        args = self._certify_args(certifyGroup="lcg", console="https://c")
+        _up, pre = self._certify(args, ("bid", [], {"certify_group": "ship"}))
+        self.assertEqual(pre.call_args[0][2], ["lcg"])
 
     def test_certify_approval_none_skips_the_console(self):
-        with patch.object(publish, "_publish_from_manifest",
-                          return_value=("bid", [], {"certify_group": "g", "manifests_remote": "r"})), \
-             patch.object(publish, "_submit_certification_mr") as sub, \
-             patch("bits_helpers.forge.resolve_gitlab_token", return_value="tok"), \
-             patch("bits_helpers.sign_console.preapprove_via_console") as pre:
-            publish.doCertify(self._certify_args(approval="none", certifier="alice"), _Parser())
+        up, pre = self._certify(self._certify_args(approval="none"),
+                                ("bid", [], {"certify_group": "g"}))
+        up.assert_called_once()
         pre.assert_not_called()
-        sub.assert_called_once()
-
-    def test_certify_approval_none_needs_certifier(self):
-        with patch.object(publish, "_publish_from_manifest") as up:
-            with self.assertRaises(_Parser._Err):
-                publish.doCertify(self._certify_args(approval="none"), _Parser())
-        up.assert_not_called()
 
     def test_certify_nothing_published_is_an_error(self):
-        with patch.object(publish, "_publish_from_manifest", return_value=None), \
-             patch("bits_helpers.forge.resolve_gitlab_token", return_value="tok"):
-            with self.assertRaises(_Parser._Err):
-                publish.doCertify(self._certify_args(), _Parser())
+        with self.assertRaises(_Parser._Err):
+            self._certify(self._certify_args())
 
-    def test_certify_needs_token_before_upload(self):
-        with patch.object(publish, "_publish_from_manifest") as up, \
-             patch("bits_helpers.forge.resolve_gitlab_token", return_value=None):
-            with self.assertRaises(_Parser._Err):
-                publish.doCertify(self._certify_args(), _Parser())
-        up.assert_not_called()
-
-    def test_certify_passkey_needs_console_and_target(self):
-        with patch.object(publish, "_publish_from_manifest", return_value=("bid", [], {})), \
-             patch.object(publish, "_submit_certification_mr") as sub, \
-             patch("bits_helpers.forge.resolve_gitlab_token", return_value="tok"), \
-             patch("bits_helpers.sign_console.preapprove_via_console") as pre, \
-             patch("bits_helpers.site.get", return_value=None), \
+    def test_certify_passkey_needs_console_and_group(self):
+        with patch("bits_helpers.site.get", return_value=None), \
              patch.dict("os.environ", {"BITS_CONSOLE_URL": ""}):
-            with self.assertRaises(_Parser._Err):          # no group / manifests repo
-                publish.doCertify(self._certify_args(console="https://c"), _Parser())
-            with self.assertRaises(_Parser._Err):          # target set, no console URL
-                publish.doCertify(self._certify_args(certifyGroup="lcg",
-                                                     manifestsRemote="ssh://h/g/p.git"), _Parser())
+            with self.assertRaisesRegex(_Parser._Err, "group"):
+                self._certify(self._certify_args(console="https://c"), ("bid", [], {}))
+            with self.assertRaisesRegex(_Parser._Err, "console"):
+                self._certify(self._certify_args(certifyGroup="lcg"), ("bid", [], {}))
+
+    def test_certify_dry_run_touches_nothing(self):
+        up, pre = self._certify(self._certify_args(dryRun=True))
+        self.assertTrue(up.call_args[1]["dry_run"])
         pre.assert_not_called()
-        sub.assert_not_called()
 
     def test_the_console_url_defaults_to_the_site_s(self):
         from bits_helpers import orchestrated
@@ -454,13 +364,6 @@ class TestPublishFromManifest(unittest.TestCase):
                              "https://c")
             with patch("bits_helpers.site.get", return_value=None):
                 self.assertIsNone(orchestrated.console_url())
-
-    def test_certify_dry_run_touches_nothing(self):
-        with patch.object(publish, "_publish_from_manifest", return_value=None), \
-             patch.object(publish, "_submit_certification_mr") as sub, \
-             patch("bits_helpers.forge.resolve_gitlab_token", return_value=None):
-            publish.doCertify(self._certify_args(dryRun=True), _Parser())
-        sub.assert_not_called()
 
     def test_run_leaf_is_unique_per_call(self):
         # Distinct hosts/runs must not collide: the leaf carries host + UTC stamp.
