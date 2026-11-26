@@ -673,10 +673,8 @@ def _extract_source_archives(source_dir, expected_names=None):
   if not os.path.isdir(source_dir):
     return
 
-  # Compute the strip depths we would use for every archive present now.
-  # We do this before consulting the sentinel so we can compare.
   expected = set(expected_names) if expected_names is not None else None
-  archives = []
+  found = []
   for entry in sorted(os.listdir(source_dir)):
     filepath = os.path.join(source_dir, entry)
     if not os.path.isfile(filepath):
@@ -688,10 +686,20 @@ def _extract_source_archives(source_dir, expected_names=None):
     lower = entry.lower()
     if any(lower.endswith(ext) for ext in _TAR_EXTENSIONS) or \
        any(lower.endswith(ext) for ext in _ZIP_EXTENSIONS):
-      archives.append((entry, filepath, _archive_prefix_depth(filepath)))
+      found.append((entry, filepath))
 
-  if not archives:
+  if not found:
     return  # nothing to extract
+  # The archives extracted before, unchanged since (size, mtime): nothing to read.
+  stats = {entry: _file_stat(filepath) for entry, filepath in found}
+  try:
+    with open(sentinel) as f:
+      if json.loads(f.read()).get("stats") == stats:
+        return
+  except (OSError, ValueError, AttributeError):
+    pass
+  # The strip depth of each archive, to compare with the one the sentinel records.
+  archives = [(entry, filepath, _archive_prefix_depth(filepath)) for entry, filepath in found]
 
   # Check whether a sentinel already exists and whether its recorded strips
   # match what we would use today.  A mismatch means the previous extraction
@@ -705,8 +713,13 @@ def _extract_source_archives(source_dir, expected_names=None):
     except (OSError, ValueError, KeyError):
       recorded_strips = {}
     current_strips = {entry: strip for entry, _, strip in archives}
-    if recorded_strips == current_strips:
-      return  # sentinel is valid; skip re-extraction
+    if recorded_strips == current_strips:   # valid; skip re-extraction, read nothing next time
+      try:
+        with open(sentinel, "w") as fh:
+          json.dump(dict(recorded, stats=stats), fh)
+      except (OSError, TypeError, ValueError):
+        pass
+      return
     debug("Stale extraction sentinel for %s (recorded strips %s, now %s): re-extracting",
           source_dir, recorded_strips, current_strips)
     os.unlink(sentinel)
@@ -739,7 +752,12 @@ def _extract_source_archives(source_dir, expected_names=None):
   strips_map = {entry: strip for entry, _, strip in archives}
   digests = {entry: checksum_file(filepath) for entry, filepath, _ in archives}
   with open(sentinel, "w") as fh:
-    json.dump({"strips": strips_map, "digests": digests}, fh)
+    json.dump({"strips": strips_map, "digests": digests, "stats": stats}, fh)
+
+
+def _file_stat(path):
+  st = os.stat(path)
+  return [st.st_size, st.st_mtime_ns]
 
 
 def _wipe_source_if_local_archive_changed(source_dir, entries):

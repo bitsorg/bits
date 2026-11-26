@@ -33,6 +33,32 @@ class ExtractSourceArchivesTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             _extract_source_archives(self.tmp)
 
+    def test_an_unchanged_archive_is_not_read_again(self):
+        import io, json, tarfile
+        tgz = os.path.join(self.tmp, "pkg-1.0.tar.gz")
+        with tarfile.open(tgz, "w:gz") as tf:
+            info = tarfile.TarInfo("pkg-1.0/README")
+            info.size = 2
+            tf.addfile(info, io.BytesIO(b"hi"))
+        _extract_source_archives(self.tmp)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "README")))
+        with patch("bits_helpers.workarea._archive_prefix_depth") as depth:
+            _extract_source_archives(self.tmp)
+        depth.assert_not_called()
+        sentinel = os.path.join(self.tmp, ".bits_extracted")
+        with open(sentinel) as f:
+            older = {k: v for k, v in json.load(f).items() if k != "stats"}
+        with open(sentinel, "w") as f:                     # as an older bits wrote it
+            json.dump(older, f)
+        _extract_source_archives(self.tmp)                 # read once, recorded
+        with patch("bits_helpers.workarea._archive_prefix_depth") as depth:
+            _extract_source_archives(self.tmp)
+        depth.assert_not_called()
+        os.utime(tgz, ns=(1, 1))                           # another file now
+        with patch("bits_helpers.workarea._archive_prefix_depth", return_value=1) as depth:
+            _extract_source_archives(self.tmp)
+        depth.assert_called_once()
+
 
 MOCK_SPEC = OrderedDict((
     ("package", "AliRoot"),
