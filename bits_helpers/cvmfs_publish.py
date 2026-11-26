@@ -1850,7 +1850,7 @@ def main(argv=None):
                     help="wait for every submitted job to be published (packages "
                          "before the release); a job that fails fails the command")
     ap.add_argument("--wait-timeout", type=int, default=3600,
-                    help="seconds to wait for each job with --wait (default 3600)")
+                    help="seconds to wait for the jobs with --wait, all together (default 3600)")
     ap.add_argument("--compress", action="store_true",
                     help="send each package's tar gzip-compressed (pigz -1) on the ingest "
                          "paths, when prepub takes it; else sent as it is, and said why")
@@ -2306,13 +2306,15 @@ def _publish_release_links(ctx, specs, emit):
 
 
 def _wait_for(ctx, jobs, emit):
-    """Poll each (job id, label) to a final state. Returns the rc contribution."""
+    """Poll each (job id, label) to a final state, all within one --wait-timeout (prepub
+    runs them together). Returns the rc contribution."""
     from bits_helpers.prepub import poll_job
     rc = 0
+    deadline = time.monotonic() + ctx.get("wait_timeout", 3600)
     for jid, label in jobs:
+        left = max(1, int(deadline - time.monotonic()))   # past it: asked once, not waited for
         try:
-            state = poll_job(ctx["prepub_url"], ctx["token"], jid,
-                             timeout=ctx.get("wait_timeout", 3600),
+            state = poll_job(ctx["prepub_url"], ctx["token"], jid, timeout=left,
                              bearer_auth=ctx.get("bearer_auth", False),
                              no_verify_tls=ctx.get("no_verify_tls", False))
         except (SystemExit, Exception) as exc:
