@@ -353,11 +353,11 @@ class BitsStoreSync(RemoteSync):
     name = "{}-{}.{}.tar.gz".format(spec["package"], ver_rev(spec), arch)
     if not (_NAME.fullmatch(name) and _NAME.fullmatch(spec["version"]) and _HASH.fullmatch(spec["hash"])):
       raise StoreWriteError("%s (%s): not a name bits-store takes" % (name, spec["hash"]))
-    self.write_rev_marker(spec, arch)
     path = os.path.join(self.workdir, resolve_store_path(arch, spec["hash"]), name)
     base = self._area(spec)
     url = "%s/%s/%s" % (base, arch, spec["hash"])
     try:
+      self.write_rev_marker(spec, arch)     # refused for a restricted build: kept here, as below
       sha = None if self._find_in(base, "HEAD", arch, spec["hash"], write=True)[0] else \
           self._upload(url, path, name=name)
     except StoreWriteError as exc:

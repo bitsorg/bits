@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A restricted build whose revision marker bits-store refuses is kept on this host with a warning, as when the build itself is refused: the marker error stopped it.
 - **[Fix]** After uploading a tarball to a `b3://` store, bits reads back the sha256 the store holds and records that one (and that the object is not this build's): two builds of one hash that both found no object both uploaded, and the one overwritten recorded a sha256 the store no longer had. This narrows the race; an upload finishing after the read-back is still missed.
 - **[Fix]** Stamping a legacy `b3://` object's sha256 keeps its other metadata (`bits-by`, who uploaded it) and content type: the metadata self-copy replaced all of it with the sha256 alone.
 - **[Fix]** With a write store, a new counter revision is reserved in the store (its rev-index marker) when it is picked, before the build; one another hash took meanwhile is skipped for the next free number. Two builds of one version running at once both took the same number, and one replaced the other's install path. bits-store markers are write-once; an S3 store's are where it supports `If-None-Match`, else the last writer wins. A build that fails keeps its number for a retry of the same hash (others skip it). A store that cannot be asked keeps the number, as before.

@@ -439,6 +439,12 @@ class BitsStoreWriteTest(StandIn):
     self.assertEqual(w.token, "good")                  # a refused marker read keeps it for packages
     self.assertEqual(w.list_store_tarballs(ARCH, H2), [NAME])
 
+  def test_a_restricted_build_whose_marker_is_refused_is_kept_here(self):
+    Store.refused = "/MANIFESTS/"
+    with self.assertLogs("bits", "WARNING"):
+      self.assertIs(self.writer().upload_symlinks_and_tarball(self.built(redistributable=False)), False)
+    self.assertNotIn(H1, Store.builds)
+
   def test_bucket_commands_refuse_it(self):
     from bits_helpers.publish import _normalize_s3_store
     with self.assertRaises(SystemExit):
