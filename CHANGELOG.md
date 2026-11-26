@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits cvmfs publish` refuses a `.bits-view.json` entry that is absolute or climbs out (`..`), and the view fails: a climbing entry placed a link outside the staging directory, on the publish host.
 - **[Fix]** `bits publish PACKAGE` publishes the tarball the signed manifests or the build manifest certify, as `bits cvmfs publish` does: another packing of the hash is replaced by the certified object from the store, and a tarball no manifest records is refused. It took the work dir's tarball, or the store's, unchecked.
 - **[Fix]** `bits cvmfs publish` refuses a package whose tarball sha256 neither the signed manifests nor the build manifest record; it published it unchecked. A build now records the sha256 of an already installed package too, from its tarball in the work dir, hashed once (it gets a .sha256 sidecar): on a warm build host most packages had none.
 - **[Fix]** `bits cvmfs publish` and `bits publish PACKAGE` refuse a tarball packed by a bits older than 2026-07-11: its own `relocate-me.sh`, which publishing runs, has no `BITS_RELOCATE_STRIP_PP` and would double `<arch>/<pkg>/<ver>` in the published paths. One packed before 2026-10-09 is refused where the target contains its build's `PKG_DIR` (a `--cvmfs-prefix` build), which that script rewrites twice. Rebuild such a package.

@@ -927,8 +927,12 @@ VIEW_SUBDIRS = ("bin", "lib", "lib64", "include", "share", "cmake", "python",
 
 def _list_tree(entries):
     """{path: (kind, linkname)} from a .bits-view.json entry list, with the
-    directories it lists only implicitly."""
-    tree = {p: (k, t) for p, k, t in entries}
+    directories it lists only implicitly. A path out of the package fails the view."""
+    tree = {}
+    for p, k, t in entries:
+        if not p or os.path.isabs(p) or ".." in p.split("/"):
+            raise SystemExit("a .bits-view.json entry leaves its package: %r" % (p,))
+        tree[p] = (k, t)
     for rel in list(tree):
         d = os.path.dirname(rel)
         while d and d not in tree:

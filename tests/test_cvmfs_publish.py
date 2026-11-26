@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import unittest
 
+import io
 import json
 
 from bits_helpers.checksum import checksum_file
@@ -1417,6 +1418,25 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         tar = os.path.join(src, "p.tar.gz")
         subprocess.run(["tar", "-czf", tar, "-C", src, "a"], check=True)
         self.assertEqual(sorted(p for p, (k, _) in cp._tar_tree(tar).items() if k == "file"), ["bin/x"])
+
+    def test_a_view_list_entry_out_of_the_package_fails_the_view(self):
+        import tarfile
+        import bits_helpers.cvmfs_publish as cp
+        src = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, src, True)
+        for bad in ("bin/../../../x", "/tmp/x", "..", ""):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(SystemExit, "leaves its package"):
+                    cp._list_tree([["bin/ok", "file", ""], [bad, "file", ""]])
+                tar = os.path.join(src, "p.tar.gz")
+                with tarfile.open(tar, "w:gz") as tf:
+                    for name, data in (("a/p/1-1/.bits-view.json",
+                                        json.dumps({"entries": [[bad, "file", ""]]}).encode()),
+                                       ("a/p/1-1/.meta.json", b"{}")):
+                        info = tarfile.TarInfo(name); info.size = len(data)
+                        tf.addfile(info, io.BytesIO(data))
+                with self.assertRaisesRegex(SystemExit, "leaves its package"):
+                    cp._tar_tree(tar)
+        self.assertEqual(cp._list_tree([["bin/a..b", "file", ""]])["bin/a..b"], ("file", ""))
 
     def test_view_setup_locates_itself(self):
         import subprocess
