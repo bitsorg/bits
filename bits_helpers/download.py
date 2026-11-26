@@ -143,12 +143,9 @@ def packCheckout(tempdir, dest, *exports):
     errorMessage = "Error while creating a tar archive for checked out area"
     return executeWithErrorCheck(packCommand, errorMessage)
 
-# We have our own version rather than using the one from os
-# because the latter does not work seem to be thread safe.
 def makedirs(path):
-    returncode, out = getstatusoutput("mkdir -p {}".format(path))
-    if returncode != 0:
-        raise OSError("makedirs() failed (return: {}):\n{}".format(returncode, out))
+    # No shell: the path holds names taken from a source URL.
+    os.makedirs(path, exist_ok=True)
 
 def downloadUrllib2(source, destDir, work_dir, dest_filename=None):
     try:
@@ -686,7 +683,12 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
             debug("Archiving source file %s to remote store", filename)
             sync_helper.upload_source(realFile, url_checksum, filename)
         if dest is not None:
-            executeWithErrorCheck("mkdir -p {dest}; cp {src} {dest}/".format(dest=dest, src=realFile), "Failed to move source")
+            import shutil      # no shell: the file is named by the URL's last segment
+            try:
+                os.makedirs(dest, exist_ok=True)
+                shutil.copy(realFile, dest)
+            except OSError as exc:
+                info("Failed to move source %s to %s: %s", realFile, dest, exc)
     else:
         raise OSError("Unable to download source {} in to {}".format(source, downloadDir))
     return realFile
