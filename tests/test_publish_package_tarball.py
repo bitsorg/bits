@@ -64,13 +64,13 @@ class TarballTest(unittest.TestCase):
     os.makedirs(d)
     shutil.copy(self.tar, d)
 
-  def publish(self, store_has=True, no_relocate=False):
+  def publish(self, store_has=True, no_relocate=False, dry_run=False):
     args = SimpleNamespace(publishView=None, fromManifest=None, package="zlib", version=None,
                            workDir=self.work, architecture="el9", cvmfsTarget=TARGET,
                            scratchDir=None, prepubUrl="https://prepub", prepubToken=None,
                            prepubRepo=None, prepubPath=None, prepubWebhook=None,
                            prepubPollInterval=10, prepubTimeout=60, prepubNoVerifyTls=False,
-                           dryRun=False, publishStore="b3://bucket",
+                           dryRun=dry_run, publishStore="b3://bucket",
                            noRelocate=no_relocate)
     published, self.asked = {}, []
 
@@ -114,6 +114,19 @@ class TarballTest(unittest.TestCase):
     with self.assertRaises(SystemExit):
       self.publish(store_has=False)
     self.assert_installed_untouched()
+
+  def test_a_dry_run_sends_nothing(self):
+    for local in (True, False):
+      if local:
+        self.keep_in_work_dir()
+      with patch.object(publish, "banner") as said:
+        self.assertEqual(self.publish(dry_run=True), {})
+      text = said.call_args[0][0] % said.call_args[0][1:]
+      self.assertIn("would publish", text)
+      self.assertIn(TARGET, text)
+      self.assertIn("store" if local else "fetched from the stores", text)
+      self.assertEqual(self.asked, [])                       # not fetched either
+      shutil.rmtree(os.path.join(self.work, "TARS"), ignore_errors=True)
 
   def test_no_relocate_publishes_the_installed_tree(self):
     """Built with --cvmfs-prefix, the installed tree has the final paths; the tarball not."""

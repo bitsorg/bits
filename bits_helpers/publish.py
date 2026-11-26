@@ -801,9 +801,10 @@ def doCertify(args, parser):
 # Main publish entry point
 # ---------------------------------------------------------------------------
 
-def _package_tarball(args, work_dir, installroot, package, version_dir, fetch_dir):
+def _package_tarball(args, work_dir, installroot, package, version_dir, fetch_dir, fetch=True):
     """The tarball of the installed build: the work dir's (TARS/<arch>/store/<h2>/<hash>),
-    else fetched from the stores (--remote-store), e.g. when the build removed it."""
+    else fetched from the stores (--remote-store), e.g. when the build removed it; without
+    *fetch*, None then."""
     arch = os.path.relpath(installroot, work_dir).split(os.sep)[0]
     try:
         with open(join(installroot, ".build-hash")) as f:
@@ -816,8 +817,8 @@ def _package_tarball(args, work_dir, installroot, package, version_dir, fetch_di
     package = basename(package)                 # a family's (externals/foo): foo
     name = "%s-%s.%s.tar.gz" % (package, version_dir, arch)
     local = join(work_dir, "TARS", arch, "store", pkg_hash[:2], pkg_hash, name)
-    if os.path.isfile(local):
-        return local
+    if os.path.isfile(local) or not fetch:
+        return local if os.path.isfile(local) else None
     from bits_helpers.args import DEFAULT_S3_STORE
     from bits_helpers.cvmfs_publish import fetch_store_tarball
     from bits_helpers.sync import store_urls
@@ -930,6 +931,15 @@ def doPublish(args, parser):
     info("prepub url  : %s", prepub_url)
 
     no_relocate = getattr(args, "noRelocate", False)
+    if getattr(args, "dryRun", False):    # what it would do: nothing fetched, unpacked or sent
+        tar_gz = None if no_relocate else _package_tarball(args, work_dir, installroot, package,
+                                                           version_dir, None, fetch=False)
+        banner("[dry-run] would publish %s to %s from %s%s", pkg_id, cvmfs_target,
+               "the installed tree" if no_relocate else tar_gz or "its tarball, fetched from "
+               "the stores (--remote-store)", "" if no_relocate else ", relocated there")
+        if getattr(args, "moduleTarget", None):
+            info("[dry-run] and its modulefiles to %s", args.moduleTarget)
+        return
 
     # ------------------------------------------------------------------
     # 2. The working copy (INSTALLROOT is never touched). Relocated: the package's

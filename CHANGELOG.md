@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits publish PACKAGE --cvmfs-target … -n` only says what it would publish, from where and to where; it unpacked, relocated and submitted the package to prepub for real.
 - **[Fix]** `--build-nice` with rootless podman gives a container no `--cpu-shares` when no cgroup controller is delegated to the user at all (no systemd user session); the check missed that case, and the container could not start.
 - **[Fix]** A package published to CVMFS (`bits publish PACKAGE`, `bits cvmfs publish`) carries its `.build-hash`, as an installation does, so `--symlink-packages-from` with the strict policy (the default) can reuse it; the tarball does not contain it (it is written at install).
 - **[Fix]** `relocate-me.sh` also refuses a `.bits-relocate` entry that leaves the package through a symbolic link in it, which `sed -i` would otherwise edit.
