@@ -56,7 +56,8 @@ COVERED = (
 # Unused gcc lookups removed from the preamble: builds are unchanged.
 # A damaged reuse-symlinks marker is staged again: the stage made is unchanged.
 # relocate-me.sh reads .bits-pkginfo instead of sourcing it: relocation is unchanged.
-COVERED_SHA256 = "b372beb0bbc8d46463318a76d27fce1427fdea7d7b5adea356886554f1c4479d"
+# A reused tarball packed here or certified is not listed before it is unpacked: what is installed is unchanged.
+COVERED_SHA256 = "fc2131837a3c3291c1470a80d19f2c0a1df3a356c111261518e233a4f43fa97d"
 
 
 def covered_sha256(root=None):

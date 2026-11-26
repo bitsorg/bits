@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Improvement]** A reused tarball that was packed on this host or passed the signed-reuse check is unpacked without being decompressed once more to list its members first (the tar-slip guard stays for every other one).
 - **[Improvement]** A source archive extracted before and unchanged since (its size and modification time, recorded in `.bits_extracted`) is not read again to work out its strip depth: a resumed or repeated build of a large source no longer decompresses it first.
 - **[Fix]** `relocate-me.sh` reads a package's `.bits-pkginfo` (`OP`, `PP`, `PH`, `PKG_DIR`) instead of running it, so that file cannot run commands (a tarball without it keeps its own script, and a package's `post-relocate.sh` still runs); a value with `$` or a backquote (but `PP=${PKGPATH:-…}`) stops the relocation. A `.bits-relocate` entry that is absolute or climbs out with `..` is refused.
 - **[Fix]** A node remembers a signed manifest's sequence per issuer, architecture and signing key: another trusted key naming the same issuer with a high number can no longer make the node refuse that issuer's real manifests. What a node remembered before is carried over.

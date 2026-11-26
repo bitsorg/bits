@@ -3066,10 +3066,13 @@ def build_one_package(p, ctx):
     # Trusted-reuse gate (--require-signed-reuse): a tarball not packed here, as it
     # is now (packed_ledger), is reused only if a verified signed manifest vouches
     # for it (hash AND sha256). Otherwise it is quarantined and the package built.
+    spec.pop("_tarball_vouched", None)   # packed here or certified: its listing is skipped
     for _attempt in (1, 2):
       _tarball = spec["cachedTarball"]
-      if not (_tarball and cfg.require_signed_reuse
-              and not packed_ledger.packed_here(workDir, _tarball)):
+      if not (_tarball and cfg.require_signed_reuse):
+        break
+      if packed_ledger.packed_here(workDir, _tarball):
+        spec["_tarball_vouched"] = True
         break
       _idx = trusted_reuse_index(args, workDir)
       _key = (effective_arch(spec, args.architecture), spec["hash"])
@@ -3099,6 +3102,7 @@ def build_one_package(p, ctx):
           debug("Trusted reuse: %s@%s verified against signed manifest",
                 spec["package"], spec["hash"])
           spec.pop("reuse_note", None)
+          spec["_tarball_vouched"] = True
           if _by:
             spec["store_tarball_by"] = _by
           break
@@ -3302,6 +3306,7 @@ def build_one_package(p, ctx):
     ("EFFECTIVE_ARCHITECTURE", effective_arch(spec, args.architecture)),
     ("BUILD_REQUIRES", " ".join(spec["build_requires"])),
     ("CACHED_TARBALL", cachedTarball),
+    ("BITS_TARBALL_VOUCHED", "1" if cachedTarball and spec.get("_tarball_vouched") else ""),
     ("CAN_DELETE", args.aggressiveCleanup and "1" or ""),
     # Whether a write store will need this package's tarball for upload. Under
     # --aggressive-cleanup the build script otherwise skips creating the tarball

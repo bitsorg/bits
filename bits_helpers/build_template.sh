@@ -338,7 +338,9 @@ else
   # signed reuse is disabled. Refuse member names that are absolute or contain
   # a '..' component (belt over tar's own protections, which vary by
   # implementation/version), and never restore ownership from the archive.
-  if tar -tzf "$CACHED_TARBALL" | grep -qE '(^/|(^|/)\.\.(/|$))'; then
+  # Not read twice for one packed here or certified (BITS_TARBALL_VOUCHED).
+  if [ -z "${BITS_TARBALL_VOUCHED:-}" ] &&
+     tar -tzf "$CACHED_TARBALL" | grep -qE '(^/|(^|/)\.\.(/|$))'; then
     echo "ERROR: $CACHED_TARBALL contains absolute or traversing member paths — refusing to unpack" >&2
     exit 1
   fi

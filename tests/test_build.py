@@ -1194,6 +1194,7 @@ class PackedHereTest(unittest.TestCase):
             spec = self._run(work_dir, store=True)
             self.assertEqual((spec["cachedTarball"], self.fetches, spec["store_tarball_refused"]),
                              ("", 2, True))
+            self.assertNotIn("_tarball_vouched", spec)
 
     def test_without_a_manifest_read_it_is_not_reused_but_left(self):
         with tempfile.TemporaryDirectory() as work_dir:
@@ -1218,7 +1219,8 @@ class PackedHereTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as work_dir:
             path = self._tarball(work_dir)
             record(work_dir, path)
-            self.assertEqual(self._run(work_dir)["cachedTarball"], path)
+            spec = self._run(work_dir)
+            self.assertEqual((spec["cachedTarball"], spec.get("_tarball_vouched")), (path, True))
             self._tarball(work_dir, b"replaced")
             self.assertEqual(self._run(work_dir)["cachedTarball"], "")
 
@@ -1247,6 +1249,7 @@ class PrivateReuseTest(unittest.TestCase):
         good = "sha256:" + hashlib.sha256(b"remote").hexdigest()
         spec = self._run(good)
         self.assertTrue(spec["cachedTarball"])
+        self.assertTrue(spec["_tarball_vouched"])               # its listing is not read again
         self.assertEqual(spec["store_tarball_by"], "alice")                       # whose upload
         spec = self._run("sha256:" + "0" * 64)
         self.assertEqual((spec["cachedTarball"], spec.get("store_tarball_by")), ("", None))  # other bytes
