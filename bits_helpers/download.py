@@ -501,9 +501,23 @@ def downloadPip(source, dest, work_dir):
 
     if not '--no-deps' in pip_opts: pip_opts = '--no-deps ' + pip_opts
     if not '--no-cache-dir' in pip_opts: pip_opts = '--no-cache-dir ' + pip_opts
-    comm = 'cd ' + dest + ";" + pip + ' download ' + pip_opts + ' --disable-pip-version-check -q -d . {}; [ -e {} ] || mv *.* {}; ls -l'.format(pack, filename, filename)
-    error, output = getstatusoutput(comm)
-    return not error
+    # No shell, and pip= names pip itself: the URL's options are not commands.
+    if not re.fullmatch(r"pip(3(\.[0-9]+)?)?", basename(pip)) or basename(pip) != pip and not os.path.isabs(pip):
+        warning("Refusing pip source %s: pip=%s is not pip, pip3 or an absolute path to one", source, pip)
+        return False
+    import shlex
+    import subprocess
+    r = subprocess.run([pip, "download"] + shlex.split(pip_opts) +
+                       ["--disable-pip-version-check", "-q", "-d", ".", "--", pack],
+                       cwd=dest, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if r.returncode:
+        debug("pip download of %s failed:\n%s", pack, r.stdout.decode(errors="replace"))
+        return False
+    got = [f for f in os.listdir(dest) if "." in f and f != filename      # not download()'s own
+           and not f.endswith((".downloading", ".tmp"))]
+    if not exists(join(dest, filename)) and len(got) == 1:
+        rename(join(dest, got[0]), join(dest, filename))      # as `mv *.* NAME` did
+    return exists(join(dest, filename))
 
 def downloadFile(source, dest, work_dir):
     import shutil

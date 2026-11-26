@@ -60,5 +60,34 @@ class NoShellTest(unittest.TestCase):
     self.assertFalse(os.path.exists(os.path.join(self.work, "pwned")))
 
 
+  def test_a_pip_source_runs_only_pip(self):
+    import subprocess
+    out = os.path.join(self.work, "out")
+    os.makedirs(out)
+    with patch("bits_helpers.download.downloadUrllib2", return_value=False), \
+         patch("bits_helpers.download.urlopen", side_effect=OSError("offline")), \
+         patch("bits_helpers.download.warning") as warned:
+      for opts in ("pip=touch pwned;pip", "pip=/bin/sh", "pip=/usr/bin/pipewire", "pip=bin/pip"):
+        self.assertFalse(dl.downloadPip("pip://flask/3.1.1?%s&pip_options=--only-binary=:all:&output=/f.tgz"
+                                        % opts, out, self.work))
+      self.assertEqual(warned.call_count, 4)
+      open(os.path.join(out, "flask-3.1.1.tar.gz.downloading"), "w").close()   # download()'s sentinel
+      seen = []
+
+      def run(cmd, **kw):
+        seen.append(cmd)
+        with open(os.path.join(kw["cwd"], "Flask-3.1.1.tar.gz"), "w") as f:
+          f.write("sdist")
+        return subprocess.CompletedProcess(cmd, 0, b"")
+      with patch("subprocess.run", side_effect=run):
+        self.assertTrue(dl.downloadPip("pip://flask/3.1.1?pip_options=--only-binary=:all:;touch+pwned"
+                                       "&output=/flask-3.1.1.tar.gz", out, self.work))
+    self.assertEqual(seen[0][:2], ["pip", "download"])
+    self.assertEqual(seen[0][-2:], ["--", "flask==3.1.1"])
+    self.assertIn("--only-binary=:all:;touch", seen[0])       # an argument, not a command
+    self.assertEqual(sorted(os.listdir(out)), ["flask-3.1.1.tar.gz", "flask-3.1.1.tar.gz.downloading"])
+    self.assertFalse(os.path.exists(os.path.join(self.work, "pwned")))
+
+
 if __name__ == "__main__":
   unittest.main()

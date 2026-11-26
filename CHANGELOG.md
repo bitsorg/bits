@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A `pip://` source runs `pip download` with an argument list, no shell, and `pip=` may name only `pip`, `pip3`, `pip3.N` or an absolute path to one of them: the URL's options went into a shell command run on the host. `pip_options` are no longer expanded by a shell (`$VAR`, `~`). No recipe in the workspace sets `pip=` or `pip_options`.
 - **[Fix]** A `git` source is fetched with argument lists, no shell: its branch, tag and repository went unquoted into one shell command run on the host, and a part starting with `-` is now refused (it would be read as an option).
 - **[Fix]** A source is copied into its build's source dir, and download dirs made, without a shell: the source URL's last segment went unquoted into `mkdir -p …; cp …`, run on the host, so a `;` or `$(…)` in it ran as a command.
 - **[Improvement]** When an HTTP store does not answer (not a 404), bits warns once per run that what the store holds is built or fetched from upstream instead. Before, only each request's `GET … failed` error showed it: the build went on as if the store simply had none.
