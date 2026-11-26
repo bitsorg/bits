@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** `bits store ls|rm --stale-rev-markers [--older-than DAYS]`: the revision claims (`MANIFESTS/rev-index/`) that no stored tarball carries, older than DAYS (default 7), left by builds that failed; narrowed by `--arch`, `--package` and `--version`. S3 stores.
 - **[Fix]** `bits cvmfs publish` checks a package's tarball against the store's signed manifests when they list it (`--trust-manifest`, default the store's; `none` to skip), not only against the build manifest's `tarball_sha256`: the build manifest is a file in the work dir, and one without the field was published unchecked.
 - **[Fix]** The container sandbox takes the network out of the `docker run` argument list, not out of the command text, so a quoted `-e` value or `--docker-extra-args` word that contains `--network=…` is left as it is.
 - **[Fix]** What a package's own scripts get where credentials are (native builds, `$(...)` sources, stage hooks, relocate scripts, system checks) no longer points at the ssh or gpg agent, an askpass helper, `NETRC`, `KUBECONFIG`, `DOCKER_CONFIG`, `AWS_CONFIG_FILE`, a Kerberos ticket or a grid proxy. A ticket, proxy or kubeconfig at its default path stays readable there: only a sandbox keeps it from a build.

@@ -63,6 +63,33 @@ def marker_key(arch, package, version, revision):
   return marker_prefix(arch, package, version) + str(revision)
 
 
+def marker_selected(key, packages=None, versions=None):
+  """Is *key* a marker (``MANIFESTS/rev-index/<arch>/<pkg>/<ver>-<rev>``) of one of
+  *packages* and *versions* (each: any, when empty)?"""
+  parts = key.split("/")
+  return len(parts) == 5 and (not packages or parts[3] in packages) and (
+      not versions or any(parts[4].startswith(v + "-")
+                          and _REVISION_RE.fullmatch(parts[4][len(v) + 1:]) for v in versions))
+
+
+def stale_markers(markers, stored_names, days, now):
+  """``{key: size}`` of the markers in *markers* (``(key, size, last_modified)``) that
+  are older than *days* and name no stored tarball: no ``<pkg>-<ver-rev>.<arch>.tar.gz``
+  in *stored_names*, the content objects' basenames. A build that claimed a revision
+  and then failed; the age spares one still building."""
+  import datetime
+  cutoff = now - datetime.timedelta(days=days)
+  out = {}
+  for key, size, last_modified in markers:
+    parts = key.split("/")              # MANIFESTS / rev-index / <arch> / <pkg> / <ver-rev>
+    if len(parts) != 5 or last_modified is None or last_modified >= cutoff:
+      continue
+    arch, pkg, verrev = parts[2:]
+    if "%s-%s.%s.tar.gz" % (pkg, verrev, arch) not in stored_names:
+      out[key] = size
+  return out
+
+
 def revision_of(key, arch, package, version):
   """Return the revision encoded in *key*, or None if *key* is not such a marker.
 

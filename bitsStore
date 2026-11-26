@@ -18,6 +18,8 @@
 #     --broken-links     named/dist links whose backing store object is missing
 #                          (half-cleaned store); `rm --broken-links` clears them
 #                          so bits will re-upload instead of aborting the upload
+#     --stale-rev-markers revision claims no stored tarball carries, older than
+#                          --older-than DAYS (default 7): builds that failed
 #     --raw PATTERN...   select raw store keys by prefix or glob (bypass manifests)
 #     --older-than DAYS  keep only objects older than DAYS (raw/orphans/objects)
 #     --stale-boms       per-build BOMs no entry of which matches the store any
@@ -375,6 +377,34 @@ def orphan_markers(s3, bucket, orphan_keys):
         if f"{pkg}-{verrev}.{arch}.tar.gz" in basenames:
             markers[key] = size
     return markers
+
+
+def select_stale_rev_markers(s3, bucket, f):
+    """rev-index markers of revisions no stored tarball carries, older than
+    --older-than DAYS (default 7): claims of builds that failed."""
+    from bits_helpers.rev_index import REV_INDEX_ROOT, marker_selected, stale_markers
+    prefixes = ["TARS/%s/store/" % a for a in f.arch] if f.arch else ["TARS/"]
+    stored = {k.rsplit("/", 1)[-1] for p in prefixes for k, _s, _lm in list_objs(s3, bucket, p)
+              if "/store/" in k}
+    markers = [m for p in (["%s/%s/" % (REV_INDEX_ROOT, a) for a in f.arch] if f.arch
+                           else [REV_INDEX_ROOT + "/"])
+               for m in list_objs(s3, bucket, p) if marker_selected(m[0], f.package, f.version)]
+    return stale_markers(markers, stored, 7 if f.older_than is None else f.older_than, NOW)
+
+
+def still_stale_rev_markers(s3, bucket, keys, f):
+    """Of *keys*, those still old (asked again after the confirmation): a build may
+    have taken its claim again meanwhile."""
+    days = 7 if f.older_than is None else f.older_than
+    out = []
+    for k in keys:
+        try:
+            lm = s3.head_object(Bucket=bucket, Key=k).get("LastModified")
+        except Exception:
+            continue                                   # gone: nothing to delete
+        if lm is not None and lm < NOW - datetime.timedelta(days=days):
+            out.append(k)
+    return out
 
 
 def select_broken_links(store, s3, bucket, f):
@@ -850,6 +880,12 @@ def do_delete(s3, bucket, keys, store, f):
         except OSError:
             print("Refusing to delete without confirmation (no tty). Use --yes.", file=sys.stderr)
             return 1
+    recheck = getattr(f, "recheck", None)
+    if recheck:                                      # what changed while asked
+        kept = len(deletable)
+        deletable = recheck(deletable)
+        if len(deletable) != kept:
+            print(f"{kept - len(deletable)} object(s) changed meanwhile: kept")
     deleted = 0
     for i in range(0, len(deletable), 1000):
         batch = [{"Key": k} for k in deletable[i:i + 1000]]
@@ -896,6 +932,9 @@ def add_selection(p):
     p.add_argument("--broken-links", dest="broken_links", action="store_true",
                    help="named/dist links whose backing store object is missing")
     add_stale_boms(p)
+    p.add_argument("--stale-rev-markers", dest="stale_rev_markers", action="store_true",
+                   help="revision claims (MANIFESTS/rev-index) no stored tarball carries, older "
+                        "than --older-than DAYS (default 7): builds that failed (S3 stores)")
     p.add_argument("--deep", action="store_true",
                    help="with --stale-boms, hash store objects that carry no recorded sha256 (slow)")
     p.add_argument("--raw", nargs="+", metavar="PATTERN", help="select raw keys by prefix or glob")
@@ -1058,6 +1097,7 @@ def main():
     for name, dflt in (("certified_by", None), ("build", None), ("expired", False),
                        ("objects", False), ("links", False), ("orphans", False),
                        ("broken_links", False), ("stale_boms", False), ("manifests_dir", None),
+                       ("stale_rev_markers", False),
                        ("raw", None), ("older_than", None), ("before", None),
                        ("bits_version", None), ("bits_dist", None), ("built_before", None),
                        ("only_signed", False),
@@ -1088,6 +1128,18 @@ def main():
             sys.exit(f"{PROG}: --stale-boms takes only --arch/--build to narrow it, not "
                      f"{', '.join(other)} (for one group, point --manifests-dir at "
                      "manifests/<group>)")
+    if args.stale_rev_markers and args.verb in ("ls", "rm"):
+        other = [opt for opt, val in (
+            ("--group", args.group), ("--bits-version", args.bits_version),
+            ("--bits-dist", args.bits_dist), ("--built-before", args.built_before),
+            ("--certified-by", args.certified_by), ("--build", args.build),
+            ("--expired", args.expired), ("--objects", args.objects), ("--links", args.links),
+            ("--orphans", args.orphans), ("--broken-links", args.broken_links),
+            ("--stale-boms", args.stale_boms), ("--raw", args.raw), ("--before", args.before),
+            ("--only-signed", args.only_signed), ("--only-boms", args.only_boms)) if val]
+        if other:
+            sys.exit(f"{PROG}: --stale-rev-markers takes only --arch/--package/--version/"
+                     f"--older-than, not {', '.join(other)}")
     if args.manifests_dir and not os.path.isdir(args.manifests_dir):
         sys.exit(f"{PROG}: --manifests-dir {args.manifests_dir!r} is not a directory")
 
@@ -1098,6 +1150,7 @@ def main():
     # rm pre-flight guards (before touching S3).
     if args.verb == "rm":
         narrowed = any([args.raw, args.orphans, args.broken_links, args.stale_boms,
+                        args.stale_rev_markers,
                         args.arch, args.group,
                         args.package, args.version, args.certified_by, args.build, args.expired,
                         args.bits_version, args.bits_dist, args.built_before])
@@ -1180,6 +1233,9 @@ def main():
         keys, title = select_raw(s3, bucket, args), "raw"
     elif args.broken_links:
         keys, title = select_broken_links(store, s3, bucket, args), "broken-links"
+    elif args.stale_rev_markers:
+        keys, title = select_stale_rev_markers(s3, bucket, args), "stale-rev-markers"
+        args.recheck = lambda ks: still_stale_rev_markers(s3, bucket, ks, args)
     elif args.orphans:
         keys = select_orphans(store, s3, bucket, args)
         keys.update(orphan_markers(s3, bucket, keys))   # + their dangling rev-index markers

@@ -2396,7 +2396,15 @@ bits store rm <selection>             # delete objects (narrowed selection requi
 bits store cat <key>                  # dump a store object's bytes to stdout
 bits store add-source <URL> <FILE>    # an archive no build can download, by hand (sources store)
 bits store ls|rm --stale-boms [--manifests-dir DIR]  # BOMs the store no longer backs
+bits store ls|rm --stale-rev-markers [--older-than DAYS]  # revision claims of failed builds
 ```
+
+A build claims its revision number in the store (`MANIFESTS/rev-index/`) before it
+starts; one that fails leaves the claim, which the same package hash takes again.
+`--stale-rev-markers` selects the claims no stored tarball carries, older than
+`--older-than` days (default 7; a build taking its claim again refreshes it, so one
+still running keeps its own), narrowed by `--arch`, `--package` and `--version`. An S3
+store only: bits-store keeps what is written.
 
 **`bits cvmfs <verb>`** — a deployed CVMFS tree and the producer-side publish pipeline:
 
