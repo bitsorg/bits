@@ -682,15 +682,27 @@ def wrap_build_command(
         # The workdir is mounted at the same absolute path so that all embedded
         # paths (scriptDir, WORK_DIR_OVERRIDE, etc.) resolve correctly inside
         # the container.
+        # bits (BITS_SCRIPT_DIR: its real path), the recipes, the git mirror and /cvmfs
+        # (reused packages) read-only; a development package's source as docker has it.
         from bits_helpers.utilities import cli_environment   # -e NAME: podman takes it here
+        bits_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+        config_dir = getattr(opts, "configDir", None)
+        mirror = os.path.dirname(spec["reference"]) if spec.get("reference") else None
+        read_only = "".join("-v %s " % quote("%s:%s:ro" % (d, d))
+                            for d in dict.fromkeys((bits_dir, config_dir and os.path.abspath(config_dir),
+                                                    mirror, "/cvmfs"))
+                            if d and os.path.isdir(d))
+        if spec.get("is_devel_pkg") and os.path.isdir(spec.get("source") or ""):
+            read_only += "-v %s " % quote("%s:%s" % (spec["source"], spec["source"]))
         return (
             "podman run --rm --userns=keep-id "
-            "-v {wd}:{wd} "
+            "-v {wd}:{wd} {ro}"
             "{net}{passed}"
             "{img} "
             "/bin/bash -c {cmd}"
         ).format(
             wd=quote(workdir),
+            ro=read_only,
             net=network_flag,
             passed="".join("-e %s " % quote(n) for n in cli_environment(getattr(opts, "environment", []))[1]),
             img=quote(image),

@@ -4606,7 +4606,7 @@ Sandboxing is **off by default** (`--sandbox=off`); opt in with `--sandbox=auto`
 
 > **Note.** On a local Linux build without `--docker`, `--sandbox=auto` resolves to `off` and bits never invokes `podman` (not even `podman info`). podman-based recipe isolation on Linux is only engaged when the build runs inside `--docker`, or when it is requested explicitly with `--sandbox=podman` / `--sandbox-image`.
 
-Nested in `--docker`, the podman container gets the outer container's volumes at their container paths (the read-only ones stay read-only: `SOURCES/`, the recipes, `/build.sh`, bits, the mirror) and its environment variables by name. Without `--docker`, the workDir is bind-mounted at the same absolute path inside the podman container so that all paths embedded in the build environment (`$WORK_DIR`, `$INSTALLROOT`, `$SOURCEDIR`, etc.) resolve correctly.
+Nested in `--docker`, the podman container gets the outer container's volumes at their container paths (the read-only ones stay read-only: `SOURCES/`, the recipes, `/build.sh`, bits, the mirror) and its environment variables by name. Without `--docker`, the workDir is bind-mounted at the same absolute path inside the podman container so that all paths embedded in the build environment (`$WORK_DIR`, `$INSTALLROOT`, `$SOURCEDIR`, etc.) resolve correctly. bits itself, the recipes (`-c`), the package's git mirror and `/cvmfs` are mounted read-only at their paths too, and a development package's source read-write.
 
 #### Sandbox modes
 

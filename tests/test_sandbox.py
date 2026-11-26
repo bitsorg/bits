@@ -10,7 +10,9 @@ they run on any platform without requiring podman to be installed.
 from pathlib import Path
 import os
 import shlex
+import shutil
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import patch, mock_open, MagicMock
@@ -440,6 +442,38 @@ class NestedPassthroughTests(unittest.TestCase):
         self.assertNotIn("a b", nested)
         self.assertEqual(argv[-4:], ["img", "bash", "-ex", "/build.sh"])
         self.assertTrue(result.startswith(outer[:outer.rindex("bash -ex /build.sh")]))
+
+
+class LocalReadOnlyTests(unittest.TestCase):
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
+    def test_bits_recipes_and_mirror_read_only(self, _r):
+        cfg, ref = tempfile.mkdtemp(), tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, cfg)
+        self.addCleanup(shutil.rmtree, ref)
+        opts = _opts(sandbox="podman", sandbox_image="img")
+        opts.configDir = cfg
+        spec = dict(_spec(), reference=os.path.join(ref, "zlib"))
+        link = os.path.join(ref, "bits-link")                   # bits reached by a link
+        os.symlink(os.path.dirname(os.path.dirname(os.path.realpath(sandbox.__file__))), link)
+        devel = dict(spec, is_devel_pkg=True, source=cfg)
+        with patch.object(sandbox, "__file__", os.path.join(link, "bits_helpers", "sandbox.py")), \
+             patch("os.path.isdir", lambda d: d != "/cvmfs" and os.path.exists(d)):
+            argv = shlex.split(wrap_build_command(LOCAL_CMD, spec, opts, workdir="/sw"))
+            dargv = shlex.split(wrap_build_command(LOCAL_CMD, devel, opts, workdir="/sw"))
+        vols = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+        bits = os.path.dirname(os.path.dirname(os.path.realpath(sandbox.__file__)))
+        self.assertEqual(vols, ["/sw:/sw", "%s:%s:ro" % (bits, bits), "%s:%s:ro" % (cfg, cfg),
+                                "%s:%s:ro" % (ref, ref)])
+        self.assertEqual(dargv[dargv.index("-v", dargv.index("%s:%s:ro" % (ref, ref))) + 1],
+                         "%s:%s" % (cfg, cfg))                   # its source, read-write
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
+    def test_cvmfs_read_only_when_there(self, _r):
+        opts = _opts(sandbox="podman", sandbox_image="img")
+        with patch("os.path.isdir", lambda d: d == "/cvmfs"):
+            argv = shlex.split(wrap_build_command(LOCAL_CMD, _spec(), opts, workdir="/sw"))
+        self.assertIn("/cvmfs:/cvmfs:ro", argv)
 
 
 # ---------------------------------------------------------------------------
