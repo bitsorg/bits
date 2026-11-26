@@ -8,6 +8,7 @@ import os
 import os.path
 import re
 import sys
+import threading
 import time
 import requests
 from requests.exceptions import RequestException
@@ -777,6 +778,8 @@ class HttpRemoteSync(RemoteSync):
   def getRetry(self, url, dest=None, returnResult=False, log=True, session=None, progress=debug):
     get = session.get if session is not None else requests.get
     url = quote(url, safe=":/")
+    # Its own temporary file: two processes (or threads) fetching one file must not share one.
+    tmp = "%s.%d.%d.tmp" % (dest, os.getpid(), threading.get_ident()) if dest else None
     for i in range(0, self.httpConnRetries):
       if i > 0:
         pauseSec = self.httpBackoff * (2 ** (i - 1))
@@ -806,7 +809,7 @@ class HttpRemoteSync(RemoteSync):
           result = []
 
           try:
-            destFp = open(dest+".tmp", "wb") if dest else None
+            destFp = open(tmp, "wb") if dest else None
             for chunk in filter(bool, resp.iter_content(chunk_size=32768)):
               if destFp:
                 destFp.write(chunk)
@@ -827,7 +830,7 @@ class HttpRemoteSync(RemoteSync):
           if size not in (downloaded, -1):
             raise PartialDownloadError(downloaded, size)
           if dest:
-            os.rename(dest+".tmp", dest)  # we should not have errors here
+            os.rename(tmp, dest)  # we should not have errors here
           return b''.join(result) if returnResult else True
         else:
           # For CERN S3 we need to construct the JSON ourself...
@@ -855,7 +858,7 @@ class HttpRemoteSync(RemoteSync):
           error("GET %s failed: %s", url, e)
         if dest:
           try:
-            os.unlink(dest+".tmp")
+            os.unlink(tmp)
           except Exception:
             pass
     return None

@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** An HTTP store download writes its own temporary file (per process and thread): two fetches of one file, by two bits runs in one work dir, wrote into the same `<file>.tmp`.
 - **[Fix]** A read store and a write store of different kinds always get one helper each: an `rsync` or `s3://` read store with a `b3://` write store handed the b3 URL to the rsync or s3cmd backend as its write store.
 - **[Fix]** A restricted build whose revision marker bits-store refuses is kept on this host with a warning, as when the build itself is refused: the marker error stopped it.
 - **[Fix]** After uploading a tarball to a `b3://` store, bits reads back the sha256 the store holds and records that one (and that the object is not this build's): two builds of one hash that both found no object both uploaded, and the one overwritten recorded a sha256 the store no longer had. This narrows the race; an upload finishing after the read-back is still missed.
