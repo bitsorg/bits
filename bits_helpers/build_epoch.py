@@ -58,7 +58,8 @@ COVERED = (
 # relocate-me.sh reads .bits-pkginfo instead of sourcing it: relocation is unchanged.
 # A reused tarball packed here or certified is not listed before it is unpacked: what is installed is unchanged.
 # relocate-me.sh refuses a .bits-relocate entry through a link out of the package: relocation is unchanged.
-COVERED_SHA256 = "9708c074bd30f96ee6a019b76dac3988e6c2be41a56c5eda5de31c70a2616b4b"
+# relocate-me.sh takes an entry's directory without forking dirname: relocation is unchanged.
+COVERED_SHA256 = "b72ae1e4f0218d585084936da45c627921fb004ae21cdd6c56ac74a2d03234d4"
 
 
 def covered_sha256(root=None):

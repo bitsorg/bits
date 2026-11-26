@@ -591,12 +591,14 @@ def relocate_dependencies(pkgroot, targets):
     with open(listing) as fh:
         rels = [l.rstrip("\n") for l in fh if l.strip()]
     leftover = []
+    root = os.path.realpath(pkgroot) + os.sep
     for rel in rels:
         if os.path.isabs(rel) or ".." in rel.split("/"):
             continue   # relocate-me.sh only edits files in the package
         f = os.path.join(pkgroot, rel)
-        if os.path.islink(f) or not os.path.isfile(f):
-            continue
+        if os.path.islink(f) or not os.path.isfile(f) or \
+           not (os.path.realpath(os.path.dirname(f)) + os.sep).startswith(root):
+            continue   # nor one through a directory link out of it
         with open(f, "rb") as fh:
             data = fh.read()
 

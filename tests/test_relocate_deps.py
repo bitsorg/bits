@@ -103,6 +103,19 @@ class TestRelocateDependencies(unittest.TestCase):
         self.assertEqual(os.stat(os.path.join(self.root, "bin", "tool")).st_mode & 0o777, 0o755)
         self.assertTrue(os.path.islink(os.path.join(self.root, "bin", "link")))
 
+    def test_not_through_a_directory_link_out_of_the_package(self):
+        outside = os.path.join(self.t, "outside")
+        os.makedirs(outside)
+        victim = os.path.join(outside, "victim")
+        with open(victim, "w") as fh:
+            fh.write("%s/%s/ROOT/6.36-1\n" % (W, A))
+        os.symlink(outside, os.path.join(self.root, "out"))
+        with open(os.path.join(self.root, "etc", "profile.d", ".bits-relocate"), "a") as fh:
+            fh.write("out/victim\n")
+        self._relocate()
+        self.assertEqual(_read(outside, "victim"), "%s/%s/ROOT/6.36-1\n" % (W, A))
+        self.assertNotIn(W + "/" + A + "/ROOT", _read(self.root, "env_setup.sh"))   # the rest
+
     def test_a_referenced_dependency_without_a_path_stops_the_publish(self):
         ctx = dict(CTX, templates=dict(TM, packages="{prefix}/{release}/{pkg}/{tag}"))
         with self.assertRaisesRegex(SystemExit, r"refers to .* no CVMFS path: unresolved \{release\}"):
