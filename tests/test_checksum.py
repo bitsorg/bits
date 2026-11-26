@@ -351,7 +351,8 @@ class TestDownloadChecksum(unittest.TestCase):
         with patch("bits_helpers.download.abspath", return_value=self.tmp), \
              patch("bits_helpers.download.join", side_effect=os.path.join), \
              patch("bits_helpers.download.exists", return_value=True), \
-             patch("bits_helpers.download.getUrlChecksum", return_value="XX" * 2):
+             patch("bits_helpers.download.getUrlChecksum", return_value="XX" * 2), \
+             patch("shutil.copy"):                          # the file exists only as mocked
             from bits_helpers.download import download
             download("https://example.com/foo.tar.gz", self.tmp, self.tmp)
 

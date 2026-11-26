@@ -735,8 +735,8 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
             try:
                 os.makedirs(dest, exist_ok=True)
                 shutil.copy(realFile, dest)
-            except OSError as exc:
-                info("Failed to move source %s to %s: %s", realFile, dest, exc)
+            except OSError as exc:   # else the build fails later, at the extraction
+                raise OSError("Could not copy source %s to %s: %s" % (realFile, dest, exc)) from exc
     else:
         raise OSError("Unable to download source {} in to {}".format(source, downloadDir))
     return realFile

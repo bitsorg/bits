@@ -96,6 +96,15 @@ class NoShellTest(unittest.TestCase):
     self.assertFalse(os.path.exists(os.path.join(self.work, "pwned")))
 
 
+  def test_a_source_that_cannot_be_copied_stops_the_download(self):
+    def fetch(source, dest_dir, work_dir):
+      with open(os.path.join(dest_dir, "y.tar.gz"), "w") as f:
+        f.write("y")
+    with patch.dict(dl.downloadHandlers, {"https": fetch}), \
+         patch("shutil.copy", side_effect=OSError("No space left on device")), \
+         self.assertRaisesRegex(OSError, "Could not copy source .*No space"):
+      dl.download("https://example.org/y.tar.gz", os.path.join(self.work, "src"), self.work)
+
   def test_a_copy_failing_its_checksum_is_not_kept(self):
     import hashlib
     calls = []

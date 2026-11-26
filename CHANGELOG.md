@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A downloaded source that cannot be copied into the package's source directory (disk full, permissions) stops the download with that error; it was only logged, and the build failed later at the extraction.
 - **[Fix]** A recipe's `prefer_system` and system-requirement checks, and `pip download` of a source package (which runs its build code), get no credentials (pip keeps its own `PIP_*` settings and proxies). They had all but the S3 keys, or everything.
 - **[Feature]** `--container-engine podman` (or `BITS_CONTAINER_ENGINE=podman`) runs bits' containers with podman instead of docker, rootless: no root daemon, and a recipe leaving its container has only the user's privileges. For `bits build`, `deps`, `doctor` and `status`; scripts bits starts see the choice in `$BITS_CONTAINER_ENGINE`.
 - **[Change]** With `--docker`, the recipe sandbox (`--sandbox auto` or `podman`) is the build container itself: it runs with `--network=none` unless the recipe allows the network (`sandbox_network: off`), and sees only its mounts. The nested podman inside it is gone: rootless podman cannot start in a container running as the user ("failed to reexec: Permission denied"), so it needed podman in the image and privileges that defeat the protection. A recipe that fetches during its build (pip or cargo through bits-store, git-lfs) needs `sandbox_network: off` under `--sandbox auto`.
