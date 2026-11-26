@@ -1004,12 +1004,64 @@ class TestGroupFromPath(unittest.TestCase):
         tags = {p["hash"]: p.get("group") for p in common["packages"]}
         self.assertEqual(tags, {"hl": "lcg", "hc": "common"})
 
-    def test_explicit_entry_group_beats_directory(self):
+    def test_an_entry_naming_another_group_is_refused(self):
+        # It would choose its approvers: under manifests/lhcb/, "common" needs none of lhcb's.
         self._write("lcg", "b.json",
                     _manifest("b", [_pkg("X", "hx", "sha256:x", group="special")]))
+        with self.assertRaisesRegex(certify.CertifyError, "names group special"):
+            certify.merge_common_manifest(
+                certify.load_build_manifests(os.path.join(self.tmp, "manifests")))
+        with self.assertRaisesRegex(certify.CertifyError, "names group special"):
+            certify.merge_common_manifest(
+                [_manifest("b", [_pkg("X", "hx", "sha256:x", group="special")])], "lcg")
+        same = certify.merge_common_manifest(
+            [_manifest("b", [_pkg("X", "hx", "sha256:x", group="lcg")])], "lcg")
+        self.assertEqual(same["packages"][0]["group"], "lcg")
+
+    def test_the_group_of_a_deeper_file_is_its_directory_under_manifests(self):
+        d = os.path.join(self.tmp, "manifests", "lhcb", "sub")
+        os.makedirs(d)
+        with open(os.path.join(d, "b.json"), "w") as fh:
+            json.dump(_manifest("b", [_pkg("X", "hx", "sha256:x", group="common")]), fh)
+        with self.assertRaisesRegex(certify.CertifyError, "names group common"):
+            certify.merge_common_manifest(
+                certify.load_build_manifests(os.path.join(self.tmp, "manifests")))
+
+    def test_the_group_is_found_below_the_source_only(self):
+        for rel, source, want in ((("manifests", "lhcb", "manifests", "common", "x.json"), "manifests", "lhcb"),
+                                  (("manifests", "lhcb", "x.json"), "", "lhcb"),
+                                  (("manifests", "x.json"), "manifests", None),
+                                  (("manifests", "sw", "MANIFESTS", "x.json"), "manifests/sw/MANIFESTS", None),
+                                  (("manifests", "lhcb", "y.json"), "manifests/lhcb", "lhcb")):
+            os.makedirs(os.path.join(self.tmp, *rel[:-1]), exist_ok=True)
+            with self.subTest(rel=rel, source=source):
+                self.assertEqual(certify._directory_group(os.path.join(self.tmp, source),
+                                                          os.path.join(self.tmp, *rel)), want)
+        lone = os.path.join(self.tmp, "manifests", "lcg", "f.json")
+        self.assertEqual(certify._directory_group(lone, lone), "lcg")   # a single file
+        for f in (("lcg", "sub", "f.json"), ("lhcb", "manifests", "common", "f.json")):
+            f = os.path.join(self.tmp, "manifests", *f)
+            self.assertIsNone(certify._directory_group(f, f))
+
+    def test_changed_groups_needs_every_manifest_in_a_group(self):
+        flat = os.path.join(self.tmp, "flat.json")
+        with open(flat, "w") as fh:
+            json.dump(_manifest("b-flat", [_pkg("X", "hx", "sha256:x", group="common")]), fh)
+
+        class Parser:
+            def error(self, msg):
+                raise SystemExit(msg)
+        args = SimpleNamespace(requireApproval=True, manifests=[flat], changedGroups="lhcb", group=None)
+        with patch.object(certify, "_make_approval_check", return_value=lambda c: []), \
+             self.assertRaisesRegex(SystemExit, "needs each manifest under manifests/<group>/.*b-flat"):
+            certify.doSign(args, Parser())
+
+    def test_a_file_does_not_name_its_own_directory(self):
+        self._write("lcg", "b.json", dict(_manifest("b", [_pkg("X", "hx", "sha256:x")]),
+                                          _source_group="common"))
         common = certify.merge_common_manifest(
             certify.load_build_manifests(os.path.join(self.tmp, "manifests")))
-        self.assertEqual(common["packages"][0]["group"], "special")
+        self.assertEqual(common["packages"][0]["group"], "lcg")
 
 
 class TestProbeBinding(unittest.TestCase):

@@ -352,7 +352,9 @@ published build manifests into one signed common manifest (the trust unit), afte
 validating every hash against the S3 store (`--remote-store`; `--store` is the
 deprecated spelling). Instead of a local `--key`, CI can sign through a signing
 proxy (`--sign-via-proxy`) or the bits-console signing service
-(`--sign-via-service`). `--group` tags entries with a group; `--no-store-check`
+(`--sign-via-service`). An entry's group is its BOM's directory
+(`manifests/<group>/`), else `--group`; an entry naming another is refused.
+`--no-store-check`
 does an offline dry merge. In the manifests-repo CI,
 `--require-approval --admins ADMINS` refuses to sign unless the certifier is an
 authorised admin. The identity is established in one of three ways (in order):

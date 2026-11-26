@@ -1282,8 +1282,9 @@ def add_sign_arguments(subparsers, ctx):
                                     "manifest is keyed on). Required with --sign-via-service; "
                                     "falls back to BITS_BUILD_ID."))
   certify_parser.add_argument("--group", dest="group", metavar="GROUP", default=None,
-                              help=("Tag entries that lack a group with GROUP, so the consumer trust filter "
-                                    "(--trust-groups) can scope reuse. Use 'common' for the shared base layer."))
+                              help=("The group of entries outside manifests/<group>/ (that directory gives "
+                                    "theirs; an entry naming another group is refused), so the consumer trust "
+                                    "filter (--trust-groups) can scope reuse. Use 'common' for the shared base layer."))
   certify_parser.add_argument("--require-approval", dest="requireApproval", action="store_true", default=False,
                               help=("Refuse to sign unless a listed group admin approved the merge request "
                                     "(read from the forge — GitLab CI env). Defence-in-depth over CODEOWNERS."))

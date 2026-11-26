@@ -805,8 +805,8 @@ def _but_group(e):
 
 
 def _certified_by_group(conn, arch, e):
-    """Whether a BOM live in the set lists *e*'s object for *e*'s group (the
-    entry's own group, else its BOM's, as the merge reads it)."""
+    """Whether a BOM live in the set lists *e*'s object for *e*'s group (its BOM's
+    group, as the merge reads it: an entry naming another certifies nothing)."""
     group = str(e.get("group") or "").lower()
     for r in conn.execute("SELECT c.grp, b.body FROM certified c JOIN boms b ON"
                           " b.sha256 = c.bom_sha256 WHERE c.removed_version IS NULL AND"
@@ -817,7 +817,8 @@ def _certified_by_group(conn, arch, e):
             continue
         if any(isinstance(x, dict) and x.get("hash") == e.get("hash")
                and x.get("tarball_sha256") == e.get("tarball_sha256")
-               and str(x.get("group") or r["grp"]).lower() == group for x in entries):
+               and x.get("group") in (None, "", r["grp"]) and str(r["grp"]).lower() == group
+               for x in entries):
             return True
     return False
 

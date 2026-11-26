@@ -1075,6 +1075,22 @@ class OwnedSetTest(_StoreBase):
         why = certifier.removal_only(self.settings, self.deps.store(), "el9", new, self.conn)
         self.assertIn("would add 1 entr", why)
 
+    def test_an_entry_naming_another_group_than_its_bom_vouches_for_none(self):
+        key = "%s-el9.json" % certifier.write_prefix(self.settings)
+        old = json.dumps({"packages": [dict(_pkg("Secret", "h5"), group="lcg")],
+                          "sequence": 1}).encode()
+        self.s3.docs[key] = old
+        self.s3.docs[key + ".sig"] = json.dumps(
+            trust.sign_bytes(old, trust.load_private_key(self.key))).encode()
+        bom = _bom("b8", "el9", ("Secret", "h5"))
+        bom["packages"] = [dict(e, group="ship") for e in bom["packages"]]
+        with db.transaction(self.conn):                    # under lcg/, saying ship
+            certified.change(self.conn, add={"lcg/b8.el9.host-1.json": json.dumps(bom).encode()})
+        new = json.dumps({"packages": [dict(_pkg("Secret", "h5"), group="ship")],
+                          "sequence": 2}).encode()
+        why = certifier.removal_only(self.settings, self.deps.store(), "el9", new, self.conn)
+        self.assertIn("would add 1 entr", why)
+
     def test_a_withdrawal_adds_no_approvals(self):
         key = "%s-el9.json" % certifier.write_prefix(self.settings)
         alice, mallory = {"as": "certify", "by": "alice"}, {"as": "upload", "by": "mallory"}

@@ -81,6 +81,20 @@ def norm_sha(value) -> str:
     return s.split(":", 1)[1] if ":" in s else s
 
 
+def _directory_group(source, path):
+    """The group of the manifest *path* found under *source*: the directory below the
+    first ``manifests`` from *source*'s parent down (``manifests/<group>/...``), else None."""
+    if os.path.isdir(source):
+        base = os.path.normpath(source)
+        parts = base.split(os.sep)[-2:] + os.path.relpath(path, base).split(os.sep)
+    elif os.path.normpath(path).split(os.sep).count("manifests") > 1:
+        return None   # a single file: which one is ambiguous
+    else:
+        parts = os.path.normpath(path).split(os.sep)[-3:]
+    at = [i for i, c in enumerate(parts[:-2]) if c == "manifests"]
+    return parts[at[0] + 1] if at else None
+
+
 def load_build_manifests(source) -> list:
     """Return a list of build-manifest dicts from *source*.
 
@@ -111,9 +125,10 @@ def load_build_manifests(source) -> list:
             # manifests/<group>/<build_id>.json. Record it so merge tags entries
             # by their directory rather than defaulting untagged ones to 'common'.
             if isinstance(man, dict):
-                parts = os.path.normpath(p).split(os.sep)
-                if len(parts) >= 3 and parts[-3] == "manifests":
-                    man.setdefault("_source_group", parts[-2])
+                man.pop("_source_group", None)   # the file's own say: none
+                group = _directory_group(it, p)
+                if group:
+                    man["_source_group"] = group
             out.append(man)
     return out
 
@@ -244,8 +259,8 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
     bytes, or confirming several claims, stays fatal — independent of the order
     of the BOMs.
 
-    *default_group* stamps a ``group`` on entries that don't already carry one,
-    so a per-group certification tags its batch for the consumer trust filter.
+    Every entry gets its manifest's group: the directory's (``manifests/<group>/``),
+    else *default_group*; an entry naming another is refused (CertifyError).
     """
     # The store is content-addressed *per architecture*: a package's tarball
     # lives at TARS/<effective_architecture>/store/<hash>/... So the identity of
@@ -267,9 +282,8 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
         bid = man.get("build_id")
         if bid and bid not in sources:
             sources.append(bid)
-        # Group precedence: explicit entry group > the manifest's directory group
-        # (manifests/<group>/) > the run-wide --group. Prevents untagged entries
-        # from silently becoming cluster-wide 'common'.
+        # The group is the manifest's directory's (manifests/<group>/), else the run's
+        # --group: an entry naming another is refused (it would choose its approvers).
         man_group = man.get("_source_group") or default_group
         for e in man.get("packages") or []:
             if not isinstance(e, dict):
@@ -280,7 +294,11 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
                 continue
             arch = e.get("effective_architecture") or ""
             entry = {k: e[k] for k in _PKG_FIELDS if k in e}
-            if not entry.get("group") and man_group:
+            if man_group and entry.get("group") not in (None, "", man_group):
+                raise CertifyError("%s: %s@%s names group %s, but the manifest is %s's"
+                                   % (bid or "a build manifest", e.get("package"),
+                                      e.get("version"), entry["group"], man_group))
+            if man_group:
                 entry["group"] = man_group
             # Stamp the bits fingerprint of the build that produced this object.
             # These live at the manifest level (one bits version per build), so
@@ -492,7 +510,7 @@ def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
     Raises :class:`CertifyConflict` on a hash/sha256 conflict and
     :class:`CertifyError` if store validation finds any problem. When *probe* is
     None the store-validation step is skipped (use only when the caller has
-    already validated, e.g. a dry merge). *default_group* tags untagged entries;
+    already validated, e.g. a dry merge). *default_group* is the group of entries outside ``manifests/<group>/``;
     *valid_days*/*source_commit* stamp the offline-freshness fields (P5).
     *approval_check(common) -> approvers* gates on group-admin approval and, when
     it returns approver usernames, they are recorded as ``certified_by`` so the
@@ -923,6 +941,14 @@ def doSign(args, parser):
     sources = list(getattr(args, "manifests", None) or [])
     if not sources:
         sources = [os.path.join(args.workDir, "MANIFESTS")]
+    if approval_check is not None and getattr(args, "changedGroups", None) \
+       and not getattr(args, "group", None):
+        sources = load_build_manifests(sources)   # each must be in its group's directory
+        stray = [m.get("build_id") or "?" for m in sources
+                 if isinstance(m, dict) and not m.get("_source_group")]
+        if stray:
+            parser.error("--changed-groups needs each manifest under manifests/<group>/ (or "
+                         "--group): not %s" % ", ".join(stray[:5]))
     probe = None
     if not getattr(args, "noStoreCheck", False):
         _refuse_orchestrated(args.certifyStore, args.workDir, args.architecture, parser)
