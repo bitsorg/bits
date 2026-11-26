@@ -279,30 +279,6 @@ def resolve_gitlab_token(explicit=None):
     return None
 
 
-def parse_git_remote(url):
-    """Return ``(api_url, project_path)`` from a git remote URL, or ``(None, None)``.
-
-    Handles ``ssh://git@host:port/path/repo.git``, scp-style ``git@host:path/repo.git``,
-    and ``https://host/path/repo.git``. The API base is ``https://<host>/api/v4``;
-    triggering a pipeline always uses this HTTPS API + a PAT, even when the repo is
-    pushed over SSH.
-    """
-    from urllib.parse import urlparse
-    u = (url or "").strip()
-    host = path = None
-    if u.startswith(("ssh://", "http://", "https://")):
-        p = urlparse(u)
-        host, path = p.hostname, p.path.lstrip("/")
-    elif "@" in u and ":" in u:
-        hostpart, path = u.split(":", 1)
-        host = hostpart.split("@")[-1]
-    if not host or not path:
-        return (None, None)
-    if path.endswith(".git"):
-        path = path[:-4]
-    return ("https://%s/api/v4" % host, path.strip("/"))
-
-
 def gitlab_create_pipeline(api_url, token, project, ref="main", variables=None,
                            timeout=30) -> dict:
     """Create a pipeline on *ref* as the PAT owner. Returns ``{id, web_url}``.
@@ -323,11 +299,6 @@ def gitlab_create_pipeline(api_url, token, project, ref="main", variables=None,
     return {"id": data.get("id"), "web_url": data.get("web_url")}
 
 
-def _gl_project_url(api_url, project):
-    from urllib.parse import quote
-    return "%s/projects/%s" % (api_url.rstrip("/"), quote(str(project), safe=""))
-
-
 def _gl_ok(resp):
     """raise_for_status, but include GitLab's response body (it explains 400s)."""
     if not getattr(resp, "ok", True):
@@ -339,129 +310,6 @@ def _gl_ok(resp):
         raise RuntimeError("GitLab %s %s: %s"
                            % (resp.status_code, getattr(resp, "reason", ""), body))
     return resp
-
-
-def gitlab_default_branch(api_url, token, project, timeout=15):
-    """Return the project's default branch (e.g. ``main`` or ``master``)."""
-    import requests
-    resp = requests.get(_gl_project_url(api_url, project),
-                        headers={"PRIVATE-TOKEN": token}, timeout=timeout)
-    _gl_ok(resp)
-    return (resp.json() or {}).get("default_branch")
-
-
-def gitlab_create_commit(api_url, token, project, branch, start_branch,
-                         file_path, content, message, timeout=30) -> dict:
-    """Create *branch* off *start_branch* with one commit (commits API).
-
-    *file_path*/*content* name a single file, or *file_path* may be a list of
-    ``(path, content)`` pairs (with *content* ignored) so one commit can add
-    several files — e.g. one per-platform BOM each for a multi-arch build.
-    """
-    import requests
-    files = file_path if isinstance(file_path, (list, tuple)) else [(file_path, content)]
-    payload = {
-        "branch": branch, "start_branch": start_branch, "commit_message": message,
-        "actions": [{"action": "create", "file_path": p, "content": c}
-                    for p, c in files],
-    }
-    resp = requests.post("%s/repository/commits" % _gl_project_url(api_url, project),
-                         headers={"PRIVATE-TOKEN": token}, json=payload, timeout=timeout)
-    _gl_ok(resp)
-    return resp.json() or {}
-
-
-def gitlab_create_merge_request(api_url, token, project, source_branch, target_branch,
-                                title, description="", timeout=30) -> dict:
-    """Open an MR; returns ``{iid, web_url}``."""
-    import requests
-    payload = {"source_branch": source_branch, "target_branch": target_branch,
-               "title": title, "description": description,
-               "remove_source_branch": True}
-    resp = requests.post("%s/merge_requests" % _gl_project_url(api_url, project),
-                         headers={"PRIVATE-TOKEN": token}, json=payload, timeout=timeout)
-    _gl_ok(resp)
-    data = resp.json() or {}
-    return {"iid": data.get("iid"), "web_url": data.get("web_url")}
-
-
-# Merge statuses that pass by themselves: GitLab is still working out whether
-# the MR can merge (it rechecks every open MR when the target branch moves, e.g.
-# after another certification merged). detailed_merge_status, and the older
-# merge_status values.
-_MERGE_PENDING = frozenset({"unchecked", "checking", "preparing", "approvals_syncing",
-                            "mergeable", "can_be_merged", "cannot_be_merged_recheck"})
-
-
-def gitlab_merge_mr(api_url, token, project, iid, timeout=30, sha=None, wait=300,
-                    sleep=None, clock=None) -> dict:
-    """Merge an MR (PUT …/merge). Raises on failure (e.g. not mergeable).
-
-    A refusal while GitLab is still checking the MR's mergeability (or still
-    merging it: state locked) is retried for up to *wait* seconds; any other
-    refusal (conflict, draft, closed, pipeline required…) raises at once, naming
-    the status. With *sha*, only that head commit is merged (GitLab refuses with
-    409 if the MR moved on since it was validated), and an MR found merged
-    already counts only if *sha* is what was merged.
-    """
-    import time
-    import requests
-    sleep = sleep or time.sleep
-    clock = clock or time.monotonic
-    url = "%s/merge_requests/%s" % (_gl_project_url(api_url, project), iid)
-    headers = {"PRIVATE-TOKEN": token}
-    deadline = clock() + wait
-    pause = 3
-    while True:
-        try:
-            resp = requests.put(url + "/merge", headers=headers,
-                                json={"sha": sha} if sha else None, timeout=timeout)
-        except requests.exceptions.Timeout:
-            resp = None                       # it may have merged: look at the MR
-        if resp is not None and resp.status_code not in (405, 406, 422):
-            _gl_ok(resp)
-            return resp.json() or {}
-        info = requests.get(url, headers=headers, timeout=timeout)
-        _gl_ok(info)
-        mr = info.json() or {}
-        status = mr.get("detailed_merge_status") or mr.get("merge_status") or "?"
-        code = resp.status_code if resp is not None else "timeout"
-        if mr.get("state") == "merged":
-            if sha and mr.get("sha") == sha:
-                return mr
-            raise RuntimeError("MR !%s is merged already, %s" % (
-                iid, "at %s, not the validated %s" % (mr.get("sha"), sha) if sha
-                else "and which commit was validated is not known"))
-        if not (mr.get("state") == "locked"
-                or (mr.get("state") == "opened" and status in _MERGE_PENDING)):
-            raise RuntimeError("GitLab refused to merge MR !%s: %s (state %s, %s)"
-                               % (iid, status, mr.get("state"), code))
-        if clock() + pause > deadline:
-            raise RuntimeError("GitLab refused to merge MR !%s for %ds: still %s"
-                               % (iid, wait, status))
-        warning("MR !%s not mergeable yet (%s); trying again in %ds", iid, status, pause)
-        sleep(pause)
-        pause = min(pause * 2, 30)
-
-
-def gitlab_mr_author(api_url, token, project, iid, timeout=15):
-    """Return the username that opened MR *iid* (the certification initiator)."""
-    import requests
-    resp = requests.get("%s/merge_requests/%s" % (_gl_project_url(api_url, project), iid),
-                        headers={"PRIVATE-TOKEN": token}, timeout=timeout)
-    _gl_ok(resp)
-    return ((resp.json() or {}).get("author") or {}).get("username")
-
-
-def gitlab_mr_iid_for_commit(api_url, token, project, sha, timeout=15):
-    """Return the iid of the merged MR that introduced *sha*, or None."""
-    import requests
-    resp = requests.get(
-        "%s/repository/commits/%s/merge_requests" % (_gl_project_url(api_url, project), sha),
-        headers={"PRIVATE-TOKEN": token}, timeout=timeout)
-    _gl_ok(resp)
-    merged = [m for m in (resp.json() or []) if (m or {}).get("state") == "merged"]
-    return merged[0].get("iid") if merged else None
 
 
 def gitlab_group_members(api_url, token, group_ref, timeout=15, inherited=True) -> set:
