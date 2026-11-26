@@ -701,7 +701,13 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
     if exists(realFile):
         # Verify checksum against the cached copy (covers both fresh downloads
         # and cache hits so a corrupted cache entry is caught on the next use).
-        check_file(realFile, filename, checksum, enforce_mode)
+        try:
+            check_file(realFile, filename, checksum, enforce_mode)
+        except SystemExit:
+            from bits_helpers.checksum import verify_file
+            if checksum and not verify_file(realFile, checksum):
+                os.unlink(realFile)    # a copy failing its checksum is fetched anew next time
+            raise
         # Archive to the write store when the file came from the upstream URL
         # (i.e. it was not already in the local cache or the remote store).
         # This ensures every new download is preserved for future builds.

@@ -89,5 +89,25 @@ class NoShellTest(unittest.TestCase):
     self.assertFalse(os.path.exists(os.path.join(self.work, "pwned")))
 
 
+  def test_a_copy_failing_its_checksum_is_not_kept(self):
+    import hashlib
+    calls = []
+
+    def fetch(source, dest_dir, work_dir):
+      calls.append(source)
+      with open(os.path.join(dest_dir, "x.tar.gz"), "w") as f:
+        f.write("truncated" if len(calls) == 1 else "good")
+    good = "sha256:" + hashlib.sha256(b"good").hexdigest()
+    with patch.dict(dl.downloadHandlers, {"https": fetch}):
+      with self.assertRaises(SystemExit):
+        dl.download("https://example.org/x.tar.gz", None, self.work, checksum=good, enforce_mode="enforce")
+      dl.download("https://example.org/x.tar.gz", None, self.work, checksum=good, enforce_mode="enforce")
+      self.assertEqual(len(calls), 2)                    # fetched anew, now right
+      with self.assertRaises(SystemExit):                # no checksum declared: kept
+        dl.download("https://example.org/x.tar.gz", None, self.work, checksum=None, enforce_mode="enforce")
+      dl.download("https://example.org/x.tar.gz", None, self.work, checksum=good, enforce_mode="enforce")
+    self.assertEqual(len(calls), 2)
+
+
 if __name__ == "__main__":
   unittest.main()
