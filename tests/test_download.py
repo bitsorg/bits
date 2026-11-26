@@ -109,5 +109,23 @@ class NoShellTest(unittest.TestCase):
     self.assertEqual(len(calls), 2)
 
 
+
+class UrllibTest(unittest.TestCase):
+  def setUp(self):
+    self.work = tempfile.mkdtemp()
+    self.addCleanup(shutil.rmtree, self.work)
+
+  def test_a_url_with_a_login(self):
+    import io
+    seen = []
+
+    def urlopen(req, *a, **kw):
+      seen.append((req.full_url, req.get_header("Authorization")))
+      return io.BytesIO(b"data")
+    with patch("bits_helpers.download.urlopen", side_effect=urlopen):
+      self.assertTrue(dl.downloadUrllib2("https://user:pw@example.org/x.tgz", self.work, self.work))
+    self.assertEqual(seen, [("https://example.org/x.tgz", "Basic dXNlcjpwdw==")])
+
+
 if __name__ == "__main__":
   unittest.main()

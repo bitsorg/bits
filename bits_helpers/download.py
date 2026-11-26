@@ -157,7 +157,7 @@ def downloadUrllib2(source, destDir, work_dir, dest_filename=None):
         m = urlAuthRe.match(source)
         if m:
             source = m.group(1)+m.group(4)
-            headers['Authorization'] = "Basic %s" % base64.b64encode(m.group(3))
+            headers['Authorization'] = "Basic %s" % base64.b64encode(m.group(3).encode()).decode()
         req = Request(source, headers=headers)
         s = urlopen(req)
         tmpfile = "{}.{:f}.tmp".format(dest, time())
