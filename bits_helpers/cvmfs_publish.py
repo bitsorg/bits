@@ -1482,7 +1482,8 @@ def publish_one(spec, ctx):
 
         relativise_symlinks(pkgroot)
         sanitize(pkgroot)
-        _fp = tree_fingerprint(pkgroot)   # content of the tree that goes into the tar
+        # The tree's content, for a dry run's FINGERPRINT line only: a read of it all.
+        _fp = None if ctx.get("submit", True) else tree_fingerprint(pkgroot)
         mtime = _publish_mtime(spec, ctx)   # the time its published files get
 
         if not skip_pkg:

@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Improvement]** `bits cvmfs-publish` reads and hashes each package's tree for its fingerprint only on a dry run, which prints it: every real publish read and hashed everything it published once more for nothing.
 - **[Fix]** An HTTP(S)/FTP source download gives up after 120 s without an answer, keeps nothing when the body is shorter than its Content-Length, and leaves no temporary file on an error: a stalled server held the worker (and every build waiting on its sentinel), and a truncated archive was cached as complete.
 - **[Fix]** A source URL with a login (`https://user:password@host/…`) is fetched with it: encoding it raised a TypeError, reported only at debug level as a failed download.
 - **[Fix]** A cached source that fails its declared checksum (`--enforce-checksums`, or `checksum_mode: enforce`) is removed, so the next run fetches it anew: the bad copy stayed in the cache and every later build stopped on it.
