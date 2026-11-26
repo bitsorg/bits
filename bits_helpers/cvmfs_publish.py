@@ -13,6 +13,7 @@ Increment 1 (this file): the SINGLE-package pipeline `publish_one`, proven to
 reproduce the CI's output (same staging prefix + catalog hash) for one package.
 The concurrent biggest-first driver is added next, on top of this.
 """
+import glob
 import json
 import os
 import re
@@ -1376,6 +1377,43 @@ def _publish_mtime(spec, ctx):
     return int(time.time())
 
 
+def certified_tarball(spec, ctx, tar_gz, fetch_dir):
+    """*tar_gz* when its sha256 is the one the manifest certifies (tarball_sha256), else
+    that object fetched from the store (ctx["store"]) into *fetch_dir*. The build may
+    have packed its own copy of a hash the store already held: what goes to CVMFS is
+    what was certified. A manifest without the field (older bits) is taken as it is."""
+    from bits_helpers.checksum import checksum_file
+    label = "%s@%s" % (spec.get("package"), spec.get("version"))
+    want = spec.get("tarball_sha256")
+    if not want:
+        print("WARNING: %s: the manifest records no tarball_sha256; %s is published unchecked"
+              % (label, tar_gz), file=sys.stderr)
+        return tar_gz
+    if checksum_file(tar_gz) == want:
+        return tar_gz
+    stores = [u.strip().split("::")[0] for u in (ctx.get("store") or "").split(",") if u.strip()]
+    from bits_helpers.sync import remote_from_url
+    arch = spec.get("effective_architecture") or ctx["arch"]
+    fspec = {k: spec.get(k) for k in ("package", "version", "revision", "hash")}
+    fspec["remote_hashes"] = [spec.get("hash")]
+    for n, url in enumerate(stores):    # in order; any object of the hash, by its sha256
+        where = os.path.join(fetch_dir, str(n))
+        os.makedirs(where, exist_ok=True)
+        try:
+            remote_from_url(url, "", arch, where).fetch_tarball(fspec)
+        except (Exception, SystemExit) as exc:   # pylint: disable=broad-except
+            print("WARNING: %s: store %s: %s" % (label, url, exc), file=sys.stderr)
+            continue
+        hash_dir = os.path.join(where, "TARS", arch, "store", spec["hash"][:2], spec["hash"])
+        for got in sorted(glob.glob(os.path.join(hash_dir, "*.tar.gz"))):
+            if checksum_file(got) == want:
+                print("%s: the local tarball is another packing of the hash; publishing the "
+                      "certified one from %s" % (label, url), file=sys.stderr)
+                return got
+    raise SystemExit("%s: %s is not the tarball the manifest certifies (%s), and no store "
+                     "(--store: %s) has it" % (label, tar_gz, want, ", ".join(stores) or "none"))
+
+
 def publish_one(spec, ctx):
     """Full producer pipeline for ONE package, staged OR ingest path. Mirrors the CI loop
     body: locate tar -> untar -> resolve path -> relocate -> relativise -> tar ->
@@ -1449,14 +1487,17 @@ def publish_one(spec, ctx):
             raise AlreadyPublished(path)   # published; no tar here for its modulefile
         return []   # no tar (system-provided): the caller reports it as SKIPPED
 
-    # The build's tar-slip guard (build_template.sh): no member may land outside.
-    names = subprocess.run(["tar", "-tzf", tar_gz], check=True, stdout=subprocess.PIPE).stdout
-    if re.search(rb"(^|\n)(/|(.*/)?\.\.(/|\n|$))", names):
-        raise SystemExit("%s@%s: %s has absolute or climbing member paths: not unpacked"
-                         % (pkg, vdir, tar_gz))
-    work_dir = tempfile.mkdtemp(prefix="pub-", dir=ctx.get("tmp_dir") or None)
+    pub_dir = tempfile.mkdtemp(prefix="pub-", dir=ctx.get("tmp_dir") or None)
+    work_dir = os.path.join(pub_dir, "tree")        # the unpacked package, and nothing else
     jobs = []
     try:
+        os.makedirs(work_dir)
+        tar_gz = certified_tarball(spec, ctx, tar_gz, os.path.join(pub_dir, "store"))
+        # The build's tar-slip guard (build_template.sh): no member may land outside.
+        names = subprocess.run(["tar", "-tzf", tar_gz], check=True, stdout=subprocess.PIPE).stdout
+        if re.search(rb"(^|\n)(/|(.*/)?\.\.(/|\n|$))", names):
+            raise SystemExit("%s@%s: %s has absolute or climbing member paths: not unpacked"
+                             % (pkg, vdir, tar_gz))
         subprocess.run(["tar", "-xzf", tar_gz, "--no-same-owner", "-C", work_dir], check=True)
         pkgroot = _locate_pkgroot(work_dir)
         if skip_pkg and not os.path.isfile(os.path.join(pkgroot, "etc", "modulefiles", pkg)):
@@ -1574,7 +1615,7 @@ def publish_one(spec, ctx):
                                     identity="%s/%s" % (mod_path, vdir) if publish_once else "")
                 jobs.append((mjid, _mlbl))
     finally:
-        _safe_rmtree(work_dir)
+        _safe_rmtree(pub_dir)
     if skip_pkg and not jobs:
         raise AlreadyPublished(path)
     return jobs
@@ -1680,6 +1721,11 @@ def main(argv=None):
     ap.add_argument("--tars-root", default=os.path.join(
         os.environ.get("BITS_WORK_DIR", ""), "TARS"))
     ap.add_argument("--arch", default=os.environ.get("BITS_ARCH", ""))
+    ap.add_argument("--store", default=os.environ.get("BITS_REMOTE_STORE")
+                    or os.environ.get("REMOTE_STORE", ""),
+                    help="the store to fetch a package's certified tarball from when the "
+                         "work dir's is another packing; comma-separated, tried in order "
+                         "(default $BITS_REMOTE_STORE, else $REMOTE_STORE)")
     ap.add_argument("--tmpl-prefix", default="")
     ap.add_argument("--prefix-fallback", default=os.environ.get("CVMFS_PREFIX_FALLBACK", ""))
     ap.add_argument("--stratum0-url", default=os.environ.get("BITS_STRATUM0_URL", ""))
@@ -1805,7 +1851,7 @@ def main(argv=None):
     sys.stderr.write("[publish] layout: %s\n" % (
         "%s (this build's templates)" % templates.get("path") if templates
         else "each package's own .meta.json (manifest has no cvmfs_templates)"))
-    ctx = {"repo": a.repo, "tars_root": a.tars_root, "arch": a.arch,
+    ctx = {"repo": a.repo, "tars_root": a.tars_root, "arch": a.arch, "store": a.store,
            "tmpl_prefix": a.tmpl_prefix, "prefix_fallback": a.prefix_fallback or None,
            "templates": templates, "build_time": _man.get("created_at"),
            "stratum0_url": a.stratum0_url, "prepub_url": a.prepub_url, "token": a.token,
