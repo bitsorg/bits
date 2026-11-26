@@ -488,12 +488,20 @@ def order_biggest_first(specs, tars_root, default_arch):
                   reverse=True)
 
 
-def _locate_pkgroot(work_dir):
-    """The dir holding .meta.json inside the extracted tar (mirrors the CI find)."""
-    for dp, _dns, fns in os.walk(work_dir):
-        if ".meta.json" in fns:
-            return dp
-    raise SystemExit("cannot locate package root (.meta.json) under %s" % work_dir)
+def _locate_pkgroot(work_dir, package=None, vdir=None):
+    """The dir holding the package's .meta.json inside the extracted tar: the one at
+    <...>/<package>/<vdir>, else the only shallowest one (a tarball may pack more)."""
+    roots = [dp for dp, _dns, fns in os.walk(work_dir) if ".meta.json" in fns]
+    if package and vdir:
+        own = [r for r in roots if r.split(os.sep)[-2:] == [os.path.basename(package), vdir]]
+        if len(own) == 1:
+            return own[0]
+    depth = min((r.count(os.sep) for r in roots), default=None)
+    top = [r for r in roots if r.count(os.sep) == depth]
+    if len(top) == 1:
+        return top[0]
+    raise SystemExit("cannot locate the package root (.meta.json) under %s: %s" % (
+        work_dir, "none" if not top else "several, " + ", ".join(sorted(top))))
 
 
 def _files_under(root):
@@ -1453,7 +1461,7 @@ def fetch_store_tarball(spec, stores, arch, fetch_dir, want=None):
     return None
 
 
-def unpack_package(tar_gz, dest, label):
+def unpack_package(tar_gz, dest, label, package=None, vdir=None):
     """Unpack a package tarball into *dest*, refusing absolute or climbing member paths
     (the build's tar-slip guard, build_template.sh); the package root (.meta.json)."""
     names = subprocess.run(["tar", "-tzf", tar_gz], check=True, stdout=subprocess.PIPE).stdout
@@ -1461,7 +1469,7 @@ def unpack_package(tar_gz, dest, label):
         raise SystemExit("%s: %s has absolute or climbing member paths: not unpacked"
                          % (label, tar_gz))
     subprocess.run(["tar", "-xzf", tar_gz, "--no-same-owner", "-C", dest], check=True)
-    return _locate_pkgroot(dest)
+    return _locate_pkgroot(dest, package, vdir)
 
 
 def publish_one(spec, ctx):
@@ -1543,7 +1551,7 @@ def publish_one(spec, ctx):
     try:
         os.makedirs(work_dir)
         tar_gz = certified_tarball(spec, ctx, tar_gz, os.path.join(pub_dir, "store"))
-        pkgroot = unpack_package(tar_gz, work_dir, "%s@%s" % (pkg, vdir))
+        pkgroot = unpack_package(tar_gz, work_dir, "%s@%s" % (pkg, vdir), pkg, vdir)
         if skip_pkg and not os.path.isfile(os.path.join(pkgroot, "etc", "modulefiles", pkg)):
             raise AlreadyPublished(path)   # no modulefile to add: skip the relocate
 

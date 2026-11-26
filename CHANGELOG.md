@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits cvmfs publish` and `bits publish PACKAGE` publish the package's own directory of a tarball that packs more than one `.meta.json`: the one at `<package>/<version>`, else the only shallowest one; several at that depth stop the publish. It took the first one the directory walk met.
 - **[Feature]** `bits store ls|rm --stale-rev-markers [--older-than DAYS]`: the revision claims (`MANIFESTS/rev-index/`) that no stored tarball carries, older than DAYS (default 7), left by builds that failed; narrowed by `--arch`, `--package` and `--version`. S3 stores.
 - **[Fix]** `bits cvmfs publish` checks a package's tarball against the store's signed manifests when they list it (`--trust-manifest`, default the store's; `none` to skip), not only against the build manifest's `tarball_sha256`: the build manifest is a file in the work dir, and one without the field was published unchecked.
 - **[Fix]** The container sandbox takes the network out of the `docker run` argument list, not out of the command text, so a quoted `-e` value or `--docker-extra-args` word that contains `--network=…` is left as it is.

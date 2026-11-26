@@ -969,7 +969,7 @@ def doPublish(args, parser):
             info("tarball     : %s", tar_gz)
             tree = join(unpack_dir, "tree")
             os.makedirs(tree)
-            copy_dir = cvmfs_publish.unpack_package(tar_gz, tree, pkg_id)
+            copy_dir = cvmfs_publish.unpack_package(tar_gz, tree, pkg_id, package, version_dir)
             info("working copy: %s", copy_dir)
             relocate_script = join(copy_dir, "relocate-me.sh")
             if not exists(relocate_script):

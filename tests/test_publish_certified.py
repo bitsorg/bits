@@ -150,6 +150,22 @@ class CertifiedTest(unittest.TestCase):
     self.assertEqual(seen["trust"], "https://a/m.json,/m2.json")
     self.assertEqual(cp.signed_index("", self.t, ["tc"]), {})            # nothing to ask
 
+  def test_the_package_root_is_the_packages_own(self):
+    def tree(*dirs):
+      d = tempfile.mkdtemp(dir=self.t)
+      for x in dirs:
+        os.makedirs(os.path.join(d, x))
+        open(os.path.join(d, x, ".meta.json"), "w").close()
+      return d
+    d = tree("tc/Aaa/1-1", "tc/GCC/14-1", "tc/GCC/14-1/share/bundled/0")
+    self.assertEqual(cp._locate_pkgroot(d, "GCC", "14-1"), os.path.join(d, "tc/GCC/14-1"))
+    with self.assertRaisesRegex(SystemExit, "several"):        # not the walk's first
+      cp._locate_pkgroot(d)
+    d = tree("tc/GCC/14-1", "tc/GCC/14-1/share/bundled/0")
+    self.assertEqual(cp._locate_pkgroot(d), os.path.join(d, "tc/GCC/14-1"))   # shallowest
+    with self.assertRaisesRegex(SystemExit, "none"):
+      cp._locate_pkgroot(tree())
+
   def test_an_old_manifest_without_the_field(self):
     self.assertEqual(self.certified(None), self.local)
 
