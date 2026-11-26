@@ -775,7 +775,19 @@ class HttpRemoteSync(RemoteSync):
   def probe_url(self):
     return self.remoteStore
 
-  def getRetry(self, url, dest=None, returnResult=False, log=True, session=None, progress=debug):
+  def _not_answered(self, what):
+    """Say once per run that this store did not answer (for *what* first)."""
+    if getattr(self, "_said_not_answered", False):
+      debug("%s did not answer for %s", self.remoteStore, what)
+      return
+    self._said_not_answered = True
+    warning("%s did not answer (first for %s): what it holds is built or fetched from "
+            "upstream instead while it does not", self.remoteStore, what)
+
+  def getRetry(self, url, dest=None, returnResult=False, log=True, session=None, progress=debug,
+               failed=None):
+    """The answer for *url*, or None when it is absent (404) or the store did not
+    answer: then *url* is appended to the list *failed*, if given."""
     get = session.get if session is not None else requests.get
     url = quote(url, safe=":/")
     # Its own temporary file: two processes (or threads) fetching one file must not share one.
@@ -861,6 +873,8 @@ class HttpRemoteSync(RemoteSync):
             os.unlink(tmp)
           except Exception:
             pass
+    if failed is not None:
+      failed.append(url)
     return None
 
   def list_store_tarballs(self, arch, pkg_hash):
@@ -916,11 +930,12 @@ class HttpRemoteSync(RemoteSync):
             spec["package"], ", ".join(spec["remote_hashes"]))
       store_path = use_tarball = None
       wanted = tarball_name_regex(spec, arch)
+      unanswered = []
       # Find the first tarball that matches any possible hash and fetch it.
       for pkg_hash in spec["remote_hashes"]:
         store_path = resolve_store_path(arch, pkg_hash)
         tarballs = self.getRetry("{}/{}/".format(self.remoteStore, store_path),
-                                 session=session)
+                                 session=session, failed=unanswered)
         if tarballs:
           # The listing is UNTRUSTED remote JSON and this name becomes a local
           # write path below: reduce to a basename and refuse anything that
@@ -939,6 +954,8 @@ class HttpRemoteSync(RemoteSync):
           break
 
       if store_path is None or use_tarball is None:
+        if unanswered:    # not "absent": a store outage would otherwise rebuild unremarked
+          self._not_answered("the tarball of " + spec["package"])
         debug("Nothing fetched for %s (%s)", spec["package"],
               ", ".join(spec["remote_hashes"]))
         return
@@ -950,9 +967,12 @@ class HttpRemoteSync(RemoteSync):
         progress = ProgressPrint("Downloading tarball for %s@%s" %
                                  (spec["package"], spec["version"]), min_interval=5.0)
         progress("[0%%] Starting download of %s", use_tarball)  # initialise progress bar
+        failed = []
         self.getRetry("/".join((self.remoteStore, store_path, use_tarball)),
-                      destPath, session=session, progress=progress)
+                      destPath, session=session, progress=progress, failed=failed)
         progress.end("done")
+        if failed:
+          self._not_answered(use_tarball)
 
   def fetch_symlinks(self, spec) -> None:
     links_path = resolve_links_path(effective_arch(spec, self.architecture), spec["package"])
@@ -1029,8 +1049,11 @@ class HttpRemoteSync(RemoteSync):
     remote_path = _source_remote_path(url_checksum, filename)
     dest = os.path.join(dest_dir, filename)
     os.makedirs(dest_dir, exist_ok=True)
+    unanswered = []
     result = self.getRetry("{}/{}".format(self.remoteStore, remote_path),
-                           dest=dest, log=False)
+                           dest=dest, log=False, failed=unanswered)
+    if unanswered:
+      self._not_answered(filename)
     if not result and os.path.exists(dest):
       # getRetry returned None/False but may have left a partial file.
       try:
