@@ -34,6 +34,8 @@ if [[ -s ${THISDIR}/etc/profile.d/.bits-relocate ]] ; then
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     case "/$f/" in //*|*/../*) echo "relocate-me.sh: refusing '$f' in .bits-relocate" >&2; exit 1 ;; esac
+    case "$(cd -P "$(dirname "${THISDIR}/$f")" 2>/dev/null && pwd)/" in   # nor through a link
+      "$THISDIR"/*) ;; *) echo "relocate-me.sh: refusing '$f' in .bits-relocate" >&2; exit 1 ;; esac
     sed -i.unrelocated -e "${_pp_strip}s|${PKG_DIR}/INSTALLROOT/$PH|${PKG_DIR}|g;s|${PKG_DIR}|$INSTALL_BASE|g" "${THISDIR}/$f"
     rm -f "${THISDIR}/${f}.unrelocated"
   done < "${THISDIR}/etc/profile.d/.bits-relocate"

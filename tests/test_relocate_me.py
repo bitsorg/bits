@@ -17,7 +17,7 @@ PH, PP = "abc123", "x86_64/mypkg/1.0-1"
 
 class RelocateMeTest(unittest.TestCase):
   def _relocate(self, pkg_dir, install_base, strip_pp, pkginfo=None, relocate="paths.txt\n",
-                env_extra=None, check=True):
+                env_extra=None, check=True, before=None):
     root = tempfile.mkdtemp()
     self.addCleanup(shutil.rmtree, root, True)
     self.root = root
@@ -35,6 +35,8 @@ class RelocateMeTest(unittest.TestCase):
     if strip_pp:
       env["BITS_RELOCATE_STRIP_PP"] = "1"
     env.update(env_extra or {})
+    if before:
+      before(root)
     r = subprocess.run(["bash", os.path.join(root, "relocate-me.sh")], env=env, check=check,
                        capture_output=not check, text=True)
     if not check:
@@ -65,6 +67,18 @@ class RelocateMeTest(unittest.TestCase):
       r = self._relocate("/w/sw", "/opt/sw", False, relocate=entry + "\n", check=False)
       self.assertNotEqual(r.returncode, 0, entry)
       self.assertIn("refusing", r.stderr)
+    outside = tempfile.mkdtemp()
+    self.addCleanup(shutil.rmtree, outside, True)
+    with open(os.path.join(outside, "victim"), "w") as f:
+      f.write("/w/sw/x\n")
+
+    def link_out(root):
+      os.symlink(outside, os.path.join(root, "out"))
+    r = self._relocate("/w/sw", "/opt/sw", False, relocate="out/victim\n", check=False,
+                       before=link_out)
+    self.assertIn("refusing", r.stderr)
+    with open(os.path.join(outside, "victim")) as f:
+      self.assertEqual(f.read(), "/w/sw/x\n")          # left as it was
 
   def test_local_install(self):
     self.assertEqual(self._relocate("/w/sw", "/opt/sw", False),
