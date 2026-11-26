@@ -9,7 +9,6 @@ from unittest import mock
 
 from bits_helpers import container_engine
 from bits_helpers.cmd import DockerRunner
-from bits_helpers.sandbox import wrap_build_command
 
 
 class EngineTest(unittest.TestCase):
@@ -39,12 +38,6 @@ class EngineTest(unittest.TestCase):
       inside("true")
       self.assertEqual(run.call_args[0][0][:2], ["podman", "container"])
     self.assertEqual(run.call_args[0][0], "podman container kill cid")
-
-  def test_the_sandbox_keeps_the_engine(self):
-    cmd = "podman run --rm --network=host img bash -ex /build.sh"
-    opts = types.SimpleNamespace(sandbox="auto", sandboxImage=None, sandboxNetwork="on")
-    got = wrap_build_command(cmd, {"package": "zlib"}, opts, workdir="/sw", docker_active=True)
-    self.assertEqual(got, "podman run --network=none --rm img bash -ex /build.sh")
 
   @mock.patch("platform.system", return_value="Linux")
   @mock.patch("os.geteuid", return_value=1000)

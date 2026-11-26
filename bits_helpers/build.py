@@ -19,7 +19,7 @@ from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
                                     checksum_file as compute_checksum_file)
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.cmd import credential_free_env
-from bits_helpers.sandbox import wrap_build_command
+from bits_helpers.sandbox import container_without_network, without_network, wrap_build_command
 from bits_helpers.container_engine import engine as container_engine
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, ver_rev, is_virtual_package, hook_names
@@ -3459,7 +3459,9 @@ def build_one_package(p, ctx):
       mounts=container_mounts(abspath(args.workDir), container_workDir, _ro_sources,
                               abspath(args.configDir), scriptDir, bits_dir, spec["_own_paths"]),
       container_workDir=container_workDir,
-      extraArgs=" ".join(map(quote, args.docker_extra_args)),
+      extraArgs=" ".join(map(quote, without_network(args.docker_extra_args)
+                             if container_without_network(spec, args, True)
+                             else args.docker_extra_args)),
       additionalEnv=" ".join([shell_env(buildEnvironment, "-e ")] + ["-e " + quote(n) for n in _cli_names]),
       # Used e.g. by O2DPG-sim-tests to find the O2DPG repository.
       develVolumes=" ".join(

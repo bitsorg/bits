@@ -263,44 +263,44 @@ class WrapPodmanLocalTests(unittest.TestCase):
 # wrap_build_command — the build container (--docker)
 # ---------------------------------------------------------------------------
 
-class WrapContainerTests(unittest.TestCase):
-    """With --docker the build container is the sandbox: no network unless allowed."""
+class ContainerNetworkTests(unittest.TestCase):
+    """With --docker the build container is the sandbox: no network unless allowed.
+    build.py takes the network out of the argument list, never out of the command."""
 
-    def wrap(self, cmd=DOCKER_CMD, **spec):
-        return wrap_build_command(cmd, _spec(**spec), _opts(sandbox="auto"), workdir="/sw",
-                                  docker_active=True)
+    def cut(self, mode="auto", docker=True, opts=None, **spec):
+        return sandbox.container_without_network(_spec(**spec), opts or _opts(sandbox=mode),
+                                                 docker)
 
-    def test_network_blocked_by_default(self):
-        self.assertEqual(self.wrap(),
-                         "docker run --network=none " + DOCKER_CMD[len("docker run "):])
+    def test_cut_by_default_in_the_container_sandbox(self):
+        self.assertTrue(self.cut())
+        self.assertTrue(self.cut(mode="podman"))
 
-    def test_network_allowed_when_off(self):
-        self.assertEqual(self.wrap(sandbox_network="off"), DOCKER_CMD)
-        opts = _opts(sandbox="auto", sandbox_network="off")       # the build-wide default
-        self.assertEqual(wrap_build_command(DOCKER_CMD, _spec(), opts, workdir="/sw",
-                                            docker_active=True), DOCKER_CMD)
+    def test_not_cut_when_allowed_off_or_without_docker(self):
+        self.assertFalse(self.cut(sandbox_network="off"))
+        self.assertFalse(self.cut(opts=_opts(sandbox="auto", sandbox_network="off")))
+        self.assertFalse(self.cut(mode="off"))
+        self.assertFalse(self.cut(docker=False))
+        self.assertFalse(sandbox.container_without_network({"package": "defaults-release"},
+                                                           _opts(sandbox="auto"), True))
 
-    def test_instead_of_the_network_the_command_names(self):
-        cmd = DOCKER_CMD.replace(" alisw/", " --network=host --net bridge --cpuset-cpus=0-7 alisw/")
-        got = shlex.split(self.wrap(cmd=cmd))
-        self.assertEqual([w for w in got if w.startswith("--net")], ["--network=none"])
-        self.assertIn("--cpuset-cpus=0-7", got)
-        self.assertEqual(self.wrap(cmd=cmd, sandbox_network="off"), cmd)
+    def test_instead_of_the_network_the_args_name(self):
+        args = ["--network=host", "-e", "X=a --network=x b", "--net", "bridge", "--cpuset-cpus=0-7"]
+        self.assertEqual(sandbox.without_network(args),
+                         ["-e", "X=a --network=x b", "--cpuset-cpus=0-7", "--network=none"])
 
     def test_the_real_extra_args_carry_network_host(self):
-        from bits_helpers.args import _finalise_docker
+        from bits_helpers import args as bits_args
         args = types.SimpleNamespace(dockerImage="img", docker_extra_args="", docker=False,
                                      architecture="x86_64-el9", dockerPlatform=None)
-        _finalise_docker(args, None)
-        self.assertIn("--network=host", args.docker_extra_args)   # what the wrap replaces
+        with patch.object(bits_args.commands, "getstatusoutput", return_value=(0, "/bin/docker")), \
+             patch.object(bits_args, "_is_rootless_podman", return_value=False):
+            bits_args._finalise_docker(args, None)
+        self.assertEqual(sandbox.without_network(args.docker_extra_args).count("--network=none"), 1)
+        self.assertNotIn("--network=host", sandbox.without_network(args.docker_extra_args))
 
-    def test_off_leaves_it(self):
-        self.assertEqual(wrap_build_command(DOCKER_CMD, _spec(), _opts(sandbox="off"),
+    def test_the_command_itself_is_left_alone(self):
+        self.assertEqual(wrap_build_command(DOCKER_CMD, _spec(), _opts(sandbox="auto"),
                                             workdir="/sw", docker_active=True), DOCKER_CMD)
-
-    def test_not_a_docker_run_is_refused(self):
-        with self.assertRaises(ValueError):
-            self.wrap(cmd="nerdctl run img bash -ex /build.sh")
 
 
 class LocalReadOnlyTests(unittest.TestCase):

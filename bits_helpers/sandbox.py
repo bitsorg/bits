@@ -45,7 +45,6 @@ import sys
 import shutil
 import subprocess
 import tempfile
-import re
 from shlex import quote
 from typing import Optional
 
@@ -412,6 +411,52 @@ def failure_hint(build_command: str) -> str:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def allows_network(spec: dict, opts) -> bool:
+    """Whether the recipe's build may reach the network in a sandbox."""
+    # Semantics: sandbox_network is "is the network *restriction* on?".
+    #   on  -> restriction on  -> network BLOCKED (allow_network False)
+    #   off -> restriction off -> network ALLOWED (allow_network True)
+    # Precedence: a recipe's own `sandbox_network:` field wins; otherwise fall
+    # back to the global default in opts.sandboxNetwork, which build.py resolves
+    # from --sandbox-network or the active defaults `sandbox_network:` (see
+    # defaults-release.sh), defaulting to "on". This lets a stack with many
+    # pip-installing recipes flip the default once instead of annotating every
+    # recipe.
+    global_default = getattr(opts, "sandboxNetwork", "on") or "on"
+    # The recipe may set it top-level or under `system:` (as defaults files do).
+    recipe_system = spec.get("system") if isinstance(spec.get("system"), dict) else {}
+    sandbox_network = spec.get("sandbox_network",
+                               recipe_system.get("sandbox_network", global_default))
+    # YAML's SafeLoader parses bare on/off/yes/no as booleans, so a recipe line
+    # `sandbox_network: off` arrives here as Python False (not the string
+    # "off"). Normalise both forms so quoted and unquoted recipes behave the
+    # same and nobody silently keeps the network blocked by forgetting quotes.
+    if isinstance(sandbox_network, bool):
+        return sandbox_network is False
+    return str(sandbox_network).strip().lower() in ("off", "false", "no", "0")
+
+
+def container_without_network(spec: dict, opts, docker_active: bool) -> bool:
+    """A --docker build whose container is the sandbox, of a recipe that may not reach
+    the network: its container gets --network=none (:func:`without_network`)."""
+    if not docker_active or spec.get("package", "").startswith("defaults-"):
+        return False
+    return (resolve_sandbox_mode(getattr(opts, "sandbox", "auto"), True) == "container"
+            and not allows_network(spec, opts))
+
+
+def without_network(docker_args: list) -> list:
+    """*docker_args* (an argument list) with --network=none instead of any network it
+    names (bits' own --network=host)."""
+    out, it = [], iter(docker_args)
+    for arg in it:
+        if arg in ("--network", "--net"):
+            next(it, None)
+        elif not arg.startswith(("--network=", "--net=")):
+            out.append(arg)
+    return out + ["--network=none"]
+
+
 def wrap_build_command(
     build_command: str,
     spec: dict,
@@ -442,7 +487,7 @@ def wrap_build_command(
         Absolute host path of the bits work directory.
     :param docker_active:
         True when ``bits build --docker`` is in effect: the build container is
-        the sandbox, run with ``--network=none`` unless the recipe allows it.
+        the sandbox; build.py gives it ``--network=none`` (container_without_network).
     :param pkg_env:
         The package's build environment. With it, sandbox-exec lets the build
         write only the package's own files (:func:`package_write_paths`, in
@@ -460,50 +505,20 @@ def wrap_build_command(
     if pkg_name.startswith("defaults-"):
         return build_command
 
-    # Semantics: sandbox_network is "is the network *restriction* on?".
-    #   on  -> restriction on  -> network BLOCKED (allow_network False)
-    #   off -> restriction off -> network ALLOWED (allow_network True)
-    # Precedence: a recipe's own `sandbox_network:` field wins; otherwise fall
-    # back to the global default in opts.sandboxNetwork, which build.py resolves
-    # from --sandbox-network or the active defaults `sandbox_network:` (see
-    # defaults-release.sh), defaulting to "on". This lets a stack with many
-    # pip-installing recipes flip the default once instead of annotating every
-    # recipe.
-    global_default = getattr(opts, "sandboxNetwork", "on") or "on"
-    # The recipe may set it top-level or under `system:` (as defaults files do).
-    recipe_system = spec.get("system") if isinstance(spec.get("system"), dict) else {}
-    sandbox_network = spec.get("sandbox_network",
-                               recipe_system.get("sandbox_network", global_default))
-    # YAML's SafeLoader parses bare on/off/yes/no as booleans, so a recipe line
-    # `sandbox_network: off` arrives here as Python False (not the string
-    # "off"). Normalise both forms so quoted and unquoted recipes behave the
-    # same and nobody silently keeps the network blocked by forgetting quotes.
-    if isinstance(sandbox_network, bool):
-        allow_network = (sandbox_network is False)
-    else:
-        allow_network = (str(sandbox_network).strip().lower()
-                         in ("off", "false", "no", "0"))
-
+    allow_network = allows_network(spec, opts)
     requested = getattr(opts, "sandbox", "auto")
     image = getattr(opts, "sandboxImage", None)
     mode = resolve_sandbox_mode(requested, docker_active)
     debug(
-        "Sandbox mode for %s: %s (requested=%s, docker=%s, sandbox_network=%s)",
-        spec.get("package", "?"), mode, requested, docker_active, sandbox_network,
+        "Sandbox mode for %s: %s (requested=%s, docker=%s, network allowed=%s)",
+        spec.get("package", "?"), mode, requested, docker_active, allow_network,
     )
 
     if mode == "off":
         return build_command
 
-    if mode == "container":
-        if allow_network:
-            return build_command
-        run = re.match(r"(docker|podman) run ", build_command)
-        if not run:   # never looks sandboxed and is not
-            raise ValueError("sandbox: not a docker/podman run command: %s" % build_command[:80])
-        # Instead of any network the command names (bits' own --network=host).
-        rest = re.sub(r" --net(?:work)?(?:=| +)\S+(?= )", "", build_command[run.end():])
-        return run.group(0) + "--network=none " + rest
+    if mode == "container":   # its network: build.py, by container_without_network()
+        return build_command
 
     if mode == "podman" and not image:
         # No container image available.  If the user explicitly requested podman

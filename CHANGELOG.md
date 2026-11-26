@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** The container sandbox takes the network out of the `docker run` argument list, not out of the command text, so a quoted `-e` value or `--docker-extra-args` word that contains `--network=…` is left as it is.
 - **[Fix]** What a package's own scripts get where credentials are (native builds, `$(...)` sources, stage hooks, relocate scripts, system checks) no longer points at the ssh or gpg agent, an askpass helper, `NETRC`, `KUBECONFIG`, `DOCKER_CONFIG`, `AWS_CONFIG_FILE`, a Kerberos ticket or a grid proxy. A ticket, proxy or kubeconfig at its default path stays readable there: only a sandbox keeps it from a build.
 - **[Fix]** The macOS build sandbox also denies reading `~/.git-credentials`, `~/.pypirc`, `~/.npmrc`, `~/.config/gh`, `~/.kube`, `~/.config/gcloud` and cargo's credentials, and the S3 keys, store token and GitLab token files wherever bits is configured to keep them (`BITS_AWS_KEYS_FILE`, `BITS_STORE_TOKEN_FILE`, `BITS_GITLAB_TOKEN_FILE`, the site's `paths.*`).
 - **[Fix]** A downloaded source that cannot be copied into the package's source directory (disk full, permissions) stops the download with that error; it was only logged, and the build failed later at the extraction.
