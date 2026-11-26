@@ -55,7 +55,8 @@ COVERED = (
 # TMP/<hash> emptied before a reused tarball is unpacked: what is installed is the tarball's.
 # Unused gcc lookups removed from the preamble: builds are unchanged.
 # A damaged reuse-symlinks marker is staged again: the stage made is unchanged.
-COVERED_SHA256 = "6d44f4740cf4fe6bd5b21b6d541642a86a7bf382f636144f1f39c8cba2978237"
+# relocate-me.sh reads .bits-pkginfo instead of sourcing it: relocation is unchanged.
+COVERED_SHA256 = "b372beb0bbc8d46463318a76d27fce1427fdea7d7b5adea356886554f1c4479d"
 
 
 def covered_sha256(root=None):

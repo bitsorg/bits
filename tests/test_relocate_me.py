@@ -16,15 +16,17 @@ PH, PP = "abc123", "x86_64/mypkg/1.0-1"
 
 
 class RelocateMeTest(unittest.TestCase):
-  def _relocate(self, pkg_dir, install_base, strip_pp):
+  def _relocate(self, pkg_dir, install_base, strip_pp, pkginfo=None, relocate="paths.txt\n",
+                env_extra=None, check=True):
     root = tempfile.mkdtemp()
     self.addCleanup(shutil.rmtree, root, True)
+    self.root = root
     os.makedirs(os.path.join(root, "etc", "profile.d"))
     shutil.copy(SCRIPT, root)
     with open(os.path.join(root, "etc", "profile.d", ".bits-pkginfo"), "w") as f:
-      f.write("OP=%s\nPP=%s\nPH=%s\nPKG_DIR=%s\n" % (PP, PP, PH, pkg_dir))
+      f.write(pkginfo or "OP=%s\nPP=%s\nPH=%s\nPKG_DIR=%s\n" % (PP, PP, PH, pkg_dir))
     with open(os.path.join(root, "etc", "profile.d", ".bits-relocate"), "w") as f:
-      f.write("paths.txt\n")
+      f.write(relocate)
     with open(os.path.join(root, "paths.txt"), "w") as f:
       f.write("%s/INSTALLROOT/%s/%s/lib\n%s/INSTALLROOT/%s/other/lib\n%s/%s/bin\n"
               % (pkg_dir, PH, PP, pkg_dir, PH, pkg_dir, PP))
@@ -32,9 +34,37 @@ class RelocateMeTest(unittest.TestCase):
     env.pop("BITS_RELOCATE_STRIP_PP", None)
     if strip_pp:
       env["BITS_RELOCATE_STRIP_PP"] = "1"
-    subprocess.run(["bash", os.path.join(root, "relocate-me.sh")], env=env, check=True)
+    env.update(env_extra or {})
+    r = subprocess.run(["bash", os.path.join(root, "relocate-me.sh")], env=env, check=check,
+                       capture_output=not check, text=True)
+    if not check:
+      return r
     with open(os.path.join(root, "paths.txt")) as f:
       return f.read().split()
+
+  def test_the_pkginfo_build_template_writes(self):
+    info = 'OP=%s\nPP=${PKGPATH:-%s}\nPH=%s\nPKG_DIR="/w/sw"\n' % (PP, PP, PH)
+    self.assertEqual(self._relocate("/w/sw", "/opt/sw", False, pkginfo=info),
+                     ["/opt/sw/%s/lib" % PP, "/opt/sw/other/lib", "/opt/sw/%s/bin" % PP])
+    with open(os.path.join(self.root, "etc", "profile.d", ".bits-pkginfo")) as f:
+      self.assertIn('PKG_DIR="/opt/sw"', f.read())
+    got = self._relocate("/w/sw", "/opt/sw", False, pkginfo=info,
+                         env_extra={"PKGPATH": "x86_64/other/2-1"})
+    self.assertEqual(got[2], "/opt/sw/%s/bin" % PP)       # PP from PKGPATH: not ours here
+
+  def test_the_pkginfo_is_read_not_run(self):
+    pwned = os.path.join(tempfile.gettempdir(), "relocate-pwned-%d" % os.getpid())
+    self.addCleanup(lambda: os.path.exists(pwned) and os.unlink(pwned))
+    for line in ("touch %s" % pwned, "PH=$(touch %s)" % pwned, "PH=`touch %s`" % pwned):
+      self._relocate("/w/sw", "/opt/sw", False, check=False,
+                     pkginfo="OP=%s\nPP=%s\n%s\nPKG_DIR=/w/sw\n" % (PP, PP, line))
+      self.assertFalse(os.path.exists(pwned), line)
+
+  def test_a_relocation_entry_outside_the_package_is_refused(self):
+    for entry in ("../../etc/passwd", "/etc/passwd", "lib/../../x"):
+      r = self._relocate("/w/sw", "/opt/sw", False, relocate=entry + "\n", check=False)
+      self.assertNotEqual(r.returncode, 0, entry)
+      self.assertIn("refusing", r.stderr)
 
   def test_local_install(self):
     self.assertEqual(self._relocate("/w/sw", "/opt/sw", False),

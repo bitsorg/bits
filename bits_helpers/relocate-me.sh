@@ -1,6 +1,17 @@
 #!/bin/bash -e
 THISDIR="$(cd -P "$(dirname "$0")" && pwd)"
-. ${THISDIR}/etc/profile.d/.bits-pkginfo
+# Read .bits-pkginfo, never run it (a reused tarball's): OP, PP, PH, PKG_DIR as
+# KEY=value or KEY="value"; PP may be ${PKGPATH:-<path>}. Other lines are skipped.
+while IFS= read -r _line || [ -n "$_line" ]; do
+  _key=${_line%%=*}; _val=${_line#*=}
+  case "$_key" in OP|PP|PH|PKG_DIR) ;; *) [ -n "$_line" ] && echo "relocate-me.sh: skipping '$_line' in .bits-pkginfo" >&2; continue ;; esac
+  _val=${_val#\"}; _val=${_val%\"}
+  if [ "$_key" = PP ] && [ "${_val#\$\{PKGPATH:-}" != "$_val" ] && [ "${_val%\}}" != "$_val" ]; then
+    _val=${_val#\$\{PKGPATH:-}; _val=${PKGPATH:-${_val%\}}}
+  fi
+  case "$_val" in *'$'*|*'`'*) echo "relocate-me.sh: refusing '$_line' in .bits-pkginfo" >&2; exit 1 ;; esac
+  printf -v "$_key" '%s' "$_val"
+done < "${THISDIR}/etc/profile.d/.bits-pkginfo"
 # Default INSTALL_BASE to where the package is unpacked (THISDIR minus the
 # arch/pkg/ver suffix) — correct for a local install. A caller that stages the
 # tree in a temp dir but wants the files to reference their FINAL location (the
@@ -22,6 +33,7 @@ if [[ -s ${THISDIR}/etc/profile.d/.bits-relocate ]] ; then
   [ -n "${BITS_RELOCATE_STRIP_PP:-}" ] && _pp_strip="s|${PKG_DIR}/INSTALLROOT/$PH/$PP|${PKG_DIR}|g;"
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
+    case "/$f/" in //*|*/../*) echo "relocate-me.sh: refusing '$f' in .bits-relocate" >&2; exit 1 ;; esac
     sed -i.unrelocated -e "${_pp_strip}s|${PKG_DIR}/INSTALLROOT/$PH|${PKG_DIR}|g;s|${PKG_DIR}|$INSTALL_BASE|g" "${THISDIR}/$f"
     rm -f "${THISDIR}/${f}.unrelocated"
   done < "${THISDIR}/etc/profile.d/.bits-relocate"

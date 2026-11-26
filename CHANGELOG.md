@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `relocate-me.sh` reads a package's `.bits-pkginfo` (`OP`, `PP`, `PH`, `PKG_DIR`) instead of running it, so that file cannot run commands (a tarball without it keeps its own script, and a package's `post-relocate.sh` still runs); a value with `$` or a backquote (but `PP=${PKGPATH:-…}`) stops the relocation. A `.bits-relocate` entry that is absolute or climbs out with `..` is refused.
 - **[Fix]** A node remembers a signed manifest's sequence per issuer, architecture and signing key: another trusted key naming the same issuer with a high number can no longer make the node refuse that issuer's real manifests. What a node remembered before is carried over.
 - **[Fix]** `bits cvmfs publish --wait` waits for all its jobs within one `--wait-timeout` (prepub runs them together); past it, each job left is asked once more, not waited for. Each job had the whole timeout in turn, so a run could wait hours.
 - **[Fix]** `bits cvmfs publish` and `bits publish PACKAGE` publish the package's own directory of a tarball that packs more than one `.meta.json`: the one at `<package>/<version>`, else the only shallowest one; several at that depth stop the publish. It took the first one the directory walk met.
