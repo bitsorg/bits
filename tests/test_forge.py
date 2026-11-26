@@ -153,7 +153,15 @@ class TestAdminPolicy(unittest.TestCase):
         self.assertFalse(forge.approved_for_group(["mallory"], resolved, "lcg"))
 
     def test_gitlab_group_members_paginates(self):
-        pages = {1: [{"username": "a"}, {"username": "b"}], 2: []}
+        dev = {"state": "active", "access_level": 30}
+        pages = {1: [dict(dev, username="a"), dict(dev, username="b", access_level=50),
+                     dict(dev, username="guest", access_level=10),
+                     dict(dev, username="reporter", access_level=20),
+                     dict(dev, username="blocked", state="blocked"),
+                     dict(dev, username="expired", expires_at="2000-01-01"),
+                     dict(dev, username="later", expires_at="2999-01-01"),
+                     dict(dev, username="awaiting", membership_state="awaiting"),
+                     {"username": "unknown"}], 2: []}
 
         class _Resp:
             def __init__(self, page):
@@ -172,7 +180,12 @@ class TestAdminPolicy(unittest.TestCase):
         with patch("requests.get", side_effect=_get):
             # first page has <100 -> single request returns both
             self.assertEqual(forge.gitlab_group_members("https://gl/api/v4", "tok", "cern/admins"),
-                             {"a", "b"})
+                             {"a", "b", "later"})
+            pages[1] = [{"username": "g", "state": "active", "access_level": 10}]
+            with patch.object(forge, "warning") as said:
+                got = forge.gitlab_group_members("https://gl/api/v4", "tok", "cern/admins")
+            self.assertEqual(got, set())
+            self.assertIn("counts nobody", said.call_args[0][0])
 
 
 class TestTriggerPrimitives(unittest.TestCase):

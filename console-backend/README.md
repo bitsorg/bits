@@ -49,7 +49,8 @@ exits), applies the numbered migrations, and runs one pass every
 The API only writes requests and decisions, and answers 503 until the worker
 has created and migrated the database. The worker has no user token, so when
 the admin policy names GitLab groups (`&group` lines or `BITS_ADMINS_GROUP`) it
-needs `BITS_ADMIN_RESOLVE_TOKEN`, and refuses to start without it.
+needs `BITS_ADMIN_RESOLVE_TOKEN`, and refuses to start without it. A group's
+members count when active at Developer level or above (not Guest or Reporter).
 
 A community's **developers** read what debugging a build needs, as its admins do:
 its jobs' logs and bits logs, its failure records and issues, and explaining a failed

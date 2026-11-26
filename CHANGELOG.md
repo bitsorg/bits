@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A `&group` in an admin policy, and the bits-console admin and developer groups, count only the active members at Developer level or above: every member counted, a Guest or a blocked account too.
 - **[Fix]** `bits sign`, and bits-orchestrator's certification, refuse a BOM entry that names a group other than its directory's (`manifests/<group>/` under the manifests given) or the run's `--group`: the entry's own group won, so under `manifests/lhcb/` one saying `common` was signed as `common` without an lhcb approval (`--changed-groups`, which now needs every manifest in a group directory). A BOM can no longer name its directory either, and in the orchestrator such an entry vouches for no group in a withdrawal.
 - **[Fix]** `bits compliance --enforce --key` signs each signed manifest that lists a restricted package again without it, once it verifies against the trusted keys, keeping only the entries its signer could certify (one bits-orchestrator numbered is left to it). A key that cannot be used is refused before anything is removed. It re-certified the platform from every BOM in the store, unapproved ones included, as group `common`.
 - **[Fix]** `bits cvmfs publish` refuses a `.bits-view.json` entry that is absolute or climbs out (`..`), and the view fails: a climbing entry placed a link outside the staging directory, on the publish host.

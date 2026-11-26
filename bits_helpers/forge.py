@@ -312,8 +312,13 @@ def _gl_ok(resp):
     return resp
 
 
+# The least GitLab access level (Developer) at which a group member counts.
+MEMBER_ACCESS_LEVEL = 30
+
+
 def gitlab_group_members(api_url, token, group_ref, timeout=15, inherited=True) -> set:
-    """Return the set of usernames in a GitLab group.
+    """Return the set of usernames of the active, unexpired members of a GitLab group
+    at Developer level or above (a Guest, Reporter or blocked account does not count).
 
     *group_ref* is a group path (``cern/bits-admins``) or numeric id. Paginates
     ``GET /groups/<ref>/members/all`` (inherited members included) by default, or
@@ -326,17 +331,27 @@ def gitlab_group_members(api_url, token, group_ref, timeout=15, inherited=True) 
     base = "%s/groups/%s/%s" % (api_url.rstrip("/"),
                                 quote(str(group_ref), safe=""),
                                 "members/all" if inherited else "members")
-    members, page = set(), 1
+    import time
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    members, listed, page = set(), 0, 1
     while True:
         resp = requests.get(base, headers={"PRIVATE-TOKEN": token},
                             params={"per_page": 100, "page": page}, timeout=timeout)
         _gl_ok(resp)
         data = resp.json() or []
         for m in data:
-            u = (m or {}).get("username")
-            if u:
+            m = m or {}
+            u = m.get("username")
+            listed += bool(u)
+            if u and m.get("state") == "active" \
+               and m.get("membership_state", "active") in (None, "active") \
+               and (m.get("access_level") or 0) >= MEMBER_ACCESS_LEVEL \
+               and not (m.get("expires_at") and str(m["expires_at"])[:10] <= today):
                 members.add(u.lower())
         if len(data) < 100:
+            if listed and not members:
+                warning("GitLab group %s: none of its %d member(s) counts (active, unexpired, "
+                        "Developer or above): it counts nobody", group_ref, listed)
             return members
         page += 1
 

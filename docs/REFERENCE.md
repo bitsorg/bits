@@ -377,7 +377,8 @@ Certifier identity and authority:
   bits-console `bits_admins`); `<group> @handle` lines are that group's admins
   (mirrors per-community `admins`). A `&group-path` token resolves to that GitLab
   **group's live members** via the API at certify time (so the list never needs
-  manual syncing), while explicit `@handle` entries remain as a manual override.
+  manual syncing): its active members at Developer level or above, while
+  explicit `@handle` entries remain as a manual override.
   A group ref that can't be resolved (API/permission failure) is skipped with a
   warning, so literal admins keep working. `--changed-groups G1,G2` scopes the
   check to the groups changed in the MR (else every group present).
