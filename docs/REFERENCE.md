@@ -2245,7 +2245,8 @@ The tarball is the work directory's (`TARS/<arch>/store/<h2>/<hash>/`), else fet
 not used: it is already relocated to the work directory, and it is never changed. With
 `--no-relocate` (a `--cvmfs-prefix` build) the installed tree is what is published.
 Only the package's own paths are mapped to `--cvmfs-target`: paths into its dependencies'
-installations are not (`bits cvmfs-publish` places a whole build, dependencies included).
+installations become `<target>/<arch>/<dependency>/<version>`, which does not exist
+(`bits cvmfs publish` places a whole build, dependencies included).
 
 ```bash
 bits publish PACKAGE [VERSION] --cvmfs-target PATH --prepub-url URL [options]

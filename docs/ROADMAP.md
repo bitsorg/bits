@@ -98,10 +98,10 @@ listed in a verified, signed common manifest: `--require-signed-reuse` is the de
 always-trusted `common` base layer; an optional `key-policy.json` limits each signing
 key to the groups it may vouch for. `bits certify` uploads whatever a build is still
 missing, asks bits-console for a passkey approval (QR code plus a code to compare,
-approved on the certifier's phone) and opens the certification merge request; the
-manifests-repo CI then runs `bits sign`, which validates every hash against the store
-and signs the merged manifest — optionally through the console-backend signing service,
-authenticated by the CI ID token and gated by the build's human pre-approval. Package
+approved on the certifier's phone); bits-orchestrator then certifies the build, which
+validates every hash against the store and signs the merged manifest (in a store without
+it, `bits sign` does, optionally through the console-backend signing service,
+authenticated by the CI ID token and gated by the build's human pre-approval). Package
 tarballs are deterministic (sorted members, zeroed owner, fixed mtime, pinned
 compressor), so packing adds no variation of its own.
 

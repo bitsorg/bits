@@ -760,8 +760,9 @@ def doCertify(args, parser):
     # orchestrator marker says who certifies), as the build manifest records it.
     marker = _orchestrator_marker(stores[0], abspath(args.workDir), architecture)
     if not marker:          # refused before anything is uploaded (read-only: a dry run too)
-        parser.error("certify: no bits-orchestrator certifies the builds of %s (the merge "
-                     "request is retired); there its key holder signs with `bits sign`" % stores[0])
+        parser.error("certify: %s has no bits-orchestrator marker, or it could not be read "
+                     "(the merge request is retired): certifying needs bits-orchestrator. "
+                     "Where none certifies, its key holder signs with `bits sign`" % stores[0])
     res, ref = None, None
     for url in stores:
         got = _publish_from_manifest(architecture, abspath(args.workDir), url, parser,
@@ -829,8 +830,9 @@ def _package_tarball(args, work_dir, installroot, package, version_dir, fetch_di
             "revision": revision if version else "", "hash": pkg_hash}
     got = fetch_store_tarball(spec, stores, arch, fetch_dir)
     if not got:
-        error("No tarball of %s: not in %s, nor in the stores (%s). Rebuild it (bits build "
-              "packs it) or give --remote-store.", name, os.path.dirname(local),
+        error("No tarball of %s: not in %s, nor in the stores (%s). Give the --remote-store "
+              "that has it, or rebuild it without --aggressive-cleanup.", name,
+              os.path.dirname(local),
               ", ".join(stores) or "none given")
         sys.exit(1)
     return got
