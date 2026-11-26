@@ -141,7 +141,7 @@ class DockerRunner:
         if self._extra_env:
           command_prefix="env " + " ".join(f"{k}={quote(v)}" for (k,v) in self._extra_env.items()) + " "
         return getstatusoutput(f"{command_prefix}{BASH} -c {quote(cmd)}",
-                               cwd=cwd, env=secret_free_env())   # recipe code
+                               cwd=cwd, env=credential_free_env())   # recipe code
       envOpts = []
       for env in self._extra_env.items():
         envOpts.append("-e")

@@ -365,6 +365,7 @@ def downloadGit(source, dest, work_dir):
     steps.append(["find", ".", "!", "-path", args["filter"], "-delete"])
     import subprocess
     for step in steps:
+        # bits' own git, not recipe code: the user's agent or credentials (private repositories)
         r = subprocess.run(step, cwd=exportpath, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if r.returncode:
             warning("Error while downloading sources from %s using git.\n\n%s\n\nresulted in:\n%s",
@@ -519,9 +520,12 @@ def downloadPip(source, dest, work_dir):
         return False
     import shlex
     import subprocess
+    from bits_helpers.cmd import credential_free_env   # an sdist's build code runs here
+    env = dict(credential_free_env(), **{k: v for k, v in os.environ.items()   # pip's own:
+               if k.startswith("PIP_") or k.lower() in ("http_proxy", "https_proxy", "no_proxy")})
     r = subprocess.run([pip, "download"] + shlex.split(pip_opts) +
                        ["--disable-pip-version-check", "-q", "-d", ".", "--", pack],
-                       cwd=dest, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                       cwd=dest, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     if r.returncode:
         debug("pip download of %s failed:\n%s", pack, r.stdout.decode(errors="replace"))
         return False

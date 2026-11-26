@@ -38,6 +38,9 @@ class CmdTestCase(unittest.TestCase):
             mock_getoutput.assert_not_called()
             getstatusoutput_docker("echo foo")
             mock_getstatusoutput.assert_called_with("/bin/bash -c 'echo foo'", cwd=None, env=mock.ANY)
+            with mock.patch.dict("os.environ", {"CI_JOB_TOKEN": "t", "PATH": "/bin"}):
+                getstatusoutput_docker("true")              # a recipe's system check
+            self.assertNotIn("CI_JOB_TOKEN", mock_getstatusoutput.call_args[1]["env"])
             mock_getstatusoutput.reset_mock()
         mock_getstatusoutput.assert_not_called()
 

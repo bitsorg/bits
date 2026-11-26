@@ -74,17 +74,24 @@ class NoShellTest(unittest.TestCase):
       open(os.path.join(out, "flask-3.1.1.tar.gz.downloading"), "w").close()   # download()'s sentinel
       seen = []
 
+      envs = []
+
       def run(cmd, **kw):
         seen.append(cmd)
+        env = kw.get("env") or os.environ
+        envs.append(("PREPUB_API_TOKEN" in env, env.get("PIP_INDEX_URL"), env.get("HTTPS_PROXY")))
         with open(os.path.join(kw["cwd"], "Flask-3.1.1.tar.gz"), "w") as f:
           f.write("sdist")
         return subprocess.CompletedProcess(cmd, 0, b"")
-      with patch("subprocess.run", side_effect=run):
+      with patch("subprocess.run", side_effect=run), \
+           patch.dict(os.environ, {"PREPUB_API_TOKEN": "t", "PIP_INDEX_URL": "https://u:t@pypi.site/simple",
+                                   "HTTPS_PROXY": "http://u:p@proxy:3128"}):
         self.assertTrue(dl.downloadPip("pip://flask/3.1.1?pip_options=--only-binary=:all:;touch+pwned"
                                        "&output=/flask-3.1.1.tar.gz", out, self.work))
     self.assertEqual(seen[0][:2], ["pip", "download"])
     self.assertEqual(seen[0][-2:], ["--", "flask==3.1.1"])
     self.assertIn("--only-binary=:all:;touch", seen[0])       # an argument, not a command
+    self.assertEqual(envs, [(False, "https://u:t@pypi.site/simple", "http://u:p@proxy:3128")])
     self.assertEqual(sorted(os.listdir(out)), ["flask-3.1.1.tar.gz", "flask-3.1.1.tar.gz.downloading"])
     self.assertFalse(os.path.exists(os.path.join(self.work, "pwned")))
 
