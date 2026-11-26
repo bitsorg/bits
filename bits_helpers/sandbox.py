@@ -255,6 +255,7 @@ _SBPL_TEMPLATE = """\
 (allow process*)
 (allow signal)
 (allow file-read*)
+{read_deny_rules}
 {builddir_rules}
 ; Temp dirs. On macOS /tmp and /var are symlinks to /private/tmp and
 ; /private/var, and SBPL subpath matching resolves symlinks, so the kernel
@@ -384,6 +385,28 @@ def _sbpl_quote(path: str) -> str:
     return '"%s"' % path
 
 
+# Read anything but the credentials a recipe has no use for (a later rule wins).
+CREDENTIAL_PATHS = (".bits", ".ssh", ".aws", ".netrc", ".gnupg",
+                    ".docker/config.json", "Library/Keychains")
+
+
+def _credential_read_rules(builddir: str) -> list:
+    import pwd                             # $HOME, and the account's home if HOME was changed
+    try:
+        account = pwd.getpwuid(os.getuid()).pw_dir
+    except KeyError:                       # a uid with no passwd entry
+        account = os.path.expanduser("~")
+    homes = dict.fromkeys((os.path.expanduser("~"), account))
+    rules = []
+    for home in homes:
+        for rel in CREDENTIAL_PATHS:
+            p = os.path.join(home, rel)
+            if (os.path.realpath(builddir) + os.sep).startswith(os.path.realpath(p) + os.sep):
+                continue                   # the build's own dir stays readable
+            rules += ["(deny file-read* (subpath %s))" % _sbpl_quote(d) for d in _both(p)]
+    return rules
+
+
 def make_sbpl_profile(allow_network: bool, builddir: str, write=None, path=None,
                       replay=None) -> str:
     """Write an SBPL sandbox profile and return its path.
@@ -413,6 +436,7 @@ def make_sbpl_profile(allow_network: bool, builddir: str, write=None, path=None,
                   for p in dirs for d in _both(p)]
     network_rule = "(allow network*)" if allow_network else ""
     content = _SBPL_TEMPLATE.format(
+        read_deny_rules="\n".join(_credential_read_rules(builddir)),
         builddir_rules="\n".join(rules),
         network_rule=network_rule,
     )
