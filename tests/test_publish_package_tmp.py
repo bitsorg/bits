@@ -5,6 +5,7 @@ work dir, not the system temp dir (often small), and removes them whatever stops
 
 import os
 import shutil
+import tarfile
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -25,8 +26,15 @@ class PackageTmpTest(unittest.TestCase):
     self.addCleanup(shutil.rmtree, systmp)
     root = os.path.join(work, "el9", "zlib", "1.3-1")
     os.makedirs(os.path.join(root, "lib"))
-    with open(os.path.join(root, "relocate-me.sh"), "w") as f:
-      f.write(relocate)
+    with open(os.path.join(root, ".build-hash"), "w") as f:
+      f.write("ab" * 20)
+    for name, text in ((".meta.json", "{}"), ("relocate-me.sh", relocate)):
+      with open(os.path.join(root, name), "w") as f:
+        f.write(text)
+    store = os.path.join(work, "TARS", "el9", "store", "ab", "ab" * 20)
+    os.makedirs(store)
+    with tarfile.open(os.path.join(store, "zlib-1.3-1.el9.tar.gz"), "w:gz") as tf:
+      tf.add(root, "el9/zlib/1.3-1")
     args = SimpleNamespace(publishView=None, fromManifest=None, package="zlib", version=None,
                            workDir=work, architecture="el9", cvmfsTarget="/cvmfs/r/x", scratchDir=None,
                            prepubUrl="https://prepub", prepubToken=None, prepubRepo=None,

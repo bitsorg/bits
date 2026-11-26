@@ -2236,11 +2236,18 @@ as `bits_version` in build manifests and SBOMs.
 
 ### bits publish
 
-Publish one built package to CVMFS through the cvmfs-prepub service — copy the
-immutable install tree, relocate it to `--cvmfs-target`, tar it and submit it to
-`--prepub-url` — or, with no `PACKAGE`, bulk-upload the latest build manifest to
+Publish one built package to CVMFS through the cvmfs-prepub service — unpack the
+package's tarball in a working copy, relocate it to `--cvmfs-target`, tar it and submit
+it to `--prepub-url` — or, with no `PACKAGE`, bulk-upload the latest build manifest to
 the S3 store (see [Publishing an existing local build to S3](#publishing-an-existing-local-build-to-s3-bits-publish)).
 A single package's S3-store write is `bits store upload`.
+
+The tarball is the work directory's (`TARS/<arch>/store/<h2>/<hash>/`), else fetched from
+`--remote-store`, e.g. when the build removed it after uploading it. The installed tree is
+not used: it is already relocated to the work directory, and it is never changed. With
+`--no-relocate` (a `--cvmfs-prefix` build) the installed tree is what is published.
+Only the package's own paths are mapped to `--cvmfs-target`: paths into its dependencies'
+installations are not (`bits cvmfs-publish` places a whole build, dependencies included).
 
 ```bash
 bits publish PACKAGE [VERSION] --cvmfs-target PATH --prepub-url URL [options]
@@ -2255,11 +2262,11 @@ bits publish [--manifest [FILE]] [--remote-store URL]       # bulk S3 upload
 | `--module-target PATH` | CVMFS path of the separate modules tree; the package's `etc/modulefiles` are published there as an independent job (also with `--no-relocate`). |
 | `--release-view NAME` | Publish the merged view of a release to `<cvmfs-target>/Views/NAME-<build_id>/<arch>/` instead of a package; the build id is read from the packages' `.meta.json`. (`--view` is the deprecated spelling.) |
 | `--no-relocate` | Skip relocation — for packages built at their final path with `bits build --cvmfs-prefix`. |
-| `--scratch-dir DIR` | Directory for the temporary CVMFS working copy (default: a system temp dir). |
+| `--scratch-dir DIR` | Directory for the temporary CVMFS working copy (default: under the work directory's `TMP/`). |
 | `-w DIR`, `-a ARCH` | Work directory (default `sw`) and architecture. |
 | `-n`, `--dry-run` | Show what would be published, without submitting anything. |
 | `--manifest [FILE]`, `--from-manifest [FILE]` | Bulk-upload every package of a build manifest to the S3 store (`latest` by default). This is the mode when no `PACKAGE` is given. |
-| `--remote-store URL` | S3 store for the bulk upload (default: `$BITS_S3_STORE`, else the built-in store). `--store` is the deprecated spelling. |
+| `--remote-store URL` | S3 store for the bulk upload, and the stores a package's tarball is fetched from when the work directory has none (default: `$BITS_S3_STORE`, else the built-in store). `--store` is the deprecated spelling. |
 | `--prepub-url URL` | cvmfs-prepub API base URL. Required for a CVMFS publish. |
 | `--prepub-token TOKEN` | API token (default `$PREPUB_API_TOKEN`). Each request is HMAC-signed and the secret never leaves the host; `--prepub-bearer-auth` sends it as an `Authorization: Bearer` header instead (only for a prepub running `auth_mode=bearer`). |
 | `--prepub-repo REPO`, `--prepub-path SUBPATH` | Repository and lease sub-path; derived from `--cvmfs-target` when omitted. |

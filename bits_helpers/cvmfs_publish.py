@@ -1392,11 +1392,28 @@ def certified_tarball(spec, ctx, tar_gz, fetch_dir):
     if checksum_file(tar_gz) == want:
         return tar_gz
     stores = [u.strip().split("::")[0] for u in (ctx.get("store") or "").split(",") if u.strip()]
-    from bits_helpers.sync import remote_from_url
     arch = spec.get("effective_architecture") or ctx["arch"]
+    got = fetch_store_tarball(spec, stores, arch, fetch_dir, want=want)
+    if not got:
+        raise SystemExit("%s: %s is not the tarball the manifest certifies (%s), and no store "
+                         "(--store: %s) has it" % (label, tar_gz, want, ", ".join(stores) or "none"))
+    print("%s: the local tarball is another packing of the hash; publishing the certified "
+          "one from the store" % label, file=sys.stderr)
+    return got
+
+
+def fetch_store_tarball(spec, stores, arch, fetch_dir, want=None):
+    """The package's tarball from the first of *stores* (URLs, in order) that has it,
+    fetched under *fetch_dir*: the object of the hash whose sha256 is *want*, or without
+    *want* the one named for spec's revision. None when no store has it."""
+    from bits_helpers.checksum import checksum_file
+    from bits_helpers.sync import remote_from_url
+    label = "%s@%s" % (spec.get("package"), spec.get("version"))
     fspec = {k: spec.get(k) for k in ("package", "version", "revision", "hash")}
     fspec["remote_hashes"] = [spec.get("hash")]
-    for n, url in enumerate(stores):    # in order; any object of the hash, by its sha256
+    rev = spec.get("revision")
+    name = "%s-%s%s.%s.tar.gz" % (spec["package"], spec.get("version"), "-" + rev if rev else "", arch)
+    for n, url in enumerate(stores):
         where = os.path.join(fetch_dir, str(n))
         os.makedirs(where, exist_ok=True)
         try:
@@ -1405,13 +1422,21 @@ def certified_tarball(spec, ctx, tar_gz, fetch_dir):
             print("WARNING: %s: store %s: %s" % (label, url, exc), file=sys.stderr)
             continue
         hash_dir = os.path.join(where, "TARS", arch, "store", spec["hash"][:2], spec["hash"])
-        for got in sorted(glob.glob(os.path.join(hash_dir, "*.tar.gz"))):
-            if checksum_file(got) == want:
-                print("%s: the local tarball is another packing of the hash; publishing the "
-                      "certified one from %s" % (label, url), file=sys.stderr)
+        for got in sorted(glob.glob(os.path.join(hash_dir, "*.tar.gz" if want else name))):
+            if not want or checksum_file(got) == want:
                 return got
-    raise SystemExit("%s: %s is not the tarball the manifest certifies (%s), and no store "
-                     "(--store: %s) has it" % (label, tar_gz, want, ", ".join(stores) or "none"))
+    return None
+
+
+def unpack_package(tar_gz, dest, label):
+    """Unpack a package tarball into *dest*, refusing absolute or climbing member paths
+    (the build's tar-slip guard, build_template.sh); the package root (.meta.json)."""
+    names = subprocess.run(["tar", "-tzf", tar_gz], check=True, stdout=subprocess.PIPE).stdout
+    if re.search(rb"(^|\n)(/|(.*/)?\.\.(/|\n|$))", names):
+        raise SystemExit("%s: %s has absolute or climbing member paths: not unpacked"
+                         % (label, tar_gz))
+    subprocess.run(["tar", "-xzf", tar_gz, "--no-same-owner", "-C", dest], check=True)
+    return _locate_pkgroot(dest)
 
 
 def publish_one(spec, ctx):
@@ -1493,13 +1518,7 @@ def publish_one(spec, ctx):
     try:
         os.makedirs(work_dir)
         tar_gz = certified_tarball(spec, ctx, tar_gz, os.path.join(pub_dir, "store"))
-        # The build's tar-slip guard (build_template.sh): no member may land outside.
-        names = subprocess.run(["tar", "-tzf", tar_gz], check=True, stdout=subprocess.PIPE).stdout
-        if re.search(rb"(^|\n)(/|(.*/)?\.\.(/|\n|$))", names):
-            raise SystemExit("%s@%s: %s has absolute or climbing member paths: not unpacked"
-                             % (pkg, vdir, tar_gz))
-        subprocess.run(["tar", "-xzf", tar_gz, "--no-same-owner", "-C", work_dir], check=True)
-        pkgroot = _locate_pkgroot(work_dir)
+        pkgroot = unpack_package(tar_gz, work_dir, "%s@%s" % (pkg, vdir))
         if skip_pkg and not os.path.isfile(os.path.join(pkgroot, "etc", "modulefiles", pkg)):
             raise AlreadyPublished(path)   # no modulefile to add: skip the relocate
 

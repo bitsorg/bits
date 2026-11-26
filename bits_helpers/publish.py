@@ -886,6 +886,40 @@ def doCertify(args, parser):
 # Main publish entry point
 # ---------------------------------------------------------------------------
 
+def _package_tarball(args, work_dir, installroot, package, version_dir, fetch_dir):
+    """The tarball of the installed build: the work dir's (TARS/<arch>/store/<h2>/<hash>),
+    else fetched from the stores (--remote-store), e.g. when the build removed it."""
+    arch = os.path.relpath(installroot, work_dir).split(os.sep)[0]
+    try:
+        with open(join(installroot, ".build-hash")) as f:
+            pkg_hash = f.read().strip()
+    except OSError:
+        pkg_hash = ""
+    if not re.match(r"^[0-9a-f]{6,}$", pkg_hash):
+        error("%s has no build hash (.build-hash): cannot find its tarball", installroot)
+        sys.exit(1)
+    package = basename(package)                 # a family's (externals/foo): foo
+    name = "%s-%s.%s.tar.gz" % (package, version_dir, arch)
+    local = join(work_dir, "TARS", arch, "store", pkg_hash[:2], pkg_hash, name)
+    if os.path.isfile(local):
+        return local
+    from bits_helpers.args import DEFAULT_S3_STORE
+    from bits_helpers.cvmfs_publish import fetch_store_tarball
+    from bits_helpers.sync import store_urls
+    stores = [u.split("::")[0] for u in
+              store_urls(getattr(args, "publishStore", None) or DEFAULT_S3_STORE)]
+    version, _, revision = version_dir.rpartition("-")
+    spec = {"package": package, "version": version or version_dir,
+            "revision": revision if version else "", "hash": pkg_hash}
+    got = fetch_store_tarball(spec, stores, arch, fetch_dir)
+    if not got:
+        error("No tarball of %s: not in %s, nor in the stores (%s). Rebuild it (bits build "
+              "packs it) or give --remote-store.", name, os.path.dirname(local),
+              ", ".join(stores) or "none given")
+        sys.exit(1)
+    return got
+
+
 def doPublish(args, parser):
     """Orchestrate the build-host publishing pipeline.
 
@@ -981,57 +1015,76 @@ def doPublish(args, parser):
     info("prepub url  : %s", prepub_url)
 
     no_relocate = getattr(args, "noRelocate", False)
-    relocate_script = join(installroot, "relocate-me.sh")
-    if not no_relocate and not exists(relocate_script):
-        error("relocate-me.sh not found in %s — was this package built with bits?", installroot)
-        sys.exit(1)
 
     # ------------------------------------------------------------------
-    # 2. Copy INSTALLROOT → working copy (INSTALLROOT is never touched)
+    # 2. The working copy (INSTALLROOT is never touched). Relocated: the package's
+    #    tarball, which holds the build's own paths for relocate-me.sh to map (the
+    #    installed tree is already relocated to the work dir). --no-relocate: a copy.
     # ------------------------------------------------------------------
     if scratch_dir:
         os.makedirs(scratch_dir, exist_ok=True)
-        copy_dir = join(scratch_dir, pkg_id)
-        if exists(copy_dir):
-            shutil.rmtree(copy_dir)
-        os.makedirs(copy_dir)
+        unpack_dir = join(scratch_dir, pkg_id)
+        if exists(unpack_dir):
+            shutil.rmtree(unpack_dir)
+        os.makedirs(unpack_dir)
     else:
         # Under the work dir, not the system temp dir (often small): removed below.
         os.makedirs(join(work_dir, "TMP"), exist_ok=True)
-        _tmpparent = tempfile.mkdtemp(prefix="bits-cvmfs-", dir=join(work_dir, "TMP"))
-        copy_dir   = join(_tmpparent, pkg_id)
-        os.makedirs(copy_dir)
+        unpack_dir = tempfile.mkdtemp(prefix="bits-cvmfs-", dir=join(work_dir, "TMP"))
 
     try:   # the working copy goes, whatever stops the publish
-        info("working copy: %s", copy_dir)
-
-        info("Copying installation tree …")
-        rsync_copy = ["rsync", "-a", installroot + "/", copy_dir + "/"]
-        subprocess.run(rsync_copy, check=True)
-
+        from bits_helpers import cvmfs_publish
         if no_relocate:
             # ------------------------------------------------------------------
-            # 3. Skip relocation: package was built with --cvmfs-prefix so all
-            #    embedded paths are already correct for CVMFS.
+            # 3. No relocation: built with --cvmfs-prefix, the installed tree's
+            #    paths are already the CVMFS ones (the tarball's are not).
             # ------------------------------------------------------------------
+            copy_dir = join(unpack_dir, pkg_id)
+            subprocess.run(["rsync", "-a", installroot + "/", copy_dir + "/"], check=True)
+            info("working copy: %s", copy_dir)
             info("--no-relocate: skipping relocation (package built at final CVMFS path)")
         else:
             # ------------------------------------------------------------------
-            # 3. Relocate working copy to final CVMFS target path.
+            # 3. Relocate the tarball's tree to the target, as cvmfs-publish does:
+            #    its own script, run from the unpack dir; the content goes to the
+            #    target itself, without the arch/pkg/ver levels (STRIP_PP).
             # ------------------------------------------------------------------
+            tar_gz = _package_tarball(args, work_dir, installroot, package, version_dir,
+                                      join(unpack_dir, "store"))
+            info("tarball     : %s", tar_gz)
+            tree = join(unpack_dir, "tree")
+            os.makedirs(tree)
+            copy_dir = cvmfs_publish.unpack_package(tar_gz, tree, pkg_id)
+            info("working copy: %s", copy_dir)
+            relocate_script = join(copy_dir, "relocate-me.sh")
+            if not exists(relocate_script):
+                error("relocate-me.sh not found in %s's tarball — was it built with bits?", pkg_id)
+                sys.exit(1)
             info("Relocating to %s …", cvmfs_target)
             from bits_helpers.cmd import credential_free_env
             # the package's own script: none of the job's credentials (PREPUB_API_TOKEN)
-            env = {**credential_free_env(), "INSTALL_BASE": cvmfs_target}
+            env = {**credential_free_env(), "INSTALL_BASE": cvmfs_target,
+                   "WORK_DIR": tree, "BITS_RELOCATE_STRIP_PP": "1"}
+            before = cvmfs_publish._files_under(tree)
             result = subprocess.run(
-                ["bash", "-e", relocate_script],
-                cwd=copy_dir,
+                ["bash", "-e", os.path.relpath(relocate_script, tree)],
+                cwd=tree,
                 env=env,
                 check=False,
             )
             if result.returncode != 0:
                 error("relocate-me.sh failed (exit %d)", result.returncode)
                 sys.exit(result.returncode)
+            for dp, _dn, fns in os.walk(copy_dir):
+                for f in fns:
+                    if f.endswith(".unrelocated"):
+                        os.remove(join(dp, f))
+            leaked = cvmfs_publish._writes_outside_pkgroot(before, cvmfs_publish._files_under(tree),
+                                                           copy_dir)
+            if leaked:
+                error("post-relocate.sh wrote outside the package, so not published: %s",
+                      " ".join(os.path.relpath(f, tree) for f in leaked))
+                sys.exit(1)
 
         # ------------------------------------------------------------------
         # 4. cvmfs-prepub path — each independent directory tree is
@@ -1061,18 +1114,16 @@ def doPublish(args, parser):
         publish_modules = bool(module_target) and os.path.isdir(module_dir) and os.listdir(module_dir)
 
         _publish_tree(copy_dir, repo, subpath, prepub_cfg, "package %s" % pkg_id,
-                      tmp_dir=os.path.dirname(copy_dir))
+                      tmp_dir=unpack_dir)
         if publish_modules:
             mrepo, msub = _resolve_repo_subpath(None, None, module_target, parser)
             _publish_tree(module_dir, mrepo, msub, prepub_cfg,
-                          "modulefiles for %s" % pkg_id, tmp_dir=os.path.dirname(copy_dir))
+                          "modulefiles for %s" % pkg_id, tmp_dir=unpack_dir)
         elif module_target:
             info("No modulefiles under %s; nothing to publish to module tree.", module_dir)
     finally:
         info("Cleaning up working copy …")
-        shutil.rmtree(copy_dir, ignore_errors=True)
-        if not scratch_dir:
-            shutil.rmtree(_tmpparent, ignore_errors=True)
+        shutil.rmtree(unpack_dir, ignore_errors=True)
     return True
 
 

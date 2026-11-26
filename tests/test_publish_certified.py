@@ -90,6 +90,27 @@ class CertifiedTest(unittest.TestCase):
     with self.assertRaisesRegex(SystemExit, r"no store \(--store: none\)"):
       self.certified(checksum_file(self.stored), store="")
 
+  def test_without_a_checksum_the_object_named_for_the_revision(self):
+    with self.store({"https://a": self.stored}):       # stores it as GCC-14-2
+      self.assertIsNone(cp.fetch_store_tarball(self.spec(None), ["https://a"], "tc",
+                                               os.path.join(self.t, "f1")))
+      spec = dict(self.spec(None), revision="2")
+      got = cp.fetch_store_tarball(spec, ["https://a"], "tc", os.path.join(self.t, "f2"))
+    self.assertEqual(os.path.basename(got), "GCC-14-2.tc.tar.gz")
+
+  def test_unpack_refuses_climbing_or_absolute_members(self):
+    for bad in ("../evil", "/abs/evil", "tc/../../evil"):
+      tar = os.path.join(self.t, "bad.tar.gz")
+      with tarfile.open(tar, "w:gz") as tf:
+        info = tarfile.TarInfo(bad)
+        tf.addfile(info, io.BytesIO(b""))
+      dest = tempfile.mkdtemp(dir=self.t)
+      with self.assertRaisesRegex(SystemExit, "climbing"):
+        cp.unpack_package(tar, dest, "bad")
+      self.assertEqual(os.listdir(dest), [])
+    self.assertTrue(cp.unpack_package(self.stored, tempfile.mkdtemp(dir=self.t), "ok")
+                    .endswith(os.path.join("tc", "GCC", "14-1")))
+
   def test_an_old_manifest_without_the_field(self):
     self.assertEqual(self.certified(None), self.local)
 

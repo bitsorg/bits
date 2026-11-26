@@ -1094,7 +1094,7 @@ def add_publish_arguments(subparsers, ctx):
                    help="Target architecture. Default: %(default)s.")
   ctx.arch_defaults(publish_parser)
   publish_parser.add_argument("--scratch-dir", dest="scratchDir", default=None, metavar="DIR",
-                              help="Directory for the temporary CVMFS working copy. Defaults to a system temp dir.")
+                              help="Directory for the temporary CVMFS working copy. Defaults to the work dir's TMP/.")
   publish_parser.add_argument("--no-relocate", dest="noRelocate", action="store_true", default=False,
                               help=("Skip the relocation step. Use this when the package was built "
                                     "directly at its final CVMFS path (--cvmfs-prefix on bits build), "
@@ -1110,7 +1110,8 @@ def add_publish_arguments(subparsers, ctx):
                                     "manifest file path; 'latest' (default) uses the newest under "
                                     "WORKDIR/MANIFESTS. Use --store to pick the target."))
   ctx.remote_store(publish_parser, dest="publishStore",
-                   help=("S3 store URL/bucket for --from-manifest. Accepts an https URL "
+                   help=("S3 store URL/bucket for --from-manifest, and where PACKAGE's "
+                         "tarball is fetched from when the work dir has none. Accepts an https URL "
                          "(https://<host>/<bucket>), b3://<bucket>, or s3://<bucket>; "
                          "several, comma-separated, each get the build. Default: %(default)s"))
 
