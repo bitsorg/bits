@@ -1845,8 +1845,10 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
     nice_token, nice_level = nice_ladder.acquire()
     if nice_level:  # nice 0 / default shares need no change
       from bits_helpers.args import _rootless_podman_controllers
-      if getattr(args, "docker", False) and getattr(args, "rootless_podman", False) and \
-         "cpu" not in (_rootless_podman_controllers() or {"cpu"}):
+      _ctrls = (_rootless_podman_controllers()
+                if getattr(args, "docker", False) and getattr(args, "rootless_podman", False)
+                else None)                      # None: unknown, nothing to leave out
+      if _ctrls is not None and "cpu" not in _ctrls:
         debug("build-nice: the cpu controller is not delegated to this user: no --cpu-shares")
       elif getattr(args, "docker", False):
         from bits_helpers.nice_ladder import cpu_shares_for_nice

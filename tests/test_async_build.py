@@ -759,6 +759,27 @@ class WriteFailureSummaryTest(unittest.TestCase):
                         self.assertIn("  " + log_path + "\n", message)
                         self.assertIn("error: fixture build failed", message)
 
+    def test_build_nice_gives_no_cpu_shares_without_the_cpu_controller(self):
+        from bits_helpers.build import runBuildCommand
+        for ctrls, shares in ((set(), False), ({"cpu", "memory"}, True), (None, True)):
+            args = Namespace(builders=2, workDir=self.dir, debug=False, resourceMonitoring=False,
+                             architecture=ARCH, docker=True, rootless_podman=True)
+            spec = dict(GOOD_SPEC, is_devel_pkg=False, requires=[])
+            sched = self._Sched([], {})
+            sched.buildFailuresLock = threading.Lock()
+            sched.log = MagicMock()
+            sched.nice_ladder = MagicMock(acquire=MagicMock(return_value=("t", 5)))
+            sched.renice_watchdog = None
+            ran = []
+            with patch.dict(os.environ, {"BITS_BUILD_WORK_DIR": self.dir, "BITS_DIST_HASH": "0123456789"}), \
+                 patch("bits_helpers.build.execute", side_effect=lambda cmd, printer, **kw: ran.append(cmd) or 7), \
+                 patch("bits_helpers.build.detectArch", return_value=ARCH), \
+                 patch("bits_helpers.args._rootless_podman_controllers", return_value=ctrls), \
+                 patch("bits_helpers.monitor.note_build"):
+                runBuildCommand(sched, "zlib", {"zlib": spec}, args,
+                                "podman run --rm img bash -ex /build.sh", None, self.dir, self.dir, None)
+            self.assertEqual("--cpu-shares" in ran[0], shares, (ctrls, ran[0]))
+
     def test_a_failure_before_the_recipe_shows_the_script_not_an_older_log(self):
         from bits_helpers.build import runBuildCommand
         args = Namespace(builders=2, workDir=self.dir, debug=False, resourceMonitoring=False,
