@@ -431,11 +431,14 @@ class Boto3TestCase(unittest.TestCase):
         from botocore.exceptions import ClientError
         def gone(Bucket, Key, Range=None):
             raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+        def replaced(Bucket, Key, Filename, ExtraArgs):   # the store then holds ours
+            b3sync.s3.head_object = lambda Bucket, Key: {"Metadata": ExtraArgs["Metadata"]}
         for head in ({"Metadata": {"Sha256": remote_sha}}, {}):   # recorded, legacy
             good_spec = dict(GOOD_SPEC)
             b3sync.s3.head_object = lambda Bucket, Key, head=head: head
             b3sync.s3.get_object = gone
             b3sync.s3.upload_file.reset_mock()
+            b3sync.s3.upload_file.side_effect = replaced
             b3sync.upload_symlinks_and_tarball(good_spec)
             b3sync.s3.upload_file.assert_called_once()
             self.assertEqual(good_spec["store_tarball_sha256"], shas[GOOD_SPEC["hash"]])

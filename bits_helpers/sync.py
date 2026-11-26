@@ -1786,7 +1786,17 @@ class Boto3RemoteSync(RemoteSync):
     self.s3.upload_file(Bucket=self.writeStore, Key=tar_path,
                         Filename=local_file,
                         ExtraArgs={"Metadata": {_SHA256_META: sha}})
-    # Freshly uploaded: the store now holds exactly these bytes.
+    # Another build of this hash may have stored its own meanwhile (both saw none):
+    # the manifest records what the store holds, as for an object kept above.
+    try:
+      stored = self._s3_remote_tarball_sha256(tar_path)
+    except Exception as exc:  # pylint: disable=broad-except
+      debug("%s: could not read back the stored checksum (%s)", tar_path, exc)
+      stored = None
+    if stored and stored != sha:
+      warning("%s: another build stored it meanwhile; recording the store's %s", tarball, stored)
+      sha = stored
+      spec["store_tarball_by"] = self._writers.get(tar_path) or "unknown"
     spec["store_tarball_sha256"] = sha
 
   def fetch_source(self, url_checksum, filename, dest_dir) -> bool:
