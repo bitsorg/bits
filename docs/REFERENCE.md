@@ -521,7 +521,7 @@ the root of a published release view.
 
 `bits compliance` audits it all (see the command reference), and
 `bits compliance --enforce` is the admin tool to purge non-compliant packages
-from the store and its manifests and re-certify the affected platforms.
+from the store and its manifests, and take them out of the signed manifests.
 
 ---
 
@@ -1935,7 +1935,7 @@ bits compliance --enforce [--dry-run] [--key PEM]     # admin
 | `--no-store-check` | off | Audit the recipes only. |
 | `--enforce` | off | ADMIN: purge non-compliant packages from the store (see below). |
 | `--dry-run` | off | With `--enforce`: print every action, touch nothing. |
-| `--key PEM` | _(none)_ | With `--enforce`: re-sign the affected platforms after the purge. |
+| `--key PEM` | _(none)_ | With `--enforce`: sign the signed manifests again without the restricted packages. |
 | `-w DIR`, `--work-dir DIR` | `sw` | Scratch for the store client. |
 
 The **audit** reports: recipes missing a `license:` field, unverified
@@ -1953,9 +1953,11 @@ store objects (all files under their `TARS/<arch>/store/…` prefixes), their
 rev-index markers and their `SOURCES/cache/` archives (resolved from the
 recipes; unresolvable URLs are reported, never guessed), rewrites the
 per-build BOMs without the offending entries (an emptied BOM is deleted), and
-with `--key` re-certifies the affected architectures from the rewritten BOMs
-(per-platform scoping — an arch left empty gets an empty signed manifest,
-i.e. revocation). Without `--key` the next CI certification self-heals.
+with `--key` (checked before anything is removed) signs each signed manifest
+that lists a restricted package again without it, once it verifies: only the
+entries its signer could certify stay and nothing is added (the BOMs in the
+store are not approvals); one bits-orchestrator numbered is refused. Without
+`--key` the next CI certification self-heals.
 It prints the matching `bits-manifests` repo files to prune, since CI
 re-derives the signed manifests from the repo. Requires S3 write credentials
 (`--dry-run` does not). Always dry-run first.

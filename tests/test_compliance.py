@@ -212,23 +212,85 @@ class EnforceTestCase(unittest.TestCase):
         self.assertNotIn(good, self.deleted)                       # Good's build stays
         self.assertIn(resolve_store_path("el9", "beef01") + "/Secret-1-1.el9.tar.gz", self.deleted)
 
-    def test_recert_failure_reported_not_crash(self):
-        # Objects are deleted, then a PRE-EXISTING manifest conflict makes the
-        # re-certification raise. enforce_store must catch it, report, and return
-        # 1 — not propagate a traceback and not undo the (idempotent) deletions.
-        from bits_helpers import certify as _certify
+    def signed_store(self, signer=None, policy=None, extra=(), trust_signer=False, **fields):
+        """A signed manifest for el9 (Secret, Good and *extra*) and the key: (pem, uploads)."""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from bits_helpers import trust
+        priv = Ed25519PrivateKey.generate()
+        pem = os.path.join(self.d, "key.pem")
+        with open(pem, "wb") as fh:
+            fh.write(priv.private_bytes(serialization.Encoding.PEM,
+                                        serialization.PrivateFormat.PKCS8,
+                                        serialization.NoEncryption()))
+        self.kid = trust.key_id(priv.public_key())
+        data = json.dumps(dict(fields, packages=[{"package": "Secret", "hash": "beef01"},
+                                                 {"package": "Good", "hash": "aa11"}] + list(extra)))
+        sig = json.dumps(trust.sign_bytes(data.encode(), signer or priv))
+        for key in ("MANIFESTS/common-manifest-el9.json", "MANIFESTS/x/common-manifest-el9.json"):
+            self.objects[key], self.objects[key + ".sig"] = data, sig   # only the first is read
+        self.objects["MANIFESTS/common-manifest-el8.json"] = json.dumps({"packages": []})
+        self.objects["MANIFESTS/b1/x.el9.json"] = json.dumps({"packages": [   # not approved
+            {"package": "Secret", "hash": "beef01", "effective_architecture": "el9"},
+            {"package": "Other", "hash": "cc22", "effective_architecture": "el9",
+             "tarball_sha256": "sha256:" + "1" * 64}]})
+        uploads = {}
+
+        def upload_file(src, bucket, key):
+            with open(src) as fh:
+                uploads[key] = fh.read()
+        self.s3.upload_file = upload_file
+        trusted = {trust.key_id(k.public_key()): k.public_key()
+                   for k in [priv] + ([signer] if trust_signer else [])}
+        for name, value in (("load_trusted_keys", trusted), ("load_key_policy", policy)):
+            p = patch.object(trust, name, return_value=value)
+            p.start()
+            self.addCleanup(p.stop)
+        return pem, uploads
+
+    def enforce(self, pem, dry_run=False):
+        return compliance.enforce_store("b3://bkt", self.rec, self.d, key_pem=pem, dry_run=dry_run)
+
+    def test_with_a_key_the_signed_manifest_loses_the_restricted_entries_only(self):
+        from bits_helpers import trust
+        pem, uploads = self.signed_store()
+        self.assertEqual(self.enforce(pem, dry_run=True), 0)
+        self.assertEqual(uploads, {})
+        self.assertEqual(self.enforce(pem), 0)
+        key = "MANIFESTS/common-manifest-el9.json"
+        self.assertEqual(sorted(uploads), [key, key + ".sig"])
+        # what it certified, less Secret; the BOMs (unapproved ones too) add nothing
+        self.assertEqual(json.loads(uploads[key])["packages"], [{"package": "Good", "hash": "aa11"}])
+        self.assertTrue(trust.verify_bytes(uploads[key].encode(), json.loads(uploads[key + ".sig"]),
+                                           trust.load_trusted_keys()))
+
+    def test_only_entries_its_signer_could_certify_stay(self):
+        pem, uploads = self.signed_store(extra=[{"package": "Alien", "hash": "dd", "group": "lhcb"}],
+                                         policy={"default": {"common"}})
+        self.assertEqual(self.enforce(pem), 0)
+        self.assertEqual([e["package"] for e in json.loads(
+            uploads["MANIFESTS/common-manifest-el9.json"])["packages"]], ["Good"])
+
+    def test_what_cannot_be_signed_again_is_reported(self):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         from bits_helpers.utilities import resolve_store_path
-        # make_s3_probe is stubbed too: the real one builds a boto3 client, so
-        # without boto3 installed it exits the test instead of reaching the mock.
-        with patch.object(_certify, "certify_by_arch",
-                          side_effect=_certify.CertifyConflict("pre-existing sha256 conflict")), \
-             patch.object(_certify, "make_s3_probe", return_value=None):
-            rc = compliance.enforce_store("b3://bkt", self.rec, self.d,
-                                          key_pem="/tmp/does-not-need-to-exist.pem")
-        self.assertEqual(rc, 1)
-        # the restricted tarball was still deleted before the re-cert failed
-        self.assertIn(resolve_store_path("el9", "beef01") + "/Secret-1-1.el9.tar.gz",
-                      self.deleted)
+        from bits_helpers import trust
+        other = Ed25519PrivateKey.generate()
+        for kw in ({"signer": Ed25519PrivateKey.generate()},          # does not verify
+                   {"signer": other, "trust_signer": True,             # the key may not sign it
+                    "policy": {trust.key_id(other.public_key()): {"*"}, "default": set()}},
+                   {"sequence": 7, "issuer": "bits-orchestrator/x"}):  # the orchestrator's
+            with self.subTest(kw=kw):
+                pem, uploads = self.signed_store(**kw)
+                self.assertEqual(self.enforce(pem), 1)
+                self.assertEqual(uploads, {})
+        self.assertIn(resolve_store_path("el9", "beef01") + "/Secret-1-1.el9.tar.gz", self.deleted)
+
+    def test_an_unusable_key_is_refused_before_anything_is_removed(self):
+        with open(os.path.join(self.d, "bad.pem"), "w") as fh:
+            fh.write("not a key")
+        self.assertEqual(self.enforce(os.path.join(self.d, "bad.pem")), 1)
+        self.assertEqual((self.deleted, self.put), ([], {}))
 
 
 class RecipeSourcePrefixNameTest(unittest.TestCase):

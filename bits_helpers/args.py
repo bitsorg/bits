@@ -1380,16 +1380,17 @@ def add_compliance_arguments(subparsers, ctx):
   compliance_parser.add_argument("--enforce", dest="enforce", action="store_true", default=False,
                                  help=("ADMIN: remove non-compliant packages from the store — delete their "
                                        "TARS objects, rev-index markers and SOURCES archives, rewrite the "
-                                       "per-build BOMs without them, and (with --key) re-certify the affected "
-                                       "architectures; in a store whose certified set bits-orchestrator owns, "
+                                       "per-build BOMs without them, and (with --key) sign the signed manifests "
+                                       "again without them; in a store whose certified set bits-orchestrator owns, "
                                        "ask it to take the packages out of the set's BOMs instead (--console, "
                                        "a GitLab token). Requires S3 write credentials. Combine with --dry-run "
                                        "to preview every action first."))
   compliance_parser.add_argument("--dry-run", dest="dryRun", action="store_true", default=False,
                                  help="With --enforce: print every deletion/rewrite without touching anything.")
   compliance_parser.add_argument("--key", dest="enforceKey", metavar="PEM", default=None,
-                                 help=("With --enforce: Ed25519 release key to re-sign the affected "
-                                       "architectures' common manifests after the purge. Without it the next "
+                                 help=("With --enforce: Ed25519 release key to sign each signed manifest that "
+                                       "lists a restricted package again without it (nothing is added). "
+                                       "Without it the next "
                                        "CI certification heals them (removed objects are dropped as missing). "
                                        "Refused for a store whose manifests bits-orchestrator signs."))
   compliance_parser.add_argument("--console", dest="console", metavar="URL", default=None,

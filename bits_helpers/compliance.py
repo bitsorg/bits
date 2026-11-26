@@ -390,6 +390,51 @@ def _decertify_packages(console, groups, packages, dry_run):
     return failed
 
 
+def _resign_without(s3, bucket, keys, restricted, key_pem, dry_run):
+    """Sign each signed manifest in *keys* that lists a *restricted* package again
+    without it, once it verifies; only entries its signer could certify stay. 1 on a failure."""
+    import shutil
+    import tempfile
+    from bits_helpers import certify, trust
+    signer = certify._LocalSigner(key_pem)
+    kid, trusted, policy, rc = signer.key_id(), trust.load_trusted_keys(), trust.load_key_policy(), 0
+    tmp = tempfile.mkdtemp(prefix="bits-enforce-")
+    try:
+        for key in sorted(keys):
+            try:
+                data = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+                doc = json.loads(data)
+                pkgs = [e for e in doc.get("packages") or [] if isinstance(e, dict)]
+                if not any(str(e.get("package", "")).lower() in restricted for e in pkgs):
+                    continue
+                envelope = json.loads(s3.get_object(Bucket=bucket, Key=key + ".sig")["Body"].read())
+                signed_by = trust.verify_bytes(data, envelope, trusted)
+                if not signed_by:
+                    raise ValueError("it does not verify against the trusted keys")
+                if "sequence" in doc:
+                    raise ValueError("bits-orchestrator numbered it; only it may sign it again")
+                kept = [e for e in pkgs if str(e.get("package", "")).lower() not in restricted
+                        and trust.key_authorized(signed_by, e.get("group"), policy)]
+                bad = sorted({e.get("group") or "common" for e in kept
+                              if not trust.key_authorized(kid, e.get("group"), policy)})
+                if bad:
+                    raise ValueError("the key may not sign group(s) " + ", ".join(bad))
+                if dry_run:
+                    info("  would sign %s again without %d entr(y/ies)", key, len(pkgs) - len(kept))
+                    continue
+                doc["packages"] = kept
+                op, sp = certify._write_signed(doc, signer, os.path.join(tmp, os.path.basename(key)))
+                s3.upload_file(op, bucket, key)
+                s3.upload_file(sp, bucket, key + ".sig")
+                info("  signed %s again without %d entr(y/ies)", key, len(pkgs) - len(kept))
+            except Exception as exc:      # pylint: disable=broad-except
+                error("enforce: %s not signed again: %s", key, exc)
+                rc = 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return rc
+
+
 def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
                   work_dir="sw", console=None):
     """Remove non-compliant packages from the store and its manifests.
@@ -402,11 +447,12 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
          empty is deleted);
       3. delete the restricted packages' ``SOURCES/cache/`` archives resolved
          from their recipes;
-      4. with *key_pem*, re-certify the affected architectures from the
-         rewritten BOMs (per-platform scoping; an arch left without packages
-         gets an EMPTY signed manifest — revocation). Without a key the next
-         CI certification self-heals (missing objects are dropped), but the
-         signed manifests are stale until then.
+      4. with *key_pem* (checked before 1), sign each signed manifest that lists
+         a restricted package again without it, once it verifies: only entries its
+         signer could certify stay, nothing is added; one bits-orchestrator
+         numbered is refused. Without a key the next CI certification
+         self-heals (missing objects are dropped), but the signed manifests
+         are stale until then.
 
     In a store whose certified set bits-orchestrator owns (orchestrated.py), 4 is
     a decertify-package request instead, for each restricted package found in a
@@ -437,6 +483,13 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
         error("--enforce: %s signs this store's manifests; drop --key, and the restricted "
               "packages are decertified instead", orchestrated.describe(marker))
         return 1
+    if key_pem and not marker:
+        from bits_helpers import trust
+        try:   # before anything is removed
+            trust.load_private_key(key_pem)
+        except Exception as exc:          # pylint: disable=broad-except
+            error("--enforce: cannot use --key %s: %s", key_pem, exc)
+            return 1
     if marker and console is None and not dry_run:
         error("--enforce: %s certifies this store: decertifying the restricted packages needs "
               "the bits-console URL (--console, $BITS_CONSOLE_URL, the site's console.backend_url) "
@@ -486,10 +539,12 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
     keys = [o["Key"] for page in paginator.paginate(Bucket=bucket,
                                                     Prefix="MANIFESTS/")
             for o in page.get("Contents", []) or []]
-    affected_archs, remaining_boms, removed, repo_prune = set(), [], 0, []
+    affected_archs, removed, repo_prune, signed_keys = set(), 0, [], []
     found = set()                                  # restricted packages present
     for key in keys:
         leaf = key.split("/")[-1]
+        if key == "MANIFESTS/" + leaf and leaf.startswith("common-manifest") and leaf.endswith(".json"):
+            signed_keys.append(key)   # the ones consumers read
         if marker and leaf.startswith("common-manifest") and leaf.endswith(".json"):
             # What the set still certifies, even where the BOM copies are gone.
             try:
@@ -512,7 +567,6 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
         offending = [e for e in pkgs
                      if str(e.get("package", "")).lower() in restricted]
         if not offending:
-            remaining_boms.append(doc)
             continue
         for e in offending:
             arch = e.get("effective_architecture") or ""
@@ -536,7 +590,6 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
             if not dry_run:
                 s3.put_object(Bucket=bucket, Key=key,
                               Body=json.dumps(doc, indent=1).encode())
-            remaining_boms.append(doc)
         else:
             info("  %s delete %s (no packages left)", act, key)
             if not dry_run:
@@ -558,8 +611,8 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
                 "prune the matching BOM file(s) there too: %s",
                 ", ".join(sorted(repo_prune)))
 
-    # 4 — take the packages out of the orchestrator's set, or re-certify the
-    # affected platforms from the rewritten BOMs.
+    # 4 — take the packages out of the orchestrator's set, or out of each signed
+    # manifest, signed again: never a re-certification of the BOMs, unapproved ones too.
     if marker:
         # One spelling per package: the set matches names case-insensitively.
         names = {n.lower(): n for n in sorted(found, reverse=True)}
@@ -567,37 +620,8 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
             error("Restricted objects were removed, but not every package was "
                   "decertified; re-run this command (deletions are idempotent)")
             return 1
-    elif affected_archs and key_pem and not dry_run:
-        import tempfile
-        from bits_helpers import certify as _certify
-        out = os.path.join(tempfile.mkdtemp(prefix="bits-enforce-"),
-                           "common-manifest.json")
-        # The restricted objects are already deleted. Re-certification can still
-        # fail on a PRE-EXISTING manifest problem (e.g. two BOMs disagree on a
-        # package's tarball_sha256 — a non-reproducible build). Don't crash with a
-        # traceback: report that the purge succeeded but the signed manifests are
-        # now stale, and how to finish. Deletions are idempotent, so re-running
-        # after resolving the conflict completes the re-sign.
-        try:
-            outputs = _certify.certify_by_arch(
-                remaining_boms, key_pem, out,
-                probe=_certify.make_s3_probe(store_url, work_dir, "enforce"),
-                only_archs=sorted(affected_archs))
-        except Exception as exc:              # pylint: disable=broad-except
-            error("Restricted objects were removed, but RE-CERTIFICATION FAILED: %s",
-                  exc)
-            error("The signed manifests for %s still reference the removed objects. "
-                  "Resolve the conflict above (it is unrelated to the restricted "
-                  "packages — remove one of the two conflicting build manifests), "
-                  "then re-run this command (deletions are idempotent) or run "
-                  "`bits sign` to re-sign.", ", ".join(sorted(affected_archs)))
-            return 1
-        for op, sp, arch in outputs:
-            for src, dst in ((op, "MANIFESTS/common-manifest-%s.json" % arch),
-                             (sp, "MANIFESTS/common-manifest-%s.json.sig" % arch)):
-                s3.upload_file(src, bucket, dst)
-            info("  re-certified %s -> MANIFESTS/common-manifest-%s.json(.sig)",
-                 arch, arch)
+    elif key_pem:
+        return _resign_without(s3, bucket, signed_keys, restricted, key_pem, dry_run)
     elif affected_archs and not dry_run:
         warning("no --key given: the signed manifests for %s still reference "
                 "the removed objects until the next certification (which drops "

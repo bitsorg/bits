@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits compliance --enforce --key` signs each signed manifest that lists a restricted package again without it, once it verifies against the trusted keys, keeping only the entries its signer could certify (one bits-orchestrator numbered is left to it). A key that cannot be used is refused before anything is removed. It re-certified the platform from every BOM in the store, unapproved ones included, as group `common`.
 - **[Fix]** `bits cvmfs publish` refuses a `.bits-view.json` entry that is absolute or climbs out (`..`), and the view fails: a climbing entry placed a link outside the staging directory, on the publish host.
 - **[Fix]** `bits publish PACKAGE` publishes the tarball the signed manifests or the build manifest certify, as `bits cvmfs publish` does: another packing of the hash is replaced by the certified object from the store, and a tarball no manifest records is refused. It took the work dir's tarball, or the store's, unchecked.
 - **[Fix]** `bits cvmfs publish` refuses a package whose tarball sha256 neither the signed manifests nor the build manifest record; it published it unchecked. A build now records the sha256 of an already installed package too, from its tarball in the work dir, hashed once (it gets a .sha256 sidecar): on a warm build host most packages had none.
