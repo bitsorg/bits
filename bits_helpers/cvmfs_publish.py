@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 from bits_helpers.arch import SHARED_ARCH
 
@@ -204,6 +205,22 @@ def resolve_pkg_path(pkgroot, repo, pkg, vdir, ver, rev, platform, install_dir,
 
 # ── staged submit (the CI does this with raw curl; not in prepub.submit_job) ──
 
+def _submit(post, attempts, retried):
+  """resp of post(), repeated on a 5xx or an exception in *retried* up to *attempts*
+  times (a fresh signature each time): only with an identity_path, which prepub
+  re-checks, so a job whose reply was lost is not published twice."""
+  from bits_helpers import prepub as _pp
+  for attempt in range(1, attempts + 1):
+    try:
+      resp = post()
+    except retried:
+      if attempt == attempts:
+        raise
+    else:
+      if resp.status_code < 500 or attempt == attempts:
+        return resp
+    time.sleep(_pp._SUBMIT_BACKOFF * (2 ** (attempt - 1)))
+
 def submit_staged(prepub_url, token, repo, path, staging_prefix, catalog_hash,
                   build_id="", bearer_auth=False, no_verify_tls=False,
                   identity_path="", identity_hash="", replace=False):
@@ -230,10 +247,15 @@ def submit_staged(prepub_url, token, repo, path, staging_prefix, catalog_hash,
     for k, v in _identity_fields(identity_path, identity_hash, replace).items():
         fields[k] = (None, v)
         signed_fields[k] = v
-    headers = _pp._auth_headers(token, "POST", _pp._signed_uri(url),
-                                fields=signed_fields, bearer_auth=bearer_auth,
-                                no_verify_tls=no_verify_tls)
-    resp = session.post(url, files=fields, headers=headers, timeout=300)
+
+    def post():
+        headers = _pp._auth_headers(token, "POST", _pp._signed_uri(url),
+                                    fields=signed_fields, bearer_auth=bearer_auth,
+                                    no_verify_tls=no_verify_tls)
+        return session.post(url, files=fields, headers=headers, timeout=300)
+    import requests      # no tar is sent: any network error may be repeated
+    resp = _submit(post, _pp._SUBMIT_ATTEMPTS if identity_path and not bearer_auth else 1,
+                   requests.RequestException)
     if resp.status_code not in (200, 201, 202):
         raise SystemExit("prepub staged submit failed: HTTP %s: %s"
                          % (resp.status_code, resp.text[:400]))
@@ -373,9 +395,6 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
     # tar and the MAC only matches if the same digest was signed. Signing
     # tar_sha256 as a field is NOT enough — the httpsig body-hash component is
     # what makes a wrong/truncated upload 401 (mirrors prepub.submit_job).
-    headers = _pp._auth_headers(token, "POST", _pp._signed_uri(url),
-                                fields=signed_fields, body_hash=tar_sha256,
-                                bearer_auth=bearer_auth, no_verify_tls=no_verify_tls)
     fields = {
         "repo":         (None, repo),
         "path":         (None, path),
@@ -396,14 +415,23 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
         fields[k] = (None, v)
     fields["tar"] = ("pkg.tar.gz" if tar_encoding else "pkg.tar", tar_file,
                      "application/octet-stream")
-    with _pp.MultipartFile(fields) as body:   # streamed: the tar is not held in memory
-        headers["Content-Type"] = body.content_type
-        try:
-            resp = session.post(url, data=body, headers=headers, timeout=1800)
-        except requests.ConnectionError as exc:
-            raise SystemExit("upload of %s cut off by prepub (%s); prepub refuses"
-                             " an upload that is too large or would fill its"
-                             " spool, see its log" % (_human(size), exc))
+
+    def post():
+        headers = _pp._auth_headers(token, "POST", _pp._signed_uri(url),
+                                    fields=signed_fields, body_hash=tar_sha256,
+                                    bearer_auth=bearer_auth, no_verify_tls=no_verify_tls)
+        with _pp.MultipartFile(fields) as body:   # streamed: the tar is not held in memory
+            headers["Content-Type"] = body.content_type
+            return session.post(url, data=body, headers=headers, timeout=1800)
+    try:   # a connection cut off mid-upload is prepub refusing it: not repeated
+        resp = _submit(post, _pp._SUBMIT_ATTEMPTS if identity_path and not bearer_auth else 1,
+                       requests.ConnectTimeout)
+    except requests.ConnectTimeout as exc:
+        raise SystemExit("prepub at %s did not answer (%s)" % (prepub_url, exc))
+    except requests.ConnectionError as exc:
+        raise SystemExit("upload of %s cut off by prepub (%s); prepub refuses"
+                         " an upload that is too large or would fill its"
+                         " spool, see its log" % (_human(size), exc))
     if resp.status_code not in (200, 201, 202):
         raise SystemExit("prepub ingest submit failed: HTTP %s: %s"
                          % (resp.status_code, resp.text[:400]))
