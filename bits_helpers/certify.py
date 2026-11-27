@@ -739,7 +739,46 @@ def build_by_arch(manifests, probe=None, default_group=None, valid_days=None,
     return out
 
 
-def make_s3_probe(store_url, work_dir, default_arch):
+class DigestFile:
+    """The cache of :func:`s3_probe` in a file: {key: [etag, size, sha256]} of the store
+    objects hashed before. S3 sets the ETag: the same key, ETag and size are taken to be the same bytes."""
+
+    def __init__(self, path):
+        self.path, self.changed = path, False
+        try:
+            with open(path) as fh:
+                self.entries = {k: v for k, v in json.load(fh).items()
+                                if isinstance(v, list) and len(v) == 3}
+        except (OSError, ValueError, AttributeError):
+            self.entries = {}
+
+    def get(self, key, etag, size):
+        e = self.entries.get(key)
+        return e[2] if e and e[0] == etag and e[1] == size else None
+
+    def put(self, key, etag, size, sha256):
+        self.entries[key], self.changed = [etag, size, sha256], True
+
+    def save(self):
+        if not self.changed:
+            return
+        import tempfile
+        try:
+            d = os.path.dirname(os.path.abspath(self.path))
+            os.makedirs(d, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=d, prefix=".digests-")
+            try:
+                with os.fdopen(fd, "w") as fh:
+                    json.dump(self.entries, fh)
+                os.replace(tmp, self.path)
+            except BaseException:
+                os.unlink(tmp)
+                raise
+        except OSError as exc:
+            warning("certify: digest cache %s not saved: %s", self.path, exc)
+
+
+def make_s3_probe(store_url, work_dir, default_arch, cache=None):
     """Build a ``probe(effective_architecture, hash)`` backed by the S3 store.
 
     Streams the content-addressed store object and returns its ``sha256:HEX``
@@ -752,7 +791,7 @@ def make_s3_probe(store_url, work_dir, default_arch):
     store = _normalize_s3_store(store_url)
     writer = remote_from_url(store, store, default_arch, work_dir)
     bucket = getattr(writer, "remoteStore", None) or getattr(writer, "writeStore", None)
-    return s3_probe(writer.s3, bucket, default_arch)
+    return s3_probe(writer.s3, bucket, default_arch, cache=cache)
 
 
 def _s3_absent(exc):
@@ -949,10 +988,12 @@ def doSign(args, parser):
         if stray:
             parser.error("--changed-groups needs each manifest under manifests/<group>/ (or "
                          "--group): not %s" % ", ".join(stray[:5]))
-    probe = None
+    probe = digests = None
     if not getattr(args, "noStoreCheck", False):
         _refuse_orchestrated(args.certifyStore, args.workDir, args.architecture, parser)
-        probe = make_s3_probe(args.certifyStore, args.workDir, args.architecture)
+        if getattr(args, "digestCache", None):   # trusted as signed: the signer's own file
+            digests = DigestFile(args.digestCache)
+        probe = make_s3_probe(args.certifyStore, args.workDir, args.architecture, cache=digests)
     valid_days = getattr(args, "validDays", None)
     if valid_days is not None and valid_days < 0:
         parser.error("--valid-days must be >= 0 (0 means no expiry)")
@@ -1014,6 +1055,9 @@ def doSign(args, parser):
                                   sign_proxy=sign_proxy, sign_service=sign_service)
     except CertifyError as exc:
         parser.error(str(exc))
+    finally:
+        if digests is not None:
+            digests.save()
     from bits_helpers.log import banner
     for out_path, sig_path, arch in outputs:
         banner("Certified %s manifest -> %s (signature: %s)", arch, out_path, sig_path)

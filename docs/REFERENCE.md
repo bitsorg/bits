@@ -356,7 +356,10 @@ proxy (`--sign-via-proxy`) or the bits-console signing service
 (`--sign-via-service`). An entry's group is its BOM's directory
 (`manifests/<group>/`), else `--group`; an entry naming another is refused.
 `--no-store-check`
-does an offline dry merge. In the manifests-repo CI,
+does an offline dry merge. `--digest-cache FILE` keeps each store tarball's sha256
+(by key, ETag and size) so an unchanged one is not hashed again; its entries are
+signed as they are, so FILE must be the signer's alone (never a shared CI cache).
+In the manifests-repo CI,
 `--require-approval --admins ADMINS` refuses to sign unless the certifier is an
 authorised admin. The identity is established in one of three ways (in order):
 `--certifier USERNAME` (default `$GITLAB_USER_LOGIN` — the pipeline initiator

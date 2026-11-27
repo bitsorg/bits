@@ -1323,6 +1323,11 @@ def add_sign_arguments(subparsers, ctx):
   certify_parser.add_argument("--no-store-check", dest="noStoreCheck", action="store_true", default=False,
                               help=("Skip validating each hash against the store before signing. "
                                     "Only for offline dry merges; a real certification must verify the store."))
+  certify_parser.add_argument("--digest-cache", dest="digestCache", metavar="FILE", default=None,
+                              help=("Remember each store tarball's sha256 in FILE (by key, ETag and size), "
+                                    "so an unchanged object is not downloaded and hashed again. Its entries "
+                                    "are trusted as signed: FILE must be writable by the signer only, never "
+                                    "in a CI cache other jobs restore."))
   ctx.work_dir(certify_parser,
                help="bits work directory (source of MANIFESTS when no MANIFEST is given). Default: %(default)s.")
   ctx.architecture(certify_parser,

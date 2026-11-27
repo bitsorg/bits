@@ -1064,6 +1064,75 @@ class TestGroupFromPath(unittest.TestCase):
         self.assertEqual(common["packages"][0]["group"], "lcg")
 
 
+class TestDigestFile(unittest.TestCase):
+    """bits sign --digest-cache: a store object is hashed once (by key, ETag and size)."""
+
+    def test_only_new_objects_are_hashed_across_runs(self):
+        import io
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        key = "TARS/el9/store/h1/h1abc/p-1-1.el9.tar.gz"
+        objects, gets = {key: b"bytes"}, []
+
+        class S3:
+            def head_object(self, Bucket, Key):
+                return {"ETag": '"e-%d"' % len(objects[Key]), "ContentLength": len(objects[Key])}
+
+            def get_object(self, Bucket, Key):
+                gets.append(Key)
+                return {"Body": io.BytesIO(objects[Key])}
+        for run, want in ((1, 1), (2, 1)):                   # a second run: from the file
+            cache = certify.DigestFile(os.path.join(tmp, "digests.json"))
+            got = certify.s3_probe(S3(), "b", "el9", cache=cache)("el9", "h1abc", "p-1-1.el9.tar.gz")
+            cache.save()
+            self.assertEqual((run, len(gets)), (run, want))
+        objects[key] = b"other bytes"                        # changed: hashed again
+        cache = certify.DigestFile(os.path.join(tmp, "digests.json"))
+        self.assertNotEqual(certify.s3_probe(S3(), "b", "el9", cache=cache)(
+            "el9", "h1abc", "p-1-1.el9.tar.gz"), got)
+        self.assertEqual(len(gets), 2)
+        with open(cache.path, "w") as fh:                    # an unreadable file: hashed
+            fh.write("{")
+        self.assertEqual(certify.DigestFile(cache.path).entries, {})
+        cache.put("k", '"e"', 5, "sha256:aa")
+        self.assertEqual(cache.get("k", '"e"', 5), "sha256:aa")
+        self.assertIsNone(cache.get("k", '"f"', 5))           # another ETag
+        self.assertIsNone(cache.get("k", '"e"', 6))           # another size
+
+    def test_off_unless_asked(self):
+        seen = {}
+        args = SimpleNamespace(manifests=["/nonexistent.json"], certifyStore="b3://b", workDir="sw",
+                               architecture="el9", key="k.pem", out="x")
+        with patch.object(certify, "_refuse_orchestrated"), \
+             patch.object(certify, "make_s3_probe", side_effect=lambda *a, cache=None:
+                          seen.setdefault("cache", cache)), \
+             patch.object(certify, "certify_by_arch", return_value=[]):
+            certify.doSign(args, None)
+        self.assertIsNone(seen["cache"])
+
+    def test_asked_it_is_used_and_saved_when_the_run_fails(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = os.path.join(tmp, "digests.json")
+        args = SimpleNamespace(manifests=["/nonexistent.json"], certifyStore="b3://b", workDir="sw",
+                               architecture="el9", key="k.pem", out="x", digestCache=path)
+
+        def fail(*a, **k):
+            k["probe"].cache.put("key", '"e"', 1, "sha256:aa")
+            raise certify.CertifyError("store validation failed")
+
+        class Parser:
+            def error(self, msg):
+                raise SystemExit(msg)
+        with patch.object(certify, "_refuse_orchestrated"), \
+             patch.object(certify, "make_s3_probe",
+                          side_effect=lambda *a, cache=None: SimpleNamespace(cache=cache)), \
+             patch.object(certify, "certify_by_arch", side_effect=fail), \
+             self.assertRaises(SystemExit):
+            certify.doSign(args, Parser())
+        self.assertEqual(certify.DigestFile(path).get("key", '"e"', 1), "sha256:aa")
+
+
 class TestSignServiceUrl(unittest.TestCase):
     """The CI ID token goes to the signing service over https or to this host only."""
 

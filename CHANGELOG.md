@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Improvement]** `bits sign --digest-cache FILE` hashes a store tarball once: each object's sha256 is kept in FILE with its key, ETag and size (which S3 sets), and an unchanged object is not downloaded again; it downloaded and hashed every tarball of every BOM on every run. Off by default: FILE's entries are signed as they are, so it must be writable by the signer only (never a CI cache other jobs restore).
 - **[Improvement]** The build manifest is written at most every 5 seconds while packages are recorded (and before each build script, at the end and at exit; a killed build may miss the packages of its last seconds): it was written whole for every package, so a stack of 1000 reused packages serialised gigabytes of JSON.
 - **[Fix]** `bits compliance PACKAGE…`, `bits deps` and `bits init` run the recipes' `prefer_system_check`/`system_requirement` snippets without credentials in the environment, as `bits build` does, and `bits preload` traces a package on the host the same way: they ran with the whole shell environment (S3 keys, store and GitLab tokens).
 - **[Fix]** `bits compliance --enforce` deletes a store folder only when it holds tarballs of the BOM entry's package and version (`<package>-<version>[-<revision>].<arch>.tar.gz`), none of them of another package (a recipe, or one the store's BOMs or rev-index name) whose name begins with `<package>-`: it matched by name prefix, so an entry for `foo` naming the hash of `foo-bar` deleted that build.
