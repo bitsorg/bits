@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits cleanup --retain --dry-run` removes nothing: it unlinked the sentinels of install trees that are gone and dangling `BUILD/*-latest` links.
 - **[Improvement]** A secret given on the command line (`--s3-secret-key`, `--prepub-token`, `--certifier-token`, `--gitlab-token`, and `--token` of `bits cvmfs publish`/`release`) is warned about, naming the environment variable to use instead: others on the host see it in the process list, and CI logs echo it.
 - **[Fix]** `--console-insecure` no longer lets a token go over plain http: `bits login` (the store token comes back), and `bits compliance --enforce` and `bits store rm --stale-boms` (their requests carry the GitLab token), need https or a local console, and the option only skips the certificate check there. `bits sign --sign-via-service` sent the CI ID token to any URL containing `://localhost` (`http://localhost.example.org`). The unauthenticated pre-approval of `bits publish` may still use http on a testbed.
 - **[Fix]** A `&group` in an admin policy, and the bits-console admin and developer groups, count only the active members at Developer level or above: every member counted, a Guest or a blocked account too.

@@ -787,5 +787,28 @@ class PublishRecordRefreshTest(unittest.TestCase):
         self.assertTrue(os.path.exists(published_marker_path(work, "x86_64-el9", "zlib", "1.3-2")))
 
 
+class RetentionDryRunTest(unittest.TestCase):
+    """bits cleanup --retain --dry-run removes nothing, sentinels and links included."""
+
+    def test_dry_run_unlinks_nothing(self):
+        from bits_helpers import cleanup
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        sentinel = os.path.join(work, ".packages", "el9", "gone", "1-1")
+        os.makedirs(os.path.dirname(sentinel))
+        open(sentinel, "w").close()
+        os.makedirs(os.path.join(work, "BUILD"))
+        link = os.path.join(work, "BUILD", "gone-latest")
+        os.symlink("nowhere", link)
+        os.makedirs(os.path.join(work, "el9"))
+        for dry_run, kept in ((True, True), (False, False)):
+            args = Namespace(workDir=work, dryRun=dry_run, trustManifests=["m.json"])
+            with patch("bits_helpers.gc._localize_manifest", return_value="m.json"), \
+                 patch("bits_helpers.trust.trusted_records",
+                       return_value=("kid", [{"effective_architecture": "el9"}])):
+                self.assertEqual(cleanup.retention_sweep(args, None), 0)
+            self.assertEqual((os.path.exists(sentinel), os.path.lexists(link)), (kept, kept))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -896,7 +896,7 @@ def retention_sweep(args, parser):
     for name in sorted(os.listdir(bdir) if exists(bdir) else []):
         p = join(bdir, name)
         if os.path.islink(p):
-            if not exists(p):
+            if not exists(p) and not dry_run:
                 _unlink_quiet(p)
             continue
         if (hex_re.match(name) and name not in keep_hashes
@@ -914,7 +914,7 @@ def retention_sweep(args, parser):
             for n in files:
                 s = join(root, n)
                 rel = os.path.relpath(s, pkroot)   # <arch>/<pkg>/<version>
-                if not exists(join(work_dir, rel)):
+                if not exists(join(work_dir, rel)) and not dry_run:
                     _unlink_quiet(s)
         if not dry_run:
             _prune_empty_dirs(pkroot)
