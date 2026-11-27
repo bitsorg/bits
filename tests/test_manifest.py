@@ -507,6 +507,28 @@ class TestAddPackage(unittest.TestCase):
         self.assertIsNone(data["packages"][0]["tarball_sha256"])
 
 
+    def test_a_tarball_the_reuse_gate_checked_is_not_read_again(self):
+        from unittest import mock
+        tar = os.path.join(self.tmp, "p.tar.gz")
+        with open(tar, "wb") as f:
+            f.write(b"bytes")
+        m = _make_manifest(self.tmp)
+        from bits_helpers.build import _file_id
+        spec = dict(_make_spec(pkg="Reused"), _checked_tarball=(_file_id(tar), "sha256:cc"))
+        with mock.patch("bits_helpers.checksum.checksum_file", side_effect=AssertionError):
+            m.add_package(spec, "from_store", tar)
+        other = os.path.join(self.tmp, "q.tar.gz")             # another file: hashed
+        with open(other, "wb") as f:
+            f.write(b"bytes")
+        m.add_package(dict(spec, package="Other"), "from_store", other)
+        with open(tar, "ab") as f:                            # changed since the check: hashed
+            f.write(b"more")
+        m.add_package(dict(spec, package="Changed"), "from_store", tar)
+        got = [p["tarball_sha256"] for p in self._load(m)["packages"]]
+        self.assertEqual(got[0], "sha256:cc")
+        self.assertNotEqual(got[1], "sha256:cc")
+        self.assertNotEqual(got[2], "sha256:cc")
+
     def test_sidecar_trusted_only_for_a_tarball_built_here(self):
         """The packing sidecar spares re-reading a tarball this build packed;
         one taken from a store is hashed from its own bytes."""

@@ -1189,12 +1189,15 @@ class PackedHereTest(unittest.TestCase):
             with _REAL_OPEN(path, "rb") as stream:
                 self.assertEqual(stream.read(), b"remote")
             self.assertNotIn("store_tarball_refused", spec)
+            from bits_helpers.build import _file_id
+            self.assertEqual(spec["_checked_tarball"], (_file_id(path), self.private_sha))
             self.private_sha = None                            # not vouched for: built
             self._tarball(work_dir)
             spec = self._run(work_dir, store=True)
             self.assertEqual((spec["cachedTarball"], self.fetches, spec["store_tarball_refused"]),
                              ("", 2, True))
             self.assertNotIn("_tarball_vouched", spec)
+            self.assertNotIn("_checked_tarball", spec)
 
     def test_without_a_manifest_read_it_is_not_reused_but_left(self):
         with tempfile.TemporaryDirectory() as work_dir:

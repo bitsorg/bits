@@ -215,6 +215,20 @@ def _git_remote_url(directory: str):
         return None
 
 
+def _checked_sha256(spec: dict, tarball_path: str):
+    """The digest the signed-reuse gate computed for *tarball_path* in this run, or None:
+    the same file is not read again."""
+    checked = spec.get("_checked_tarball")
+    if not checked or not tarball_path:
+        return None
+    try:
+        st = os.stat(tarball_path)
+    except OSError:
+        return None
+    same = (os.path.realpath(tarball_path), st.st_ino, st.st_size, st.st_mtime_ns)
+    return checked[1] if tuple(checked[0]) == same else None
+
+
 def _tarball_sha256(tarball_path: str, packed_here: bool = True):
     """Return the SHA-256 digest of *tarball_path* (``sha256:<hex>``), or ``None``.
 
@@ -583,6 +597,7 @@ class BuildManifest:
             # store's sha256 keeps every manifest consistent with the one stable
             # object that `bits sign` validates.
             "tarball_sha256":         spec.get("store_tarball_sha256")
+                                      or _checked_sha256(spec, tarball_path)
                                       or _tarball_sha256(tarball_path,
                                                          packed_here=outcome != "from_store"),
             "source_checksums":       _source_entries(spec),

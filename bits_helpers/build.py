@@ -412,6 +412,12 @@ def _load_trusted_index(src, work_dir, accept_groups):
     return None, {}
 
 
+def _file_id(path):
+  """(realpath, inode, size, mtime_ns) of *path*: the same file, unchanged."""
+  st = os.stat(path)
+  return (os.path.realpath(path), st.st_ino, st.st_size, st.st_mtime_ns)
+
+
 def _flush_manifest(manifest):
   try:
     manifest.flush()
@@ -3071,6 +3077,7 @@ def build_one_package(p, ctx):
     # is now (packed_ledger), is reused only if a verified signed manifest vouches
     # for it (hash AND sha256). Otherwise it is quarantined and the package built.
     spec.pop("_tarball_vouched", None)   # packed here or certified: its listing is skipped
+    spec.pop("_checked_tarball", None)
     for _attempt in (1, 2):
       _tarball = spec["cachedTarball"]
       if not (_tarball and cfg.require_signed_reuse):
@@ -3107,6 +3114,7 @@ def build_one_package(p, ctx):
                 spec["package"], spec["hash"])
           spec.pop("reuse_note", None)
           spec["_tarball_vouched"] = True
+          spec["_checked_tarball"] = (_file_id(_tarball), _actual)   # for the manifest
           if _by:
             spec["store_tarball_by"] = _by
           break
