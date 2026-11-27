@@ -136,12 +136,12 @@ class EnforceTestCase(unittest.TestCase):
         src_h = getUrlChecksum("https://example.org/secret-1.tar.gz")
         self.objects = {
             "MANIFESTS/b1/x.el9.json": json.dumps({"packages": [
-                {"package": "Secret", "hash": "beef01",
+                {"package": "Secret", "version": "1", "hash": "beef01",
                  "effective_architecture": "el9"},
                 {"package": "Good", "hash": "aa11",
                  "effective_architecture": "el9"}]}),
             "MANIFESTS/b2/y.el9.json": json.dumps({"packages": [
-                {"package": "Secret", "hash": "beef01",
+                {"package": "Secret", "version": "1", "hash": "beef01",
                  "effective_architecture": "el9"}]}),
             sp + "/Secret-1-1.el9.tar.gz": "bytes",
             "MANIFESTS/rev-index/el9/Secret/1-1": "beef01",
@@ -207,10 +207,30 @@ class EnforceTestCase(unittest.TestCase):
         good = resolve_store_path("el9", "aa11") + "/Good-1-1.el9.tar.gz"
         self.objects[good] = "bytes"
         self.objects["MANIFESTS/b3/p77-run.el9.json"] = json.dumps({"packages": [
-            {"package": "Secret", "hash": "aa11", "effective_architecture": "el9"}]})
+            {"package": "Secret", "version": "1", "hash": "aa11", "effective_architecture": "el9"}]})
         compliance.enforce_store("b3://bkt", self.rec, self.d)
         self.assertNotIn(good, self.deleted)                       # Good's build stays
         self.assertIn(resolve_store_path("el9", "beef01") + "/Secret-1-1.el9.tar.gz", self.deleted)
+
+    def test_a_package_whose_name_starts_like_it_is_not_held(self):
+        from bits_helpers.utilities import resolve_store_path
+        other = resolve_store_path("el9", "cc33") + "/Secret-tools-1-1.el9.tar.gz"
+        self.objects[other] = "bytes"
+        self.objects["MANIFESTS/rev-index/el9/Secret-tools/1-1"] = "cc33"   # known to the store
+        for version in ("1", "tools-1", "tools"):                  # crafted versions too
+            self.objects["MANIFESTS/b4/x.el9.json"] = json.dumps({"packages": [
+                {"package": "Secret", "version": version, "hash": "cc33",
+                 "effective_architecture": "el9"}]})
+            compliance.enforce_store("b3://bkt", self.rec, self.d)
+            self.assertNotIn(other, self.deleted, version)         # Secret-tools stays
+        _recipe(self.d, "secret-tools.sh", "package: Secret-tools\nlicense: MIT")
+        del self.objects["MANIFESTS/rev-index/el9/Secret-tools/1-1"]
+        compliance.enforce_store("b3://bkt", compliance.scan_recipes(self.d), self.d)
+        self.assertNotIn(other, self.deleted)                      # or to the recipes
+        self.objects["MANIFESTS/b5/y.el9.json"] = json.dumps({"packages": [
+            {"package": "Secret-tools", "version": "1", "hash": "cc33"}]})
+        compliance.enforce_store("b3://bkt", self.rec, self.d)
+        self.assertNotIn(other, self.deleted)                      # or to a BOM
 
     def signed_store(self, signer=None, policy=None, extra=(), trust_signer=False, **fields):
         """A signed manifest for el9 (Secret, Good and *extra*) and the key: (pem, uploads)."""
@@ -231,7 +251,7 @@ class EnforceTestCase(unittest.TestCase):
             self.objects[key], self.objects[key + ".sig"] = data, sig   # only the first is read
         self.objects["MANIFESTS/common-manifest-el8.json"] = json.dumps({"packages": []})
         self.objects["MANIFESTS/b1/x.el9.json"] = json.dumps({"packages": [   # not approved
-            {"package": "Secret", "hash": "beef01", "effective_architecture": "el9"},
+            {"package": "Secret", "version": "1", "hash": "beef01", "effective_architecture": "el9"},
             {"package": "Other", "hash": "cc22", "effective_architecture": "el9",
              "tarball_sha256": "sha256:" + "1" * 64}]})
         uploads = {}

@@ -522,13 +522,19 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
                 n += 1
         return n
 
-    def _holds(prefix, package):
-        """Whether the build folder *prefix* holds builds of *package* only (a BOM
-        may say anything: one of a CI job's names no other build's hash)."""
+    def _holds(prefix, e):
+        """Whether the build folder *prefix* holds tarballs of BOM entry *e*'s package and
+        version only (a BOM may say anything: foo's entry naming foo-bar's hash)."""
         names = [o["Key"].rsplit("/", 1)[-1]
                  for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix)
                  for o in page.get("Contents", []) or []]
-        return all(n.startswith(str(package) + "-") for n in names)
+        pkg = str(e.get("package"))
+        own = re.compile(r"%s-%s(-[^/]+)?\.%s\.tar\.gz" % (
+            re.escape(pkg), re.escape(str(e.get("version"))),
+            re.escape(str(e.get("effective_architecture") or ""))))
+        # A version may hold "-": foo's "bar-1.0" names foo-bar's tarball; refuse those.
+        longer = [p + "-" for p in known if p.startswith(pkg.lower() + "-")]
+        return all(own.fullmatch(n) and not n.lower().startswith(tuple(longer)) for n in names)
 
     from bits_helpers.utilities import resolve_store_path
     banner("Enforcing licence compliance on %s%s", bucket,
@@ -541,6 +547,25 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
             for o in page.get("Contents", []) or []]
     affected_archs, removed, repo_prune, signed_keys = set(), 0, [], []
     found = set()                                  # restricted packages present
+    # Every package name first (the recipes', the BOMs', the rev-index's); only the BOMs
+    # with a restricted entry are kept for the loop below.
+    known, boms = set(rec.get("by_package", {})), {}
+    known |= {k.split("/")[3].lower() for k in keys
+              if k.startswith("MANIFESTS/rev-index/") and k.count("/") >= 4}
+    for key in keys:
+        leaf = key.split("/")[-1]
+        if leaf.endswith(".json") and "/rev-index/" not in key \
+           and not leaf.startswith("common-manifest"):
+            try:
+                doc = json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
+            except Exception as exc:      # pylint: disable=broad-except
+                warning("enforce: unreadable manifest %s (%s)", key, exc)
+                continue
+            names = {str(e.get("package", "")).lower() for e in
+                     (doc.get("packages") or [] if isinstance(doc, dict) else []) if isinstance(e, dict)}
+            known |= names
+            if names & restricted:
+                boms[key] = doc
     for key in keys:
         leaf = key.split("/")[-1]
         if key == "MANIFESTS/" + leaf and leaf.startswith("common-manifest") and leaf.endswith(".json"):
@@ -555,13 +580,8 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
             except Exception as exc:      # pylint: disable=broad-except
                 warning("enforce: unreadable signed manifest %s (%s)", key, exc)
             continue
-        if (not leaf.endswith(".json") or "/rev-index/" in key
-                or leaf.startswith("common-manifest")):
-            continue
-        try:
-            doc = json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
-        except Exception as exc:          # pylint: disable=broad-except
-            warning("enforce: unreadable manifest %s (%s)", key, exc)
+        doc = boms.get(key)
+        if not isinstance(doc, dict):
             continue
         pkgs = doc.get("packages") or []
         offending = [e for e in pkgs
@@ -573,7 +593,7 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
             affected_archs.add(arch)
             found.add(str(e.get("package")))
             folder = resolve_store_path(arch, e.get("hash", "")) + "/"
-            if not _holds(folder, e.get("package")):
+            if not _holds(folder, e):
                 warning("enforce: %s says %s is in %s, which holds other builds: kept",
                         key, e.get("package"), folder)
                 continue
