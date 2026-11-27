@@ -160,6 +160,37 @@ class TestPreapproveViaConsole(unittest.TestCase):
         self.assertEqual(os.listdir(d), [])
 
 
+class TestTlsSetting(unittest.TestCase):
+    def test_insecure_does_not_carry_over(self):
+        import ssl
+        from unittest import mock
+        self.addCleanup(setattr, sign_console, "_CTX", sign_console._CTX)
+        with mock.patch("sys.stderr"):
+            sign_console._set_tls(None, True)
+        self.assertEqual(sign_console._CTX.verify_mode, ssl.CERT_NONE)
+        sign_console._set_tls(None, False)                    # a later call that verifies
+        self.assertIsNone(sign_console._CTX)
+
+    def test_a_console_keeps_its_own(self):
+        import ssl
+        from unittest import mock
+        from bits_helpers import orchestrated
+        seen = []
+        self.addCleanup(setattr, sign_console, "_CTX", sign_console._CTX)
+        with mock.patch("sys.stderr"):
+            console = orchestrated.Console("https://c.example", "tok", insecure=True)
+        sign_console._set_tls(None, False)
+        with mock.patch.object(sign_console, "_json_call",
+                               side_effect=lambda url, obj, bearer=None, ctx=False:
+                               seen.append(ctx) or (200, {})):
+            with mock.patch("sys.stderr"):
+                console.groups()
+            self.assertIsNone(sign_console._CTX)              # the process's left as it was
+            sign_console._set_tls(None, False)                # another caller in between
+            console.groups()
+        self.assertEqual([getattr(c, "verify_mode", None) for c in seen], [ssl.CERT_NONE] * 2)
+
+
 class TestPrintQr(unittest.TestCase):
     def test_says_why_there_is_no_qr_code(self):
         with patch.dict("sys.modules", {"qrcode": None}), \

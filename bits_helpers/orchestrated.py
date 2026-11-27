@@ -140,8 +140,8 @@ class Console:
         if self._call is None:
             from bits_helpers import sign_console
             self.check()                                   # a token is sent
-            sign_console._set_tls(*self._tls)
-            self._call = sign_console._json_call
+            ctx = sign_console._tls_context(*self._tls)   # this console's, not a global
+            self._call = lambda url, obj, bearer: sign_console._json_call(url, obj, bearer, ctx)
         code, body = self._call(self.base + path, obj, bearer=self.token)
         if code not in (200, 201):
             raise RequestError("%s: HTTP %s%s" % (path, code or "unreachable",

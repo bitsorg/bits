@@ -21,9 +21,8 @@ import urllib.request
 from bits_helpers import trust
 
 _TIMEOUT = 30
-# TLS context for backend calls. None = the system default (verifies). Set by
-# sign_via_console when --cafile / --insecure is given (e.g. the CERN CA isn't in
-# this host's Python trust store).
+# TLS context for backend calls. None = the system default (verifies). Set by each
+# sign, pre-approval and login call for its own --cafile / --insecure (_set_tls).
 _CTX = None
 
 
@@ -113,13 +112,19 @@ def sign_via_console(backend, manifest_path, sig_path=None, timeout=300,
     raise SystemExit("timed out waiting for approval")
 
 
-def _set_tls(cafile, insecure):
-    global _CTX
+def _tls_context(cafile, insecure):
+    """The TLS context for *cafile*/*insecure*: None is the system default (verifies)."""
     if insecure:
-        _CTX = ssl._create_unverified_context()
         print("WARNING: TLS verification disabled (--insecure).", file=sys.stderr)
-    elif cafile:
-        _CTX = ssl.create_default_context(cafile=cafile)
+        return ssl._create_unverified_context()
+    return ssl.create_default_context(cafile=cafile) if cafile else None
+
+
+def _set_tls(cafile, insecure):
+    """Set the module's TLS context for this call's settings, verifying by default
+    (an earlier caller's --insecure does not carry over)."""
+    global _CTX
+    _CTX = _tls_context(cafile, insecure)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -129,11 +134,13 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _json_call(url, obj=None, bearer=None):
+def _json_call(url, obj=None, bearer=None, ctx=False):
     """GET, or POST JSON when *obj* is given; return (http_status, dict body).
     Errors come back as a status for the caller to judge (409 is an expected
     answer); an unreachable backend is status 0. A non-JSON or non-object body
-    is an empty dict. *bearer*: a token to authenticate with."""
+    is an empty dict. *bearer*: a token to authenticate with. *ctx*: the TLS
+    context (default: the module's, see _set_tls)."""
+    ctx = _CTX if ctx is False else ctx
     data = json.dumps(obj).encode() if obj is not None else None
     headers = {"Content-Type": "application/json"} if data else {}
     if bearer:
@@ -145,10 +152,10 @@ def _json_call(url, obj=None, bearer=None):
             # urllib would carry the Authorization header to wherever a redirect
             # points (another host, plain http): a token is sent to *url* only.
             opener = urllib.request.build_opener(_NoRedirect,
-                                                 urllib.request.HTTPSHandler(context=_CTX))
+                                                 urllib.request.HTTPSHandler(context=ctx))
             fh = opener.open(req, timeout=_TIMEOUT)
         else:
-            fh = urllib.request.urlopen(req, timeout=_TIMEOUT, context=_CTX)
+            fh = urllib.request.urlopen(req, timeout=_TIMEOUT, context=ctx)
         with fh:
             code, raw = fh.status, fh.read()
     except urllib.error.HTTPError as e:
