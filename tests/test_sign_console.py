@@ -36,12 +36,29 @@ class TestSignConsole(unittest.TestCase):
             {"status": "signed", "envelope": {"alg": "ed25519", "key_id": "k", "sig": "s"},
              "signed_by": "alice", "groups": ["lcg"]}])
         with patch.object(sign_console, "_post", lambda url, data, ctype="": self._req()), \
-             patch.object(sign_console, "_get", lambda url: next(results)), \
+             patch.object(sign_console, "_json_call", lambda url, *a, **k: (200, next(results))), \
              patch.object(sign_console.trust, "load_trusted_keys", lambda: {}), \
              patch.object(sign_console.trust, "verify_bytes", lambda b, e, t: "kid1234"), \
              patch.object(sign_console.time, "sleep", lambda s: None):
             out = sign_console.sign_via_console("http://x", self.mp, timeout=10)
         self.assertEqual(json.loads(Path(out).read_text())["key_id"], "k")
+
+    def test_a_transient_error_keeps_waiting_another_stops(self):
+        signed = {"status": "signed", "envelope": {"alg": "ed25519", "key_id": "k", "sig": "s"},
+                  "signed_by": "alice"}
+        for answers, ok in (([(502, {}), (0, {}), (200, {"status": "pending"}), (200, signed)], True),
+                            ([(403, {"detail": "no"})], False)):
+            results = iter(answers)
+            with patch.object(sign_console, "_post", lambda url, data, ctype="": self._req()), \
+                 patch.object(sign_console, "_json_call", lambda url, *a, **k: next(results)), \
+                 patch.object(sign_console.trust, "load_trusted_keys", lambda: {}), \
+                 patch.object(sign_console.trust, "verify_bytes", lambda b, e, t: "kid"), \
+                 patch.object(sign_console.time, "sleep", lambda s: None):
+                if ok:
+                    self.assertTrue(sign_console.sign_via_console("http://x", self.mp, timeout=10))
+                else:
+                    with self.assertRaisesRegex(SystemExit, "HTTP 403"):
+                        sign_console.sign_via_console("http://x", self.mp, timeout=10)
 
     def test_builds_approve_url_from_console(self):
         captured = {}
@@ -49,7 +66,7 @@ class TestSignConsole(unittest.TestCase):
                          "envelope": {"alg": "ed25519", "key_id": "k", "sig": "s"},
                          "signed_by": "a", "groups": ["lcg"]}])
         with patch.object(sign_console, "_post", lambda url, data, ctype="": self._req()), \
-             patch.object(sign_console, "_get", lambda url: next(results)), \
+             patch.object(sign_console, "_json_call", lambda url, *a, **k: (200, next(results))), \
              patch.object(sign_console, "_print_qr", lambda u: captured.__setitem__("u", u)), \
              patch.object(sign_console.trust, "load_trusted_keys", lambda: {}), \
              patch.object(sign_console.trust, "verify_bytes", lambda b, e, t: "kid"), \
@@ -59,8 +76,8 @@ class TestSignConsole(unittest.TestCase):
 
     def test_unverifiable_signature_rejected(self):
         with patch.object(sign_console, "_post", lambda url, data, ctype="": self._req()), \
-             patch.object(sign_console, "_get",
-                          lambda url: {"status": "signed", "envelope": {}, "signed_by": "a"}), \
+             patch.object(sign_console, "_json_call", lambda url, *a, **k:
+                          (200, {"status": "signed", "envelope": {}, "signed_by": "a"})), \
              patch.object(sign_console.trust, "load_trusted_keys", lambda: {}), \
              patch.object(sign_console.trust, "verify_bytes", lambda b, e, t: None), \
              patch.object(sign_console.time, "sleep", lambda s: None):

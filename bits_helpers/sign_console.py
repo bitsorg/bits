@@ -47,10 +47,6 @@ def _post(url, data, ctype="application/octet-stream"):
     return _urlopen(req)
 
 
-def _get(url):
-    return _urlopen(url)
-
-
 def _print_qr(url):
     try:
         import qrcode
@@ -92,7 +88,15 @@ def sign_via_console(backend, manifest_path, sig_path=None, timeout=300,
     print("Waiting for approval (Ctrl-C to cancel) ...", flush=True)
     deadline = time.time() + timeout
     while time.time() < deadline:
-        res = _get(base + "/sign/cli/%s/result" % resp["request_id"])
+        code, res = _json_call(base + "/sign/cli/%s/result" % resp["request_id"])
+        if code == 0 or code >= 500:   # unreachable, or a 5xx from the proxy: ask again
+            time.sleep(2)
+            continue
+        if code == 404:
+            raise SystemExit("the signing request expired or is unknown to %s" % base)
+        if code != 200:
+            raise SystemExit("signing backend error (HTTP %s): %s"
+                             % (code, res.get("detail") or "no detail"))
         status = res.get("status")
         if status == "signed":
             env = res["envelope"]
