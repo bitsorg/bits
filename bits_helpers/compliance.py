@@ -111,7 +111,7 @@ def resolve_group_specs(args, parser):
     conditional requires (``pkg:(?var)`` / arch gates) already evaluated for
     the selected --defaults/--architecture.
     """
-    from bits_helpers.cmd import getstatusoutput
+    from bits_helpers.cmd import credential_free_env, getstatusoutput
     from bits_helpers.repo_provider import (
         fetch_repo_providers_iteratively, load_always_on_providers)
     from bits_helpers.defaults import parseDefaults, readDefaults, validateDefaults
@@ -159,7 +159,7 @@ def resolve_group_specs(args, parser):
     provider_dirs.update(always_on)
 
     def performCheck(pkg, cmd):
-        return getstatusoutput(cmd)
+        return getstatusoutput(cmd, env=credential_free_env())   # recipe code: no tokens
 
     specs = {}
     system_pkgs, _own, failed, _valid = getPackageList(

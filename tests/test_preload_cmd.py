@@ -258,6 +258,16 @@ class AssembleAndTarTest(unittest.TestCase):
                    [PKGDIR + "/bin/xrdcp", "/usr/lib64/libc.so.6"])]
         self.assertEqual(C.assemble_bundles(traces, REPO, self.stage), [])
 
+class TraceNativeEnvTest(unittest.TestCase):
+  def test_a_trace_on_the_host_gets_no_credentials(self):
+    import os
+    from unittest import mock
+    from bits_helpers import preload_cmd
+    with mock.patch.dict(os.environ, {"AWS_SECRET_ACCESS_KEY": "s"}), \
+         mock.patch("subprocess.run") as run:
+      preload_cmd._trace_native("/pkg", "exe", [], "/nonexistent")
+    self.assertNotIn("AWS_SECRET_ACCESS_KEY", run.call_args[1]["env"])
+
 
 if __name__ == "__main__":
     unittest.main()

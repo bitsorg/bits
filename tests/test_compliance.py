@@ -313,6 +313,31 @@ class EnforceTestCase(unittest.TestCase):
         self.assertEqual((self.deleted, self.put), ([], {}))
 
 
+class GroupChecksEnvTest(unittest.TestCase):
+    """The recipes' system checks of a group audit are recipe code: no credentials."""
+
+    def test_system_checks_get_no_credentials(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        _recipe(d, "defaults-release.sh", "package: defaults-release\nversion: v1")
+        _recipe(d, "zlib.sh", "package: zlib\nversion: v1")
+        args = SimpleNamespace(configDir=d, defaults=["release"], architecture="el9",
+                               disable=[], packages=["zlib"], workDir=d)
+        seen = {}
+
+        def get_package_list(**kw):
+            seen["check"] = kw["performPreferCheck"]
+            raise SystemExit(0)
+        with patch("bits_helpers.packages.getPackageList", side_effect=get_package_list), \
+             patch("bits_helpers.repo_provider.load_always_on_providers", return_value={}), \
+             patch("bits_helpers.cmd.getstatusoutput", return_value=(0, "")) as run:
+            with self.assertRaises(SystemExit):
+                compliance.resolve_group_specs(args, SimpleNamespace(error=self.fail))
+            with patch.dict(os.environ, {"AWS_SECRET_ACCESS_KEY": "s"}):
+                seen["check"]({"package": "zlib"}, "true")
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", run.call_args[1]["env"])
+
+
 class RecipeSourcePrefixNameTest(unittest.TestCase):
     """_recipe_source_prefixes must resolve %(name)s (the package name) in a
     source URL, so restricted packages whose URL templates the name (qgraf,

@@ -150,6 +150,30 @@ print(json.dumps(deps_graph(specs, "app", runtime_only=True)))
           args.outdot = None
           doDeps(args, MagicMock())
 
+    @patch("bits_helpers.recipe.open", new=lambda f: StringIO(RECIPES[f]))
+    @patch("bits_helpers.paths.exists", new=lambda f: f in RECIPES)
+    @patch("bits_helpers.defaults.exists", new=lambda f: f in RECIPES)
+    def test_system_checks_get_no_credentials(self):
+        """A recipe's prefer_system/system_requirement check is recipe code: no tokens."""
+        args = Namespace(workDir="/work", configDir="/dist", debug=False, docker=False,
+                         dockerImage=None, docker_extra_args=[], preferSystem=False,
+                         noSystem="*", architecture="slc7_x86-64", disable=[], neat=False,
+                         outdot=None, outgraph=None, package="AliRoot", defaults=["release"],
+                         environment=[])
+        seen = {}
+
+        def get_package_list(**kw):
+            seen["check"] = kw["performPreferCheck"]
+            raise SystemExit(0)
+        with patch.object(os.path, "exists", lambda n: n in RECIPES), \
+             patch("bits_helpers.deps.getPackageList", side_effect=get_package_list), \
+             self.assertRaises(SystemExit):
+            doDeps(args, MagicMock())
+        with patch.dict(os.environ, {"AWS_SECRET_ACCESS_KEY": "s"}), \
+             patch("bits_helpers.deps.getstatusoutput", return_value=(0, "")) as run:
+            seen["check"]({"package": "p"}, "true")
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", run.call_args[1]["env"])
+
     @patch("bits_helpers.deps.execute")
     @patch("bits_helpers.recipe.open", new=lambda f: StringIO(RECIPES[f]))
     @patch("bits_helpers.paths.exists", new=lambda f: f in RECIPES)

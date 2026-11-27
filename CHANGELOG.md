@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits compliance PACKAGE…`, `bits deps` and `bits init` run the recipes' `prefer_system_check`/`system_requirement` snippets without credentials in the environment, as `bits build` does, and `bits preload` traces a package on the host the same way: they ran with the whole shell environment (S3 keys, store and GitLab tokens).
 - **[Fix]** `bits compliance --enforce` deletes a store folder only when it holds tarballs of the BOM entry's package and version (`<package>-<version>[-<revision>].<arch>.tar.gz`), none of them of another package (a recipe, or one the store's BOMs or rev-index name) whose name begins with `<package>-`: it matched by name prefix, so an entry for `foo` naming the hash of `foo-bar` deleted that build.
 - **[Fix]** `bits cleanup --retain` does not sweep an architecture whose signed manifest verifies but certifies nothing: a transiently empty certification made it remove every install not in the last builds.
 - **[Fix]** Signing through bits-console (`python -m bits_helpers.sign_console`) keeps waiting for the approval when the console answers a 5xx or cannot be reached for a moment; one 502 ended a wait that would have succeeded.

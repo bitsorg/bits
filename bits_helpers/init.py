@@ -8,7 +8,7 @@ from os.path import join
 import os.path as path
 
 # Internal
-from bits_helpers.cmd import getstatusoutput
+from bits_helpers.cmd import credential_free_env, getstatusoutput
 from bits_helpers.git import git, Git
 from bits_helpers.log import banner, debug, dieOnError, error, info, warning
 from bits_helpers.defaults import parseDefaults, readDefaults, validateDefaults, incompatibleFlavorDefaults
@@ -328,7 +328,8 @@ def doInit(args):
                                          architecture="",
                                          disable=[],
                                          defaults=args.defaults,
-                                         performPreferCheck=lambda pkg, cmd: getstatusoutput(["bash", "-c", cmd]),
+                                         performPreferCheck=lambda pkg, cmd: getstatusoutput(
+                                             ["bash", "-c", cmd], env=credential_free_env()),
                                          performRequirementCheck=lambda *x, **y: (0, ""),
                                          performValidateDefaults=lambda spec : validateDefaults(spec, args.defaults),
                                          overrides=overrides,

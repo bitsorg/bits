@@ -262,10 +262,12 @@ _TRACE_TIMEOUT = 300
 def _trace_native(pkg_dir, exe, args, log_dir):
     """Run the trace script on the host; return the strace log text ("" on error)."""
     import subprocess
+    from bits_helpers.cmd import credential_free_env
     log = os.path.join(log_dir, "strace.log")
     script = build_trace_script(pkg_dir, exe, args, log)
-    try:
-        subprocess.run(["bash", "-c", script], check=False, timeout=_TRACE_TIMEOUT)
+    try:   # the package's own code: none of the caller's credentials
+        subprocess.run(["bash", "-c", script], check=False, timeout=_TRACE_TIMEOUT,
+                       env=credential_free_env())
         with open(log) as fh:
             return fh.read()
     except Exception:                    # never let one trace abort the sweep

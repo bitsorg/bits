@@ -9,7 +9,7 @@ from os import remove, path
 from tempfile import NamedTemporaryFile
 
 # Internal
-from bits_helpers.cmd import DockerRunner, execute, getstatusoutput
+from bits_helpers.cmd import DockerRunner, credential_free_env, execute, getstatusoutput
 from bits_helpers.log import debug, dieOnError, error, info
 from bits_helpers.repo_provider import (
     fetch_repo_providers_iteratively, load_always_on_providers)
@@ -137,7 +137,7 @@ def doDeps(args, parser):
   provider_dirs.update(always_on_dirs)
 
   def performCheck(pkg, cmd):
-    return getstatusoutput(cmd)
+    return getstatusoutput(cmd, env=credential_free_env())   # recipe code: no tokens
 
   systemPackages, ownPackages, failed, validDefaults = \
       getPackageList(packages                = [args.package],
