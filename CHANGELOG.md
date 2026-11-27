@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits cvmfs stage`: when re-reading the repository head after a moved base, opening the prepare lock or recreating the scratch directory fails, it says so; such errors were reported as a missing `cvmfs_swissknife`.
 - **[Fix]** Only the subcommand is moved ahead of the options: an option value equal to `build`, `init`, `clean`, `doctor` or `deps` was moved too, so `bits build --disable clean ROOT` built a package called `clean`.
 - **[Fix]** A package's cleanup sentinel stands beside its install tree, `.packages/<arch>/[<family>/]<package>/<version>` with the effective architecture: for a package of a family, an `architecture: share` or an own-hash one it was under the build architecture without the family, so `bits cleanup` recorded 0 bytes, "evicted" only the sentinel and left the install, and `--retain` deleted the sentinel. An old sentinel of such a package frees nothing when evicted and is dropped by the next `--retain`; `share` and own-hash packages need `--all-architectures`.
 - **[Fix]** `bits cleanup --retain --dry-run` removes nothing: it unlinked the sentinels of install trees that are gone and dangling `BUILD/*-latest` links.

@@ -631,6 +631,19 @@ class TestProbeStagedObject(unittest.TestCase):
                 probe_staged_object("http://bucket.example/s", "ab")
 
 
+class TestPrepareLock(unittest.TestCase):
+    def test_a_lock_that_cannot_be_opened_is_named(self):
+        """Not reported as a missing cvmfs_swissknife (an OSError in main's try)."""
+        from bits_helpers import cvmfs_stage_cmd
+        from bits_helpers.cvmfs_stage import StageError
+        spool = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, spool, True)
+        os.makedirs(os.path.join(spool, "tmp", ".bits-cvmfs-stage.lock"))   # not a file
+        with self.assertRaisesRegex(StageError, "cannot open the prepare lock"):
+            with cvmfs_stage_cmd.prepare_lock("r", spool=spool):
+                pass
+
+
 class TestMainWiring(unittest.TestCase):
     """Drives cvmfs_stage_cmd.main with the ingest stubbed out.
 
@@ -844,6 +857,33 @@ class TestMainWiring(unittest.TestCase):
         self.assertIn("base moved", err.getvalue())
         self.assertEqual(rc, 0)
 
+
+    def test_a_failed_re_read_of_the_head_is_named_as_such(self):
+        """Not as a missing cvmfs_swissknife: URLError is an OSError."""
+        import io
+        import urllib.error
+        spool = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, spool, True)
+        reads = []
+
+        def head(url, timeout=30):
+            reads.append(url)
+            if len(reads) > 1:
+                raise urllib.error.URLError("no route to stratum0")
+            return "c" * 40
+        real = self.cmd.fetch_published_root
+        self.cmd.fetch_published_root = head
+        self.addCleanup(setattr, self.cmd, "fetch_published_root", real)
+        self.cmd.run_prepare = lambda argv: (3, {"stale_base"})
+        err = io.StringIO()
+        real_stderr, sys.stderr = sys.stderr, err
+        try:
+            rc = self.cmd.main([x for x in self.argv(spool) if x not in ("--base-root", "b" * 40)])
+        finally:
+            sys.stderr = real_stderr
+        self.assertNotEqual(rc, 0)
+        self.assertIn("cannot read the current root", err.getvalue())
+        self.assertNotIn("swissknife on PATH", err.getvalue())
 
     def test_an_existing_path_names_replace_instead_of_aborting(self):
         """swissknife ABORTS (SIGABRT, rc -6) with a C++ PANIC when the tar's

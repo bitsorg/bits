@@ -213,7 +213,10 @@ def prepare_lock(repo, spool=None, timeout=1800):
         raise StageError("cannot create %s for the prepare lock: %s" % (lock_dir, exc))
     lock_path = os.path.join(lock_dir, ".bits-cvmfs-stage.lock")
 
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as exc:   # another user's lock in a shared spool
+        raise StageError("cannot open the prepare lock %s: %s" % (lock_path, exc))
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -607,8 +610,15 @@ def main(argv=None):
                                 "racing a commit." % attempt)
                         # Scratch may hold partial state from the failed run.
                         shutil.rmtree(tmp, ignore_errors=True)
-                        os.makedirs(tmp, exist_ok=True)
-                        new_base = fetch_published_root(stratum0)
+                        try:
+                            os.makedirs(tmp, exist_ok=True)
+                        except OSError as exc:
+                            raise StageError("cannot recreate %s: %s" % (tmp, exc))
+                        try:
+                            new_base = fetch_published_root(stratum0)
+                        except Exception as exc:   # not the swissknife: say what failed
+                            raise StageError("cannot read the current root from %s: %s"
+                                             % (stratum0, exc))
                         print("[cvmfs-stage] base moved %s -> %s; re-preparing "
                               "(attempt %d of %d)"
                               % (base, new_base, attempt + 1,
