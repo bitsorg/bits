@@ -65,6 +65,9 @@ CORRECT_BEHAVIOR = [
   ((), "status --no-fetch-repos zlib"                                                  , [("fetchRepos", False)]),
   ((), "build --force-unknown-architecture -j 10 zlib --disable gcc --disable foo"     , [("disable", ["gcc", "foo"])]),
   ((), "build --force-unknown-architecture -j 10 zlib --disable gcc --disable foo,bar" , [("disable", ["gcc", "foo", "bar"])]),
+  # A value equal to a subcommand stays where it is: only the subcommand moves first.
+  ((), "build --force-unknown-architecture --disable clean ROOT"                       , [("action", "build"), ("disable", ["clean"]), ("pkgname", ["ROOT"])]),
+  ((), "--debug build --force-unknown-architecture ROOT --disable deps"                , [("action", "build"), ("disable", ["deps"]), ("pkgname", ["ROOT"])]),
   ((), "init zlib --dist master"                                                       , [("dist", {"repo": "alisw/alidist", "ver": "master"})]),
   ((), "init zlib --dist ktf/alidist@dev"                                              , [("dist", {"repo": "ktf/alidist", "ver": "dev"})]),
   # A remote/write store no longer forces --no-system: reuse is opportunistic and

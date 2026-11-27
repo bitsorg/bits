@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** Only the subcommand is moved ahead of the options: an option value equal to `build`, `init`, `clean`, `doctor` or `deps` was moved too, so `bits build --disable clean ROOT` built a package called `clean`.
 - **[Fix]** A package's cleanup sentinel stands beside its install tree, `.packages/<arch>/[<family>/]<package>/<version>` with the effective architecture: for a package of a family, an `architecture: share` or an own-hash one it was under the build architecture without the family, so `bits cleanup` recorded 0 bytes, "evicted" only the sentinel and left the install, and `--retain` deleted the sentinel. An old sentinel of such a package frees nothing when evicted and is dropped by the next `--retain`; `share` and own-hash packages need `--all-architectures`.
 - **[Fix]** `bits cleanup --retain --dry-run` removes nothing: it unlinked the sentinels of install trees that are gone and dangling `BUILD/*-latest` links.
 - **[Improvement]** A secret given on the command line (`--s3-secret-key`, `--prepub-token`, `--certifier-token`, `--gitlab-token`, and `--token` of `bits cvmfs publish`/`release`) is warned about, naming the environment variable to use instead: others on the host see it in the process list, and CI logs echo it.

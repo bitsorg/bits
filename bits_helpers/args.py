@@ -2159,21 +2159,23 @@ def doParseArgs():
   # order): a mere option VALUE that happens to equal 'gc'/'cleanup' (a
   # package named gc, --disable gc, a path segment) appears after the real
   # subcommand and must not flip this guard — matching on set(rest) did.
-  _subcommand = next((x for x in rest if x in subparsers.choices), None)
+  # It is also the one token moved first (a value before it naming a subcommand fails).
+  _sub_at = next((i for i, x in enumerate(rest) if x in subparsers.choices), None)
+  _subcommand = rest[_sub_at] if _sub_at is not None else None
   _own_dry_run = _subcommand in ("prune", "compliance")
-  def optionOrder(x):
+  def optionOrder(item):
     # --debug/-d must come before any subcommand so the parent parser sees them.
     # --dry-run/-n is also a top-level flag (for build), BUT some subparsers
     # have their own (see _own_dry_run above).
+    i, x = item
     if x in ["--debug", "-d"]:
       return 0
     if x in ["-n", "--dry-run"]:
       return 3 if _own_dry_run else 0   # their own -n goes after them
-#   if x in ["build", "init", "clean", "analytics", "doctor", "deps"]:
-    if x in ["build", "init", "clean", "doctor", "deps"]:
-      return 1
+    if i == _sub_at and x in ["build", "init", "clean", "doctor", "deps"]:
+      return 1   # the subcommand only: `--disable clean` keeps its value
     return 2
-  rest.sort(key=optionOrder)
+  rest = [x for _i, x in sorted(enumerate(rest), key=optionOrder)]
   sys.argv = [prog] + rest
   if "upgrade" in sys.argv[1:4]:        # its plan.csv may follow the options: put it first
     k = sys.argv.index("upgrade") + 1
