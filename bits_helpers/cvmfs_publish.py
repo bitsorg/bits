@@ -461,7 +461,7 @@ def _human(n):
 
 def payload_size(spec, tars_root, default_arch):
     """Best size for LPT ordering: the install du the build records in the GC
-    sentinel (<sw>/.packages/<arch>/<pkg>/<ver-rev>) — the real payload, present
+    sentinel (<sw>/.packages/<arch>/[<family>/]<pkg>/<ver-rev>) — the real payload, present
     for EVERY outcome including reused artefacts — else the (uniform ~4 KB)
     publish tar, else 0. Never raises; any miss degrades to the tar/zero
     fallback. The tar must not be the primary key: uniform across packages, it
@@ -470,7 +470,8 @@ def payload_size(spec, tars_root, default_arch):
     try:
         from bits_helpers.cleanup import sentinel_path
         from bits_helpers.utilities import ver_rev
-        with open(sentinel_path(work_dir, default_arch, spec["package"], ver_rev(spec))) as fh:
+        with open(sentinel_path(work_dir, spec.get("effective_architecture") or default_arch,
+                                spec["package"], ver_rev(spec), spec.get("pkg_family", ""))) as fh:
             return int(fh.readline().strip())
     except Exception:                       # best-effort heuristic: any failure
         pass                                # degrades to the tar/zero fallback

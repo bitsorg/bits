@@ -2142,8 +2142,8 @@ def doFinalSync(spec, specs, args, syncHelper):
   try:
     from bits_helpers.cleanup import touch_sentinel as _touch_sentinel
     from bits_helpers.utilities import ver_rev as _ver_rev
-    _touch_sentinel(args.workDir, args.architecture, spec["package"], _ver_rev(spec),
-                    record_size=True)
+    _touch_sentinel(args.workDir, effective_arch(spec, args.architecture), spec["package"],
+                    _ver_rev(spec), record_size=True, family=spec.get("pkg_family", ""))
   except Exception:
     pass
 
@@ -2976,7 +2976,8 @@ def build_one_package(p, ctx):
       # Touch the sentinel so the cleanup command knows this package was used.
       try:
         from bits_helpers.cleanup import touch_sentinel as _touch_sentinel
-        _touch_sentinel(workDir, args.architecture, spec["package"], ver_rev(spec))
+        _touch_sentinel(workDir, effective_arch(spec, args.architecture), spec["package"],
+                        ver_rev(spec), family=spec.get("pkg_family", ""))
       except Exception:
         pass
       return True
@@ -4616,7 +4617,8 @@ def doBuild(args, parser):
     from bits_helpers.cleanup import touch_sentinel as _touch
     for d in _skipped:     # kept by bits cleanup: an older init.sh may still source them
       if _states.get(d) == _plan.INSTALLED:
-        _touch(workDir, args.architecture, d, ver_rev(specs[d]))
+        _touch(workDir, effective_arch(specs[d], args.architecture), d, ver_rev(specs[d]),
+               family=specs[d].get("pkg_family", ""))
   except OSError as exc:
     debug("Could not mark the installed packages not needed as used: %s", exc)
   # Tell the progress reporter how many packages will be built, so it can post

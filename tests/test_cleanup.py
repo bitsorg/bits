@@ -31,6 +31,7 @@ from bits_helpers.cleanup import (
     _try_evict,
     acquire_build_lock,
     mark_in_store,
+    retention_sweep,
     doCleanup,
     sentinel_path,
     touch_sentinel,
@@ -785,6 +786,58 @@ class PublishRecordRefreshTest(unittest.TestCase):
         with patch("bits_helpers.download.downloadUrllib2", side_effect=fake):
             mark_published_from(work, "https://cvmfs.example/cvmfs-status.json")
         self.assertTrue(os.path.exists(published_marker_path(work, "x86_64-el9", "zlib", "1.3-2")))
+
+
+class FamilySentinelTest(unittest.TestCase):
+    """A sentinel stands beside its install tree: a family's, a shared one."""
+
+    def test_found_sized_and_evicted_with_its_tree(self):
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        for arch, family, pkg in (("share", "", "data"), (ARCH, "externals", "foo"), (ARCH, "", "bar")):
+            tree = os.path.join(work, arch, *([family] if family else []), pkg, "1-1")
+            os.makedirs(tree)
+            with open(os.path.join(tree, "f"), "w") as fh:
+                fh.write("x" * 5000)
+            touch_sentinel(work, arch, pkg, "1-1", record_size=True, family=family)
+        got = {e.pkg_dir: e for e in _list_all_sentinels(work)}
+        foo = os.path.join(work, ARCH, "externals", "foo", "1-1")
+        self.assertEqual(sorted(got), sorted([os.path.join(work, "share", "data", "1-1"), foo,
+                                              os.path.join(work, ARCH, "bar", "1-1")]))
+        self.assertGreater(got[foo].size_bytes, 0)                    # sized, not 0
+        self.assertGreater(_try_evict(got[foo], dry_run=False), 0)
+        self.assertFalse(os.path.exists(foo))
+        self.assertFalse(os.path.exists(os.path.join(work, ".packages", ARCH, "externals")))
+        self.assertTrue(os.path.exists(sentinel_path(work, ARCH, "bar", "1-1")))
+
+    def test_an_old_sentinel_at_a_bridge_link_frees_nothing(self):
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        tree = os.path.join(work, "own-abc", "GCC", "15-1")   # the own-hash tree, in use
+        os.makedirs(tree)
+        with open(os.path.join(tree, "f"), "w") as fh:
+            fh.write("x" * 5000)
+        os.makedirs(os.path.join(work, ARCH, "GCC"))
+        os.symlink(tree, os.path.join(work, ARCH, "GCC", "15-1"))   # the build arch's bridge
+        h = "ab" * 20
+        with open(os.path.join(tree, ".build-hash"), "w") as fh:
+            fh.write(h)
+        stored = os.path.join(work, "TARS", "own-abc", "store", h[:2], h)
+        os.makedirs(stored)
+        mark_in_store(work, "own-abc", h)
+        touch_sentinel(work, ARCH, "GCC", "15-1", record_size=True)  # as bits did before
+        entry = _list_sentinels(work, ARCH)[0]
+        self.assertEqual(_try_evict(entry, dry_run=False, assume_stored=True), 0)
+        self.assertTrue(os.path.isfile(os.path.join(tree, "f")))
+        self.assertTrue(os.path.isdir(stored))                         # its tarball stays
+        self.assertFalse(os.path.exists(entry.sentinel_path))
+        touch_sentinel(work, ARCH, "GCC", "15-1")                      # retention drops it
+        with patch("bits_helpers.gc._localize_manifest", return_value="m.json"), \
+             patch("bits_helpers.trust.trusted_records",
+                   return_value=("kid", [{"effective_architecture": ARCH}])):
+            retention_sweep(Namespace(workDir=work, dryRun=False, trustManifests=["m"]), None)
+        self.assertFalse(os.path.exists(entry.sentinel_path))
+        self.assertTrue(os.path.isfile(os.path.join(tree, "f")))
 
 
 class RetentionDryRunTest(unittest.TestCase):

@@ -8,7 +8,10 @@ Sentinel files
 Every package installed by bits (or used as a dependency) is tracked via a
 sentinel file at::
 
-    workDir/.packages/<arch>/<package>/<version>
+    workDir/.packages/<arch>/[<family>/]<package>/<version>
+
+beside the install tree it stands for (workDir/<arch>/[<family>/]<package>/<version>,
+<arch> the effective one: share, an own-hash architecture).
 
 The sentinel's ``mtime`` records the last time the package was touched —
 either built from source or pulled in as a transitive dependency of a
@@ -55,13 +58,15 @@ from bits_helpers.log import debug, error, info, warning
 # Sentinel helpers — used by both cleanup.py and build.py
 # ---------------------------------------------------------------------------
 
-def sentinel_path(work_dir: str, architecture: str, package: str, version: str) -> str:
-    """Return the canonical path of the sentinel file for *package*/*version*."""
-    return join(abspath(work_dir), ".packages", architecture, package, version)
+def sentinel_path(work_dir: str, architecture: str, package: str, version: str,
+                  family: str = "") -> str:
+    """The sentinel of the install tree <arch>/[<family>/]<package>/<version>."""
+    return join(abspath(work_dir), ".packages", architecture, *([family] if family else []),
+                package, version)
 
 
 def touch_sentinel(work_dir: str, architecture: str, package: str, version: str,
-                   record_size: bool = False) -> None:
+                   record_size: bool = False, family: str = "") -> None:
     """Create or update the sentinel for *package*/*version*.
 
     Updates the sentinel's ``mtime`` to *now* so that the cleanup command
@@ -79,16 +84,15 @@ def touch_sentinel(work_dir: str, architecture: str, package: str, version: str,
     Safe to call from multiple concurrent processes — the flock, the optional
     rewrite and the ``utime`` call are all done while holding the lock.
     """
-    path = sentinel_path(work_dir, architecture, package, version)
+    path = sentinel_path(work_dir, architecture, package, version, family)
     os.makedirs(dirname(path), exist_ok=True)
     try:
         with open(path, "a+") as fh:
             try:
                 fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
                 if record_size:
-                    # Compute du once, here, and cache it. pkg_dir mirrors the
-                    # flat <arch>/<pkg>/<ver> layout used by _list_sentinels.
-                    pkg_dir = join(abspath(work_dir), architecture, package, version)
+                    # Compute du once, here, and cache it.
+                    pkg_dir = _install_dir(path)
                     size_bytes = _du(pkg_dir) if exists(pkg_dir) else 0
                     fh.seek(0)
                     fh.truncate()
@@ -122,7 +126,7 @@ def _read_cached_size(sentinel_file: str) -> Optional[int]:
 
 
 def acquire_build_lock(work_dir: str, architecture: str, package: str,
-                       version: str):
+                       version: str, family: str = ""):
     """Acquire a shared flock on the sentinel for the duration of a build.
 
     Returns an open file object that holds the lock.  The caller **must**
@@ -138,7 +142,7 @@ def acquire_build_lock(work_dir: str, architecture: str, package: str,
     the call will wait until eviction is finished.  In practice eviction is
     fast (``shutil.rmtree`` + ``unlink``), so the wait is negligible.
     """
-    path = sentinel_path(work_dir, architecture, package, version)
+    path = sentinel_path(work_dir, architecture, package, version, family)
     os.makedirs(dirname(path), exist_ok=True)
     fh = open(path, "a")
     try:
@@ -189,31 +193,29 @@ def _du(path: str) -> int:
     return total
 
 
+def _split_sentinel(path: str):
+    """(work dir, path below .packages/) of a sentinel."""
+    marker = os.sep + ".packages" + os.sep
+    work, _, rel = path.rpartition(marker)
+    return work or os.sep, rel
+
+
+def _install_dir(path: str) -> str:
+    """The install tree a sentinel stands for: the same path, without .packages/."""
+    work, rel = _split_sentinel(path)
+    return join(work, rel)
+
+
 def _list_sentinels(work_dir: str, architecture: str) -> List[_SentinelEntry]:
     """Return all known packages sorted by mtime ascending (oldest first)."""
     sentinel_root = join(abspath(work_dir), ".packages", architecture)
-    if not exists(sentinel_root):
-        return []
-
     entries = []
-    try:
-        packages = sorted(os.listdir(sentinel_root))
-    except OSError:
-        return []
-
-    for package in packages:
-        pkg_sentinel_dir = join(sentinel_root, package)
-        if not os.path.isdir(pkg_sentinel_dir):
-            continue
-        try:
-            versions = sorted(os.listdir(pkg_sentinel_dir))
-        except OSError:
-            continue
-        for version in versions:
-            spath = join(pkg_sentinel_dir, version)
-            if not os.path.isfile(spath):
+    for root, dirs, files in os.walk(sentinel_root):   # [<family>/]<pkg>/<version>
+        dirs.sort()
+        for version in sorted(files):
+            spath = join(root, version)
+            if os.path.relpath(spath, sentinel_root).count(os.sep) not in (1, 2):
                 continue
-            pkg_dir = join(abspath(work_dir), architecture, package, version)
             try:
                 mtime = os.path.getmtime(spath)
             except OSError:
@@ -223,7 +225,7 @@ def _list_sentinels(work_dir: str, architecture: str) -> List[_SentinelEntry]:
             # evict, so we defer that to _resolve_size on the eviction path.
             entries.append(_SentinelEntry(
                 sentinel_path=spath,
-                pkg_dir=pkg_dir,
+                pkg_dir=_install_dir(spath),
                 mtime=mtime,
                 size_bytes=_read_cached_size(spath),
             ))
@@ -378,8 +380,8 @@ def _remove_leftovers(work_dir: str, keep_recent_days: float, dry_run: bool,
 # ---------------------------------------------------------------------------
 
 def _work_dir_of(entry: _SentinelEntry) -> str:
-    """WORK of WORK/.packages/<arch>/<pkg>/<ver>."""
-    return dirname(dirname(dirname(dirname(entry.sentinel_path))))
+    """WORK of WORK/.packages/<arch>/[<family>/]<pkg>/<ver>."""
+    return _split_sentinel(entry.sentinel_path)[0]
 
 
 IN_STORE = ".in-store"       # in a TARS/<arch>/store/<h2>/<hash>/: the write store has it
@@ -507,22 +509,19 @@ def _try_evict(entry: _SentinelEntry, dry_run: bool, assume_stored: bool = False
 
     # We hold the exclusive lock — safe to evict.
     try:
-        pkg_name = basename(dirname(entry.sentinel_path))
-        pkg_ver  = basename(entry.sentinel_path)
+        label = _split_sentinel(entry.sentinel_path)[1]   # <arch>/[<family>/]<pkg>/<ver>
         age_days = (time.time() - entry.mtime) / 86400
-        tars = _package_tarballs(entry, assume_stored)
-        size_bytes = _resolve_size(entry) + sum(_du(t) for t in tars)
+        linked = os.path.islink(entry.pkg_dir)   # not its tree (an old sentinel at a bridge link)
+        tars = [] if linked else _package_tarballs(entry, assume_stored)
+        size_bytes = 0 if linked else _resolve_size(entry) + sum(_du(t) for t in tars)
         size_mib = size_bytes / 1e6
+        what = "the sentinel of linked %s" % label if linked else label
         if dry_run:
-            info("dry-run: would evict %s/%s/%s  (%.1f MiB, %.0f days old)",
-                 basename(dirname(dirname(entry.sentinel_path))), pkg_name, pkg_ver,
-                 size_mib, age_days)
+            info("dry-run: would evict %s  (%.1f MiB, %.0f days old)", what, size_mib, age_days)
             return size_bytes
 
-        info("Evicting %s/%s/%s  (%.1f MiB, %.0f days old)",
-             basename(dirname(dirname(entry.sentinel_path))), pkg_name, pkg_ver,
-             size_mib, age_days)
-        if exists(entry.pkg_dir):
+        info("Evicting %s  (%.1f MiB, %.0f days old)", what, size_mib, age_days)
+        if exists(entry.pkg_dir) and not linked:
             shutil.rmtree(entry.pkg_dir, ignore_errors=True)
         for t in tars:                       # the store has it; the local copy goes too
             shutil.rmtree(t, ignore_errors=True)
@@ -532,13 +531,13 @@ def _try_evict(entry: _SentinelEntry, dry_run: bool, assume_stored: bool = False
         except OSError:
             pass
         # Clean up empty parent directories.
-        pkg_sentinel_dir = dirname(entry.sentinel_path)
-        arch_sentinel_dir = dirname(pkg_sentinel_dir)
-        for d in (pkg_sentinel_dir, arch_sentinel_dir):
+        d, top = dirname(entry.sentinel_path), join(_work_dir_of(entry), ".packages")
+        while d != top and d.startswith(top + os.sep):
             try:
                 os.rmdir(d)
             except OSError:
-                pass   # not empty — fine
+                break   # not empty — fine
+            d = dirname(d)
         return size_bytes
     finally:
         fcntl.flock(fh, fcntl.LOCK_UN)
@@ -913,8 +912,8 @@ def retention_sweep(args, parser):
         for root, _dirs, files in os.walk(pkroot):
             for n in files:
                 s = join(root, n)
-                rel = os.path.relpath(s, pkroot)   # <arch>/<pkg>/<version>
-                if not exists(join(work_dir, rel)) and not dry_run:
+                tree = join(work_dir, os.path.relpath(s, pkroot))   # <arch>/[<family>/]<pkg>/<ver>
+                if (not exists(tree) or os.path.islink(tree)) and not dry_run:
                     _unlink_quiet(s)
         if not dry_run:
             _prune_empty_dirs(pkroot)

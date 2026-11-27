@@ -617,7 +617,7 @@ bits prune [options]
 | `-a ARCH`, `--architecture ARCH` | auto-detected | Architecture to evict packages for. |
 | `--max-age DAYS` | `7.0` | Evict packages whose sentinel has not been touched in more than `DAYS` days. Set to `0` to disable age-based eviction. |
 | `--min-free GIB` | _(none)_ | Evict packages until at least `GiB` GiB of free disk space is available: the day last used longest ago first, the biggest first within a day. A package's local store tarball goes with it when the write store has it (bits marks one it uploaded, or found there, `.in-store`). |
-| `--all-architectures` | — | Evict from every architecture under `.packages`, as one list (instead of `-a`'s). A host building for several platforms, `--docker` ones included, needs it: their packages are not under the host's own architecture. |
+| `--all-architectures` | — | Evict from every architecture under `.packages`, as one list (instead of `-a`'s). A host building for several platforms, `--docker` ones included, needs it: their packages are not under the host's own architecture; neither are shared (`share`) and own-hash packages. |
 | `--keep-recent DAYS` | `2.0` | Disk pressure never evicts a package used in the last `DAYS` days; it stops short of `--min-free` instead, with a warning. `0` for none. |
 | `--leftovers` | — | First remove what failed builds and jobs left behind: `BUILD/<hash>` and `INSTALLROOT/<hash>` whose build (its `BUILD/<hash>/log`) has not run, `tmp/` entries not written, and store tarballs (`TARS/<arch>/store/<h2>/<hash>`) the write store has of no installed package, in `--keep-recent` days (1 at least: a CI job runs 24 hours at most). A successful build removes its own; installed packages and `SOURCES/` are untouched. After it, and after evicting packages, links under `TARS/` (version links, `dist` trees) to tarballs no longer there go too, with the directories that leaves empty. |
 | `--stored-tarballs [DAYS]` | — | Remove every local store tarball the write store has, its package installed or not, once not used in `DAYS` days (without `DAYS`, `--keep-recent`'s; 1 at least), with its links: the installed tree and the store serve without it. A tarball only on this host stays. |
@@ -627,7 +627,7 @@ bits prune [options]
 | `--grace-days DAYS` | `1.0` | With `--retain`: never evict anything modified more recently than DAYS days ago. |
 | `-n`, `--dry-run` | — | Show which packages would be evicted without removing anything. |
 
-**How it works.** Every time a package is built or confirmed already installed, bits touches a *sentinel file* at `$WORK_DIR/.packages/<arch>/<package>/<version>`. The `prune` command reads these sentinels, sorts packages by last-touched time (oldest first), and evicts those that are too old or that need to be removed to recover disk space.
+**How it works.** Every time a package is built or confirmed already installed, bits touches a *sentinel file* at `$WORK_DIR/.packages/<arch>/[<family>/]<package>/<version>`, beside its install tree (`<arch>` the package's own: `share`, an own-hash architecture). The `prune` command reads these sentinels, sorts packages by last-touched time (oldest first), and evicts those that are too old or that need to be removed to recover disk space.
 
 **Typical usage patterns:**
 

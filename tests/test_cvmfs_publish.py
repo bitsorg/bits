@@ -258,6 +258,21 @@ class TestOrderBiggestFirst(unittest.TestCase):
             [s["package"] for s in order_biggest_first(specs, tars, "el9")],
             ["GEANT4", "protobuf", "safe_int"])
 
+    def test_the_payload_of_a_shared_or_family_package(self):
+        from bits_helpers.cvmfs_publish import payload_size
+        from bits_helpers.cleanup import sentinel_path
+        work = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, work, True)
+        self.addCleanup(os.environ.pop, "BITS_WORK_DIR", None)
+        os.environ["BITS_WORK_DIR"] = work
+        for arch, fam, size in (("share", "", 7), ("el9", "externals", 9)):
+            path = sentinel_path(work, arch, "p", "1.0-2", fam)
+            os.makedirs(os.path.dirname(path))
+            with open(path, "w") as fh:
+                fh.write("%d\n" % size)
+            spec = {"package": "p", "version": "1.0", "revision": "2",
+                    "effective_architecture": arch, "pkg_family": fam}
+            self.assertEqual(payload_size(spec, os.path.join(work, "TARS"), "el9"), size)
+
     def test_empty_or_corrupt_sentinel_falls_back_not_raises(self):
         # A blank/garbage sentinel must degrade to the tar-size fallback, never raise.
         from bits_helpers.cvmfs_publish import order_biggest_first

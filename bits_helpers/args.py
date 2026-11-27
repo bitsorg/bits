@@ -392,7 +392,7 @@ def add_prune_arguments(subparsers, ctx):
   cleanup_parser.add_argument("--all-architectures", dest="allArchitectures", action="store_true",
                               default=False,
                               help=("Evict from every architecture under WORKDIR/.packages, as one "
-                                    "list (instead of -a's)."))
+                                    "list (instead of -a's): also shared (share) and own-hash packages."))
   cleanup_parser.add_argument("--leftovers", dest="leftovers", action="store_true", default=False,
                               help=("First remove what failed builds and jobs left: BUILD/<hash> and "
                                     "INSTALLROOT/<hash> whose build has not run, and tmp/ entries not "
