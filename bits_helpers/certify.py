@@ -974,8 +974,11 @@ def doSign(args, parser):
         build_id = getattr(args, "buildId", None) or os.environ.get("BITS_BUILD_ID")
         if not url:
             parser.error("--sign-via-service requires --sign-service-url or BITS_SIGN_SERVICE_URL")
-        if not (url.startswith("https://") or "://localhost" in url or "://127.0.0.1" in url):
-            parser.error("--sign-via-service URL must be https (the CI ID token is sent as a bearer)")
+        from bits_helpers.sign_console import _check_console_url
+        try:
+            _check_console_url(url, False, secret=True)   # the CI ID token is sent as a bearer
+        except SystemExit as exc:
+            parser.error("--sign-via-service: %s" % exc)
         if not token:
             parser.error("--sign-via-service requires the CI ID token in BITS_SIGN_SERVICE_TOKEN")
         if not build_id:

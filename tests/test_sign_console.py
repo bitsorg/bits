@@ -139,6 +139,25 @@ class TestPreapproveViaConsole(unittest.TestCase):
                                                 ["lcg"], self.BOMS)
         sign_console._check_console_url("http://localhost:8080", False)   # local is fine
         sign_console._check_console_url("http://tb:8080", True)           # explicit override
+        with self.assertRaisesRegex(SystemExit, "a token goes over it"):
+            sign_console._check_console_url("http://tb:8080", True, secret=True)
+        sign_console._check_console_url("https://tb:8080", True, secret=True)
+        sign_console._check_console_url("http://localhost:8080", True, secret=True)
+
+    def test_a_token_never_goes_over_plain_http(self):
+        from bits_helpers import orchestrated, store_login
+        with self.assertRaisesRegex(orchestrated.RequestError, "a token goes over it"):
+            orchestrated.Console("http://tb:8080", "tok", insecure=True).groups()
+        for local in ("http://[::1]:8080", "http://LOCALHOST"):
+            sign_console._check_console_url(local, False, secret=True)
+        for far in ("http://localhost.evil.com", "http://localhost@evil.com", "http://127.0.0.1.nip.io"):
+            with self.assertRaises(SystemExit):
+                sign_console._check_console_url(far, True, secret=True)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with self.assertRaisesRegex(SystemExit, "a token goes over it"):
+            store_login.login("http://tb:8080", "lcg", token_file=os.path.join(d, "t"), insecure=True)
+        self.assertEqual(os.listdir(d), [])
 
 
 class TestPrintQr(unittest.TestCase):

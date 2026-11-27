@@ -27,7 +27,7 @@ def login(console, group, token_file=TOKEN_FILE, timeout=600, cafile=None, insec
     """Get *group*'s store token from *console* and write it to *token_file*.
     Returns the user it was issued to; exits on refusal, expiry or timeout."""
     base = console.rstrip("/")
-    sign_console._check_console_url(base, insecure)
+    sign_console._check_console_url(base, insecure, secret=True)
     sign_console._set_tls(cafile, insecure)
     # The token is handed out once: make sure it can be written before asking.
     fd, tmp = _open_token_file(token_file)
@@ -113,7 +113,7 @@ def main(argv=None):
     ap.add_argument("--console-cafile", default=None,
                     help="CA bundle for the console when it is not in this host's trust store")
     ap.add_argument("--console-insecure", action="store_true",
-                    help="allow http:// / skip TLS verification (trusted testbed only)")
+                    help="skip TLS verification (trusted testbed only; never plain http)")
     a = ap.parse_args(argv)
     console = orchestrated.console_url(a.console)
     if not console:

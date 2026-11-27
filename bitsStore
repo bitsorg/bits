@@ -638,6 +638,13 @@ def decertify_local(boms, f, marker):
     if not (url and token):
         sys.exit(f"{PROG}: decertifying needs the bits-console URL (--console, "
                  "$BITS_CONSOLE_URL) and a GitLab token (~/.bits/gitlab-token)")
+    console = orchestrated.Console(url, token, cafile=f.console_cafile,
+                                   insecure=f.console_insecure)
+    try:
+        console.check()   # before asking: a token goes to it
+    except orchestrated.RequestError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
     if not f.yes:
         try:
             with open("/dev/tty") as tty:
@@ -649,8 +656,6 @@ def decertify_local(boms, f, marker):
             print("Refusing to decertify without confirmation (no tty). Use --yes.",
                   file=sys.stderr)
             return 1
-    console = orchestrated.Console(url, token, cafile=f.console_cafile,
-                                   insecure=f.console_insecure)
     failed = len(bad)
     for (group, bid, arch) in sorted(wanted):
         try:
@@ -964,7 +969,7 @@ def main():
             sp.add_argument("--console-cafile", dest="console_cafile", metavar="PEM", default=None,
                             help="CA bundle for the console when it is not in this host's trust store")
             sp.add_argument("--console-insecure", dest="console_insecure", action="store_true",
-                            help="allow http:// / skip TLS verification to the console (testbed only)")
+                            help="skip TLS verification to the console (testbed only; never plain http)")
             sp.add_argument("-n", "--dry-run", action="store_true", help="show what would be deleted")
             sp.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
             sp.add_argument("--force", action="store_true",

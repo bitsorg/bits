@@ -1064,6 +1064,27 @@ class TestGroupFromPath(unittest.TestCase):
         self.assertEqual(common["packages"][0]["group"], "lcg")
 
 
+class TestSignServiceUrl(unittest.TestCase):
+    """The CI ID token goes to the signing service over https or to this host only."""
+
+    def test_a_plain_http_service_is_refused(self):
+        class Parser:
+            def error(self, msg):
+                raise SystemExit(msg)
+        for url, refused in (("http://localhost.evil.com", True), ("http://127.0.0.1.nip.io", True),
+                             ("http://sign.example", True), ("https://sign.example", False)):
+            args = SimpleNamespace(manifests=["/nonexistent.json"], noStoreCheck=True,
+                                   signViaService=True, signServiceUrl=url, buildId="b", key=None, out="x")
+            with self.subTest(url=url), patch.dict(os.environ, {"BITS_SIGN_SERVICE_TOKEN": "t"}), \
+                 patch.object(certify, "certify_by_arch", return_value=[]) as signed:
+                if refused:
+                    with self.assertRaisesRegex(SystemExit, "--sign-via-service: refusing"):
+                        certify.doSign(args, Parser())
+                else:
+                    certify.doSign(args, Parser())
+                self.assertEqual(signed.called, not refused)
+
+
 class TestProbeBinding(unittest.TestCase):
     """validate_against_store must ask the probe for the manifest's named tarball."""
 

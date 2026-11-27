@@ -1402,7 +1402,8 @@ def add_compliance_arguments(subparsers, ctx):
                                  help="CA bundle for the console when it is not in this host's trust store.")
   compliance_parser.add_argument("--console-insecure", dest="consoleInsecure", action="store_true",
                                  default=False,
-                                 help="Allow http:// / skip TLS verification to the console (trusted testbed only).")
+                                 help=("Skip TLS verification to the console (trusted testbed only); never "
+                                       "plain http, as the requests carry a token."))
   compliance_parser.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,
                                  help=("GitLab token the decertify requests are made with (default: "
                                        "$BITS_CERTIFIER_TOKEN / $GITLAB_TOKEN / ~/.bits/gitlab-token)."))

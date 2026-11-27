@@ -342,8 +342,9 @@ These live under `system:` because they are publish policy, not part of any
 package hash. `--approval none` only publishes, without asking for an approval, for
 builds approved elsewhere (a bits-console build is pre-approved in the browser).
 `--console-cafile PEM`
-trusts a private CA; `--console-insecure` allows a plain-http console on a trusted
-testbed.
+trusts a private CA; `--console-insecure` allows a plain-http console for the
+pre-approval on a trusted testbed, and only skips the certificate check where a
+token goes to the console.
 
 #### Signing — `bits sign`
 
@@ -1624,7 +1625,7 @@ the link alone does not give it out.
 | `--token-file FILE` | `$BITS_STORE_TOKEN_FILE`, else `~/.bits/token` | Where the token is written. |
 | `--timeout SECONDS` | 600 | How long to wait for the approval. |
 | `--console-cafile FILE` | system | CA bundle for the console's certificate. |
-| `--console-insecure` | off | Allow `http://` and skip TLS verification (a trusted testbed only). |
+| `--console-insecure` | off | Skip TLS verification (a trusted testbed only); never plain `http://`, as the token comes back over it. |
 
 ---
 

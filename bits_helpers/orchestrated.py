@@ -132,7 +132,7 @@ class Console:
         """Raise RequestError for a URL a token must not be sent to (not https)."""
         from bits_helpers import sign_console
         try:
-            sign_console._check_console_url(self.base, self._tls[1])
+            sign_console._check_console_url(self.base, self._tls[1], secret=True)
         except SystemExit as exc:
             raise RequestError(str(exc))
 

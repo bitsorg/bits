@@ -162,11 +162,16 @@ def _json_call(url, obj=None, bearer=None):
     return code, body if isinstance(body, dict) else {}
 
 
-def _check_console_url(base, insecure):
-    """The request is unauthenticated, so the channel must be: https (or a local
-    backend), unless explicitly overridden for a testbed."""
+def _check_console_url(base, insecure, secret=False):
+    """The channel must be https (or a local backend). *insecure* allows plain http
+    for a testbed, but not when a *secret* (a token) is sent or comes back."""
     host = urllib.parse.urlsplit(base).hostname or ""
-    if not (base.startswith("https://") or host in ("localhost", "127.0.0.1", "::1") or insecure):
+    if base.startswith("https://") or host in ("localhost", "127.0.0.1", "::1"):
+        return
+    if secret:
+        raise SystemExit("refusing a non-https bits-console URL %s: a token goes over it "
+                         "(skipping verification only skips the certificate check)" % base)
+    if not insecure:
         raise SystemExit("refusing a non-https bits-console URL %s (use https, or "
                          "--console-insecure on a trusted testbed network)" % base)
 
