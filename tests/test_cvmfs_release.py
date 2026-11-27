@@ -213,11 +213,11 @@ class MainTest(unittest.TestCase):
         reader = mock.Mock(s3=object(), remoteStore="bkt")
         got = {}
 
-        def publish(argv):
+        def publish(argv, token=None):
             m = argv[argv.index("--manifest") + 1]
             with open(m) as fh:
                 got["manifest"] = json.load(fh)
-            got["argv"] = argv
+            got["argv"], got["token"] = argv, token
             return 0
         with mock.patch("bits_helpers.sync.remote_from_url", return_value=reader), \
              mock.patch.object(rel, "find_boms", return_value=boms), \
@@ -231,6 +231,8 @@ class MainTest(unittest.TestCase):
         argv = got["argv"]
         for flag in ("--release-view", "--wait", "--publish-path"):
             self.assertIn(flag, argv)
+        self.assertNotIn("--token", argv)          # handed on, not on a command line
+        self.assertEqual(got["token"], os.environ.get("PREPUB_API_TOKEN", ""))
         self.assertEqual(argv[argv.index("--arch") + 1], ARCH)
         self.assertEqual(argv[argv.index("--build-id") + 1], "4242")
         self.assertEqual([p["package"] for p in got["manifest"]["packages"]], ["ROOT", "LCG"])

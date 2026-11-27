@@ -1788,7 +1788,7 @@ def stage_tar(repo, tar_path, path, job_id, stratum0_url,
     return prefix, catalog
 
 
-def main(argv=None):
+def main(argv=None, token=None):
     import argparse
     ap = argparse.ArgumentParser(prog="bits cvmfs publish")
     ap.add_argument("--fingerprint", default="",
@@ -1818,7 +1818,8 @@ def main(argv=None):
     ap.add_argument("--prefix-fallback", default=os.environ.get("CVMFS_PREFIX_FALLBACK", ""))
     ap.add_argument("--stratum0-url", default=os.environ.get("BITS_STRATUM0_URL", ""))
     ap.add_argument("--prepub-url", default=os.environ.get("PREPUB_URL", ""))
-    ap.add_argument("--token", default=os.environ.get("PREPUB_API_TOKEN", ""))
+    ap.add_argument("--token", default=None,
+                    help="prepub's token (default: $PREPUB_API_TOKEN, which is the place for it)")
     ap.add_argument("--platform", default=os.environ.get("PLATFORM", ""))
     ap.add_argument("--install-dir", default=os.environ.get("CVMFS_INSTALL_DIR", ""))
     ap.add_argument("--user", default="")
@@ -1890,6 +1891,10 @@ def main(argv=None):
                     help="stage but do NOT submit — prints DRYRUN(prefix|hashC), "
                          "so the catalog hash can be checked without a graft")
     a = ap.parse_args(argv)
+    if a.token is not None:
+        from bits_helpers.log import warn_secret_option
+        warn_secret_option("--token", "PREPUB_API_TOKEN")
+    a.token = a.token or token or os.environ.get("PREPUB_API_TOKEN", "")   # *token*: a caller's
     # prepub refuses these combinations with a 400; say so before any upload.
     if a.object_list and not (a.publish_path in INGEST_PATHS and a.direct_s3):
         ap.error("--object-list requires --publish-path ingest or ingest-batch, and --direct-s3")

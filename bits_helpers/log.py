@@ -147,3 +147,10 @@ warning = logger.warning
 info = logger.info
 banner = logger.banner
 success = logger.success
+
+
+def warn_secret_option(option, env):
+  """Warn that the secret *option* was given on the command line: others on the host
+  see it in the process list, CI logs echo it; $*env* is the place for it."""
+  warning("%s on the command line is visible to others (process list, CI logs): "
+          "set $%s instead", option, env)

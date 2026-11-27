@@ -1141,7 +1141,8 @@ def add_publish_arguments(subparsers, ctx):
                              "https://prepub.example.org:8080.  Required for CVMFS publish."))
   _prepub.add_argument("--prepub-token", dest="prepubToken", default=None, metavar="TOKEN",
                        help=("Bearer token for the cvmfs-prepub API.  If omitted the value of the "
-                             "PREPUB_API_TOKEN environment variable is used."))
+                             "PREPUB_API_TOKEN environment variable is used; prefer it (on the "
+                             "command line the token shows in the process list)."))
   _prepub.add_argument("--prepub-repo", dest="prepubRepo", default=None, metavar="REPO",
                        help=("CVMFS repository name to pass to the API, e.g. software.cern.ch.  "
                              "Derived automatically from --cvmfs-target when not specified."))
@@ -1309,7 +1310,8 @@ def add_sign_arguments(subparsers, ctx):
                               help=("A GitLab PAT that identifies the initiating admin (GET /user). When "
                                     "given (or $BITS_CERTIFIER_TOKEN), that authenticated identity must be "
                                     "an authorised admin and is recorded as certified_by, instead of "
-                                    "reading MR approvals."))
+                                    "reading MR approvals. Prefer the variable (on the command line the "
+                                    "token shows in the process list)."))
   certify_parser.add_argument("--valid-days", dest="validDays", type=int, default=None, metavar="DAYS",
                               help=("Stamp an 'expires' DAYS from now into the signed manifest; consumers "
                                     "fail closed once it is past (offline anti-replay). Default: no expiry."))
@@ -1406,7 +1408,8 @@ def add_compliance_arguments(subparsers, ctx):
                                        "plain http, as the requests carry a token."))
   compliance_parser.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,
                                  help=("GitLab token the decertify requests are made with (default: "
-                                       "$BITS_CERTIFIER_TOKEN / $GITLAB_TOKEN / ~/.bits/gitlab-token)."))
+                                       "$BITS_CERTIFIER_TOKEN / $GITLAB_TOKEN / ~/.bits/gitlab-token); "
+                                       "prefer those (on the command line it shows in the process list)."))
   return compliance_parser
 
 
@@ -2192,7 +2195,15 @@ def doParseArgs():
       # short flags: -w, -a, -C, -z
       _init_explicit_flags.add(_tok[1:])
 
-  args = finaliseArgs(parser.parse_args(), parser)
+  parsed = parser.parse_args()
+  from bits_helpers.log import warn_secret_option
+  for dest, option, env in (("s3SecretKey", "--s3-secret-key", "AWS_SECRET_ACCESS_KEY"),
+                            ("prepubToken", "--prepub-token", "PREPUB_API_TOKEN"),
+                            ("certifierToken", "--certifier-token", "BITS_CERTIFIER_TOKEN"),
+                            ("gitlabToken", "--gitlab-token", "GITLAB_TOKEN")):
+    if getattr(parsed, dest, None):   # only the command line sets these
+      warn_secret_option(option, env)
+  args = finaliseArgs(parsed, parser)
   # --search-path (CLI) seeds BITS_PATH, but never over an explicit $BITS_PATH
   # the user set in the environment.
   _sp = getattr(args, "searchPath", None)

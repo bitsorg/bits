@@ -254,11 +254,16 @@ def main(argv=None):
                          "attested there. Without it certification is not checked.")
     ap.add_argument("--trust-groups", default="")
     ap.add_argument("--prepub-url", default=os.environ.get("PREPUB_URL", ""))
-    ap.add_argument("--token", default=os.environ.get("PREPUB_API_TOKEN", ""))
+    ap.add_argument("--token", default=None,
+                    help="prepub's token (default: $PREPUB_API_TOKEN, which is the place for it)")
     ap.add_argument("--bearer-auth", action="store_true")
     ap.add_argument("--work-dir", default="",
                     help="where to put fetched tarballs (default: a temporary directory)")
     a, rest = ap.parse_known_args(argv)
+    if a.token is not None:
+        from bits_helpers.log import warn_secret_option
+        warn_secret_option("--token", "PREPUB_API_TOKEN")
+    a.token = a.token or os.environ.get("PREPUB_API_TOKEN", "")
     if not (a.pipeline or a.bom_build_id):
         ap.error("name the build with --pipeline and/or --build-id")
 
@@ -301,14 +306,14 @@ def main(argv=None):
         from bits_helpers.cvmfs_publish import main as publish_main
         argv2 = ["--manifest", path, "--repo", a.repo, "--tars-root", tars_root,
                  "--arch", arch, "--release-view", "--wait",
-                 "--prepub-url", a.prepub_url, "--token", a.token,
+                 "--prepub-url", a.prepub_url,
                  "--tmpl-prefix", a.tmpl_prefix, "--prefix-fallback", a.prefix_fallback,
                  "--platform", a.platform, "--install-dir", a.install_dir, "--user", a.user,
                  "--build-id", str(a.pipeline or manifest["source_pipeline_id"]
                                    or manifest["build_id"])]
         if a.bearer_auth:
             argv2.append("--bearer-auth")
-        return publish_main(argv2 + rest)
+        return publish_main(argv2 + rest, token=a.token)
     except ReleaseError as exc:
         error("bits cvmfs release: %s", exc)
         return 1
