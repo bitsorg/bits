@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits cleanup --retain` does not sweep an architecture whose signed manifest verifies but certifies nothing: a transiently empty certification made it remove every install not in the last builds.
 - **[Fix]** Signing through bits-console (`python -m bits_helpers.sign_console`) keeps waiting for the approval when the console answers a 5xx or cannot be reached for a moment; one 502 ended a wait that would have succeeded.
 - **[Fix]** A bits-console call with `--insecure` (or `--console-insecure`) no longer switches TLS verification off for the later calls of the same process; a `Console` keeps its own setting.
 - **[Fix]** `bits cvmfs stage`: when re-reading the repository head after a moved base, opening the prepare lock or recreating the scratch directory fails, it says so; such errors were reported as a missing `cvmfs_swissknife`.

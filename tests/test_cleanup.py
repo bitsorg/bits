@@ -840,6 +840,34 @@ class FamilySentinelTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(tree, "f")))
 
 
+class RetentionEmptySetTest(unittest.TestCase):
+    """A verified but empty signed manifest sweeps nothing: it may be a transient one."""
+
+    def test_an_empty_certified_set_sweeps_nothing(self):
+        from bits_helpers import cleanup
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        tree = os.path.join(work, ARCH, "zlib", "1-1")
+        os.makedirs(tree)
+        old = time.time() - 30 * 86400
+        os.utime(tree, (old, old))
+        args = Namespace(workDir=work, dryRun=False, retainStore="b3://s", graceDays=1.0)
+        with patch("bits_helpers.build.derive_trust_manifest_srcs",
+                   return_value=["b3://s/MANIFESTS/common-manifest-%s.json" % ARCH]), \
+             patch("bits_helpers.gc._localize_manifest", return_value="m.json"), \
+             patch("bits_helpers.trust.trusted_records", return_value=("kid", [])):
+            self.assertEqual(cleanup.retention_sweep(args, None), 1)   # refuses: nothing verified
+        self.assertTrue(os.path.isdir(tree))
+        shared = "b3://s/MANIFESTS/common-manifest-shared.json"       # another arch's is not
+        with patch("bits_helpers.build.derive_trust_manifest_srcs",
+                   return_value=["b3://s/MANIFESTS/common-manifest-%s.json" % ARCH, shared]), \
+             patch("bits_helpers.gc._localize_manifest", side_effect=lambda s, w: s), \
+             patch("bits_helpers.trust.trusted_records", side_effect=lambda p: (
+                 "kid", [{"effective_architecture": "shared"}] if p == shared else [])):
+            self.assertEqual(cleanup.retention_sweep(args, None), 0)
+        self.assertTrue(os.path.isdir(tree))
+
+
 class RetentionDryRunTest(unittest.TestCase):
     """bits cleanup --retain --dry-run removes nothing, sentinels and links included."""
 

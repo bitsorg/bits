@@ -727,7 +727,7 @@ def retention_sweep(args, parser):
         released — this preserves the latest (possibly failed) iterations;
       * anything younger than --grace-days is never touched;
       * per-arch fail-closed: an architecture whose signed manifest cannot
-        be fetched/verified is skipped entirely.
+        be fetched/verified, or certifies nothing, is skipped entirely.
     """
     import re
     from bits_helpers import trust
@@ -784,6 +784,10 @@ def retention_sweep(args, parser):
         if not kid:
             warning("retention: %s not available/verified — architecture "
                     "'%s' will NOT be swept", s, arch_hint or "?")
+            continue
+        if not entries:   # a transiently empty certification must not evict everything
+            warning("retention: %s certifies nothing — architecture '%s' will NOT "
+                    "be swept", s, arch_hint or "?")
             continue
         certified.extend(entries)
         verified_arches.update({str(e.get("effective_architecture") or "")
