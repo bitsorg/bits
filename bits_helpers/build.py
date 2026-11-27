@@ -412,6 +412,13 @@ def _load_trusted_index(src, work_dir, accept_groups):
     return None, {}
 
 
+def _flush_manifest(manifest):
+  try:
+    manifest.flush()
+  except Exception as exc:          # pylint: disable=broad-except
+    debug("manifest: not flushed at exit: %s", exc)
+
+
 def _record_package(args, spec, outcome, work_dir):
   """Add *spec* to the build manifest, with its tarball in this work dir when there is
   one: its sha256 is what cvmfs-publish checks, for an installed package too."""
@@ -1811,6 +1818,8 @@ def report_build_failure(scheduler, spec, specs, args, build_command, err, outpu
 
 
 def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper):
+  if getattr(args, "manifest", None) is not None:
+    args.manifest.flush()   # what was recorded is on disk before a long compile
   spec = specs[p]
   debug("Build command: %s", build_command)
   confined = bool(spec.get("_own_paths"))           # --confine-work-dir
@@ -4224,6 +4233,8 @@ def doBuild(args, parser):
     # the full dependency graph has been resolved.
     target            = packages[-1] if packages else "",
   )
+  import atexit
+  atexit.register(_flush_manifest, args.manifest)   # what an aborted build recorded
   args.manifest.add_providers(provider_dirs)
 
   with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env,

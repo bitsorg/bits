@@ -81,6 +81,7 @@ class TestManifestInit(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _load(self, m):
+        m.flush()   # packages are written at most every few seconds
         with open(m.path) as fh:
             return json.load(fh)
 
@@ -290,6 +291,7 @@ class TestAddProviders(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _load(self, m):
+        m.flush()   # packages are written at most every few seconds
         with open(m.path) as fh:
             return json.load(fh)
 
@@ -346,6 +348,7 @@ class TestAddPackage(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _load(self, m):
+        m.flush()   # packages are written at most every few seconds
         with open(m.path) as fh:
             return json.load(fh)
 
@@ -479,14 +482,23 @@ class TestAddPackage(unittest.TestCase):
         names = [p["package"] for p in data["packages"]]
         self.assertEqual(names, ["Pkg%d" % i for i in range(5)])
 
-    def test_incremental_save_after_each_package(self):
-        """Each add_package call must persist to disk immediately."""
-        m = _make_manifest(self.tmp)
-        for i in range(3):
-            m.add_package(_make_spec(pkg="Pkg%d" % i), "already_installed")
-            data = self._load(m)
-            # After the (i+1)th call, i+1 packages should be on disk.
-            self.assertEqual(len(data["packages"]), i + 1)
+    def test_packages_are_written_at_most_every_few_seconds(self):
+        """The whole manifest is written each time: not for every package (quadratic)."""
+        from unittest import mock
+        import bits_helpers.manifest as manifest_mod
+        clock = [1000.0]
+        with mock.patch.object(manifest_mod.time, "monotonic", lambda: clock[0]):
+            m = _make_manifest(self.tmp)
+            for i in range(3):
+                m.add_package(_make_spec(pkg="Pkg%d" % i), "already_installed")
+            with open(m._path) as fh:
+                self.assertEqual(len(json.load(fh)["packages"]), 0)   # within seconds of the last write
+            clock[0] += BuildManifest._SAVE_EVERY
+            m.add_package(_make_spec(pkg="Pkg3"), "already_installed")
+            with open(m._path) as fh:
+                self.assertEqual(len(json.load(fh)["packages"]), 4)   # all, once due
+            m.add_package(_make_spec(pkg="Pkg4"), "already_installed")
+            self.assertEqual(len(self._load(m)["packages"]), 5)       # flush() writes the rest
 
     def test_missing_tarball_path_gives_null_sha256(self):
         m = _make_manifest(self.tmp)
@@ -524,6 +536,7 @@ class TestLifecycle(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _load(self, m):
+        m.flush()   # packages are written at most every few seconds
         with open(m.path) as fh:
             return json.load(fh)
 
@@ -620,6 +633,7 @@ class TestLatestSymlink(unittest.TestCase):
     def test_latest_updated_after_add_package(self):
         m = _make_manifest(self.tmp)
         m.add_package(_make_spec(), "already_installed")
+        m.flush()
         latest = os.path.join(m.manifest_dir, BuildManifest._LATEST_SYMLINK)
         self.assertTrue(os.path.islink(latest))
         # Reading via the symlink must work and match the real manifest.
@@ -673,6 +687,7 @@ class TestSourceChecksums(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _load(self, m):
+        m.flush()   # packages are written at most every few seconds
         with open(m.path) as fh:
             return json.load(fh)
 

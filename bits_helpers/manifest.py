@@ -11,9 +11,9 @@ later from the manifest alone::
 
     bits build --from-manifest bits-manifest-20260411T143000Z.json
 
-The manifest is written **incrementally**: after each package completes (or
-is confirmed already up-to-date), so a partial build still yields a useful
-record of what was completed before the failure.
+The manifest is written **incrementally**: as packages complete (or are
+confirmed already up-to-date), at most every few seconds and before each build
+script, so a partial build still yields a useful record of what was completed.
 
 Location
 --------
@@ -25,7 +25,7 @@ Manifests are written to a dedicated subdirectory of the work directory::
         bits-manifest-latest.json            ← symlink to the most recent
 
 The ``bits-manifest-latest.json`` symlink is updated atomically after each
-incremental write.
+write.
 
 Schema (version 4)
 ------------------
@@ -163,6 +163,7 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 
 try:
@@ -387,6 +388,8 @@ class BuildManifest:
 
     SCHEMA_VERSION = 4
     _LATEST_SYMLINK = "bits-manifest-latest.json"
+    # A package is written at most this often (s): each write is the whole manifest.
+    _SAVE_EVERY = 5.0
 
     def __init__(
         self,
@@ -420,6 +423,7 @@ class BuildManifest:
         self._seq = 0
         self._written_seq = 0
         self._pending = None
+        self._saved_at, self._dirty = 0.0, False
         self._io_lock = threading.Lock()
         # Serialises concurrent add_package()/_save() calls from --builders
         # worker threads so they neither corrupt _data nor race os.replace().
@@ -620,8 +624,13 @@ class BuildManifest:
         with self._lock:
             self._data["packages"].append(entry)
             self._data["updated_at"] = _now_iso()
-            self._save()
-        self._write_pending()          # disk I/O outside the data lock
+            saved = time.monotonic() - self._saved_at >= self._SAVE_EVERY
+            if saved:
+                self._save()
+            else:
+                self._dirty = True     # written by the next save, flush() or complete()
+        if saved:
+            self._write_pending()      # disk I/O outside the data lock
         debug("manifest: %s recorded as %s", spec.get("package", "?"), outcome)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -630,6 +639,13 @@ class BuildManifest:
         """The package entries recorded so far (copies)."""
         with self._lock:
             return [dict(e) for e in self._data["packages"]]
+
+    def flush(self) -> None:
+        """Write the packages recorded since the last save (also at exit)."""
+        with self._lock:
+            if self._dirty:
+                self._save()
+        self._write_pending()
 
     def complete(self) -> None:
         """Mark the manifest as successfully completed and write a final save."""
@@ -679,9 +695,9 @@ class BuildManifest:
         ``_data`` under it). The expensive part — serialising the whole
         manifest — happens here under the lock so the snapshot is consistent,
         but the DISK I/O is handed to :meth:`_write` which runs under a
-        separate I/O lock: with ``--builders`` every package completion saves,
+        separate I/O lock: with ``--builders`` package completions save concurrently,
         and holding the data lock across ``os.replace`` serialised all
-        builders on disk latency. A monotonic sequence number makes the
+        builders on disk latency (add_package saves at most every _SAVE_EVERY seconds). A monotonic sequence number makes the
         file-on-disk converge on the NEWEST snapshot even when two writers
         race (the loser's older payload is discarded, never written over a
         newer one).
@@ -693,6 +709,7 @@ class BuildManifest:
         """
         self._seq += 1
         self._pending = (self._seq, json.dumps(self._data, indent=2) + "\n")
+        self._saved_at, self._dirty = time.monotonic(), False
 
     def _write_pending(self) -> None:
         """Write the newest serialised snapshot to disk (outside _lock)."""
