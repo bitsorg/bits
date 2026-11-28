@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Improvement]** `bits compliance` (the audit and `--enforce`) reads the store's manifests 8 at a time: it fetched them one by one, one request per BOM per run.
 - **[Improvement]** `bits sign` checks the store objects of a certification 8 at a time: it asked (and, for a new object, downloaded and hashed) one after the other. The orchestrator's certifier, whose digest cache is an sqlite connection, still checks one by one.
 - **[Fix]** An SBOM leaves out a source URL's fragment when it carries a secret (`#access_token=…`), as it did the query; a secret in the URL's path cannot be told apart and stays.
 - **[Fix]** `bits cleanup --retain --mark-published-from` keys a CVMFS publish marker by the build's architecture and `<version>-<revision>`, which the bits-console publish record now names (`architecture`, `version_dir`): it used the console platform (`x86_64-el9` for `x86_64-el9-gcc14-opt`), so nothing was ever seen as published and the sweep released no certified content. A record entry that names a path is refused.

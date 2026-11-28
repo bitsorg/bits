@@ -262,6 +262,22 @@ def _s3_client(store_url):
     return boto3.client("s3", endpoint_url=endpoint, config=cfg, **keys), bucket, endpoint
 
 
+def _json_objects(s3, bucket, keys, what):
+    """(key, parsed JSON or None) for *keys*, in order: 8 fetched at a time, in
+    windows of 64 (not every document held at once)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def load(key):
+        try:
+            return json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
+        except Exception as exc:          # pylint: disable=broad-except
+            warning("%s: unreadable manifest %s (%s)", what, key, exc)
+            return None
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for i in range(0, len(keys), 64):
+            yield from zip(keys[i:i + 64], pool.map(load, keys[i:i + 64]))
+
+
 def audit_store(store_url, restricted, work_dir):
     """Walk the store's manifests; return the store-side findings dict.
 
@@ -279,21 +295,9 @@ def audit_store(store_url, restricted, work_dir):
     for page in paginator.paginate(Bucket=bucket, Prefix="MANIFESTS/"):
         keys += [o["Key"] for o in page.get("Contents", []) or []]
 
-    def _load(key):
-        try:
-            return json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
-        except Exception as exc:          # pylint: disable=broad-except
-            warning("compliance: unreadable manifest %s (%s)", key, exc)
-            return None
-
-    for key in keys:
-        leaf = key.split("/")[-1]
-        if not leaf.endswith(".json"):
-            continue
-        if "/rev-index/" in key:
-            continue
-        signed = leaf.startswith("common-manifest")
-        doc = _load(key)
+    wanted = [k for k in keys if k.endswith(".json") and "/rev-index/" not in k]
+    for key, doc in _json_objects(s3, bucket, wanted, "compliance"):
+        signed = key.split("/")[-1].startswith("common-manifest")
         if not isinstance(doc, dict):
             continue
         found["signed" if signed else "boms"] += 1
@@ -552,20 +556,16 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
     known, boms = set(rec.get("by_package", {})), {}
     known |= {k.split("/")[3].lower() for k in keys
               if k.startswith("MANIFESTS/rev-index/") and k.count("/") >= 4}
-    for key in keys:
-        leaf = key.split("/")[-1]
-        if leaf.endswith(".json") and "/rev-index/" not in key \
-           and not leaf.startswith("common-manifest"):
-            try:
-                doc = json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
-            except Exception as exc:      # pylint: disable=broad-except
-                warning("enforce: unreadable manifest %s (%s)", key, exc)
-                continue
-            names = {str(e.get("package", "")).lower() for e in
-                     (doc.get("packages") or [] if isinstance(doc, dict) else []) if isinstance(e, dict)}
-            known |= names
-            if names & restricted:
-                boms[key] = doc
+    bom_keys = [k for k in keys if k.endswith(".json") and "/rev-index/" not in k
+                and not k.split("/")[-1].startswith("common-manifest")]
+    for key, doc in _json_objects(s3, bucket, bom_keys, "enforce"):
+        if doc is None:
+            continue
+        names = {str(e.get("package", "")).lower() for e in
+                 (doc.get("packages") or [] if isinstance(doc, dict) else []) if isinstance(e, dict)}
+        known |= names
+        if names & restricted:
+            boms[key] = doc
     for key in keys:
         leaf = key.split("/")[-1]
         if key == "MANIFESTS/" + leaf and leaf.startswith("common-manifest") and leaf.endswith(".json"):

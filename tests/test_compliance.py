@@ -359,5 +359,34 @@ class RecipeSourcePrefixNameTest(unittest.TestCase):
                       [p for p, _why in prefixes])
 
 
+class JsonObjectsTest(unittest.TestCase):
+    """The store's manifests are read 8 at a time, handed on in order."""
+
+    def test_concurrent_in_order_and_an_unreadable_one(self):
+        # NEGATIVE CONTROL: one worker and the peak is 1.
+        import io
+        import threading
+        import time
+        lock, live, peak = threading.Lock(), [0], [0]
+
+        class S3:
+            def get_object(self, Bucket, Key):
+                with lock:
+                    live[0] += 1
+                    peak[0] = max(peak[0], live[0])
+                time.sleep(0.02)
+                with lock:
+                    live[0] -= 1
+                if Key == "k7":
+                    raise IOError("gone")
+                return {"Body": io.BytesIO(json.dumps({"k": Key}).encode())}
+        keys = ["k%d" % i for i in range(100)]
+        with self.assertLogs("bits", level="WARNING"):
+            got = list(compliance._json_objects(S3(), "b", keys, "test"))
+        self.assertEqual([k for k, _d in got], keys)
+        self.assertEqual([d and d["k"] for _k, d in got], [None if k == "k7" else k for k in keys])
+        self.assertGreater(peak[0], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
