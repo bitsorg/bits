@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Change]** `bits cleanup --retain` removes a store or BUILD folder only when its name is a bits hash (40 hex digits), as the leftovers sweep does: it took 40 to 64.
 - **[Fix]** `bits compliance --enforce` and the other orchestrator actions report an action the console answers without an id as it is, instead of a traceback (KeyError).
 - **[Fix]** Two builds of one target started in the same second write their own build manifests (`bits-manifest-<target>-<time>-2.json`, ...) instead of the same file, and two bits processes in one work dir no longer race on the `latest` link's temporary name.
 - **[Fix]** `bits sign --require-approval` takes the certifier only from `--certifier`, not from `$GITLAB_USER_LOGIN`: every pipeline has that variable and a pipeline variable overrides it, so whoever could set one named an admin, and the merge-request check behind it was never reached. The manifests CI passes `--certifier` (the merged merge request's author).

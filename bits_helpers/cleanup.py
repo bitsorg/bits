@@ -757,7 +757,6 @@ def retention_sweep(args, parser):
       * per-arch fail-closed: an architecture whose signed manifest cannot
         be fetched/verified, or certifies nothing, is skipped entirely.
     """
-    import re
     from bits_helpers import trust
     from bits_helpers.build import derive_trust_manifest_srcs
     from bits_helpers.gc import _localize_manifest
@@ -767,7 +766,7 @@ def retention_sweep(args, parser):
     grace_s  = max(0.0, getattr(args, "graceDays", 1.0)) * 86400
     keep_n   = max(1, getattr(args, "keepBuilds", 2))
     now      = time.time()
-    hex_re   = re.compile(r"^[0-9a-f]{40,64}$")
+    hex_re   = _HASH       # a bits hash is SHA-1, as the leftovers sweep matches
 
     # 0. Publish record → markers.
     src = getattr(args, "markPublishedFrom", None)
@@ -947,7 +946,7 @@ def retention_sweep(args, parser):
                 continue
             for h in sorted(os.listdir(sh)):
                 d = join(sh, h)
-                if (not hex_re.match(h) or h[:2] != shard
+                if (not hex_re.fullmatch(h) or h[:2] != shard
                         or not os.path.isdir(d) or h in keep_hashes
                         or _young(d)):
                     continue
@@ -963,7 +962,7 @@ def retention_sweep(args, parser):
             if not exists(p) and not dry_run:
                 _unlink_quiet(p)
             continue
-        if (hex_re.match(name) and name not in keep_hashes
+        if (hex_re.fullmatch(name) and name not in keep_hashes
                 and os.path.isdir(p) and not _young(p)):
             _rm(p, "build dir")
 

@@ -912,5 +912,30 @@ class InUseTest(unittest.TestCase):
         self.assertFalse(os.path.exists(tree) or os.path.exists(stored))
 
 
+class RetentionHashTest(unittest.TestCase):
+    """The retention sweep removes only <h2>/<hash> folders of a bits (SHA-1) hash."""
+
+    def test_only_a_sha1_folder_goes(self):
+        # NEGATIVE CONTROL: match 40 to 64 hex digits and the longer one goes too.
+        from bits_helpers import cleanup
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        old = time.time() - 30 * 86400
+        dirs = {}
+        for name in ("ab" * 20, "ab" * 32):
+            d = dirs[name] = os.path.join(work, "TARS", ARCH, "store", "ab", name)
+            os.makedirs(d)
+            open(os.path.join(d, "x.tar.gz"), "w").close()
+            os.utime(d, (old, old))
+        os.makedirs(os.path.join(work, ARCH))
+        args = Namespace(workDir=work, dryRun=False, trustManifests=["m"])
+        with patch("bits_helpers.gc._localize_manifest", return_value="m.json"), \
+             patch("bits_helpers.trust.trusted_records",
+                   return_value=("kid", [{"effective_architecture": ARCH, "package": "x"}])):
+            self.assertEqual(cleanup.retention_sweep(args, None), 0)
+        self.assertEqual({n: os.path.isdir(d) for n, d in dirs.items()},
+                         {"ab" * 20: False, "ab" * 32: True})
+
+
 if __name__ == "__main__":
     unittest.main()
