@@ -154,11 +154,12 @@ class GitLabForge(Forge):
     """
 
     def __init__(self, api_url, project_id, mr_iid, token, commit_sha=None,
-                 timeout=15):
+                 timeout=15, branch=None):
         self.api_url = api_url.rstrip("/")
         self.project_id = str(project_id)
         self.mr_iid = str(mr_iid) if mr_iid else None
         self.commit_sha = commit_sha
+        self.branch = branch
         self.token = token
         self.timeout = timeout
 
@@ -177,7 +178,7 @@ class GitLabForge(Forge):
                  or env.get("CI_JOB_TOKEN"))
         if not (api and pid and token and sha):
             return None
-        return cls(api, pid, None, token, commit_sha=sha)
+        return cls(api, pid, None, token, commit_sha=sha, branch=env.get("CI_COMMIT_BRANCH"))
 
     def _get(self, path):
         import requests
@@ -194,9 +195,12 @@ class GitLabForge(Forge):
         if not self.commit_sha:
             return None
         mrs = self._get("repository/commits/%s/merge_requests" % self.commit_sha) or []
-        # Only a *merged* MR certifies. Never fall back to an open/unmerged MR:
-        # an approval on some unrelated MR touching this commit must not count.
-        merged = [m for m in mrs if (m or {}).get("state") == "merged"]
+        # Only the MR that merged this commit (its merge, squash or head commit)
+        # into this branch: not an open one, nor an older one that contains it.
+        merged = [m for m in mrs if (m or {}).get("state") == "merged"
+                  and (not self.branch or m.get("target_branch") == self.branch)
+                  and self.commit_sha in (m.get("merge_commit_sha"),
+                                          m.get("squash_commit_sha"), m.get("sha"))]
         if merged:
             self.mr_iid = str(merged[0].get("iid"))
         return self.mr_iid

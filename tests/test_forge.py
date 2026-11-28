@@ -70,7 +70,8 @@ class TestGitLabForge(unittest.TestCase):
         # No MR iid (post-merge main pipeline) -> resolve via the commit.
         gl = forge.GitLabForge.from_env({
             "CI_API_V4_URL": "https://gl/api/v4", "CI_PROJECT_ID": "42",
-            "CI_COMMIT_SHA": "deadbeef", "BITS_FORGE_TOKEN": "tok"})
+            "CI_COMMIT_SHA": "deadbeef", "CI_COMMIT_BRANCH": "main",
+            "BITS_FORGE_TOKEN": "tok"})
         self.assertIsNone(gl.mr_iid)
 
         class _Resp:
@@ -85,7 +86,14 @@ class TestGitLabForge(unittest.TestCase):
 
         def _fake_get(url, headers=None, timeout=None):
             if url.endswith("/repository/commits/deadbeef/merge_requests"):
-                return _Resp([{"iid": 5, "state": "merged"}])
+                return _Resp([
+                    # merged elsewhere, or contains the commit without merging it: not these
+                    {"iid": 3, "state": "merged", "target_branch": "dev",
+                     "merge_commit_sha": "deadbeef"},
+                    {"iid": 4, "state": "merged", "target_branch": "main",
+                     "merge_commit_sha": "0ldc0mm1t", "sha": "f00"},
+                    {"iid": 5, "state": "merged", "target_branch": "main",
+                     "merge_commit_sha": "deadbeef"}])
             if url.endswith("/merge_requests/5/approvals"):
                 return _Resp({"approved_by": [{"user": {"username": "alice"}}]})
             raise AssertionError("unexpected URL: %s" % url)

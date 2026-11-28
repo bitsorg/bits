@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** The merge request whose approvals `bits sign --require-approval` reads is the one that merged the commit (its merge, squash or head commit) into the pipeline's branch: the first merged one containing the commit counted, which could be an older one, or one into another branch.
 - **[Improvement]** A build published without its NOTICE, source offer or SBOMs says so in its pipeline record (`compliance_files: false` in `BUILDS/by-pipeline/`), and `bits cvmfs release --pipeline` warns about it: writing them is best-effort, and the only trace was a warning in the publish log.
 - **[Fix]** The release source offer (`LICENSE-SOURCE-OFFER.txt`) checks each source archive it names against an S3 store: one that is not there is marked "not archived" and warned about, instead of being offered as available for three years. A bits-store keeps sources apart, so there they are not checked.
 - **[Fix]** `bits sign --require-approval` counts merge-request approvals only of a merged merge request, the one of the commit (`CI_COMMIT_SHA`): an open one (`CI_MERGE_REQUEST_IID`, or the first of `CI_OPEN_MERGE_REQUESTS` in a branch pipeline) counted too.
