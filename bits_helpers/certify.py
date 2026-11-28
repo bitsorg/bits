@@ -183,6 +183,7 @@ def _cached_probe(probe):
         if key not in cache:
             cache[key] = probe(arch, h, tarball)
         return cache[key]
+    cached.jobs = getattr(probe, "jobs", 1)
     return cached
 
 
@@ -354,6 +355,10 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
     return common
 
 
+# bits sign's store checks at once (its boto3 client pools 100 connections).
+PROBE_JOBS = 8
+
+
 def validate_against_store(common, probe):
     """Check every package in *common* against the real store.
 
@@ -372,12 +377,22 @@ def validate_against_store(common, probe):
 
     ``([], [])`` means the manifest is fully backed by the store and safe to sign.
     """
+    from concurrent.futures import ThreadPoolExecutor
     fatal, missing = [], []
-    for p in common.get("packages") or []:
+    pkgs = list(common.get("packages") or [])
+    def ask(p):
+        return probe(p.get("effective_architecture") or "", p.get("hash"), p.get("tarball"))
+    # As many at once as the probe allows (.jobs); else here, in this thread: a probe
+    # with an sqlite cache must stay in it. The first error is raised, as one by one.
+    jobs = getattr(probe, "jobs", 1)
+    if jobs > 1:
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            actuals = list(pool.map(ask, pkgs))
+    else:
+        actuals = [ask(p) for p in pkgs]
+    for p, actual in zip(pkgs, actuals):
         h = p.get("hash")
-        arch = p.get("effective_architecture") or ""
         claimed = norm_sha(p.get("tarball_sha256"))
-        actual = probe(arch, h, p.get("tarball"))
         if actual is None:
             # The store has no object for this hash. We cannot vouch for it, but
             # its ABSENCE is not the manifest lying about existing bytes — a
@@ -791,7 +806,9 @@ def make_s3_probe(store_url, work_dir, default_arch, cache=None):
     store = _normalize_s3_store(store_url)
     writer = remote_from_url(store, store, default_arch, work_dir)
     bucket = getattr(writer, "remoteStore", None) or getattr(writer, "writeStore", None)
-    return s3_probe(writer.s3, bucket, default_arch, cache=cache)
+    probe = s3_probe(writer.s3, bucket, default_arch, cache=cache)
+    probe.jobs = PROBE_JOBS   # a boto3 client and DigestFile may be shared by threads
+    return probe
 
 
 def _s3_absent(exc):

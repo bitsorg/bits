@@ -1193,6 +1193,44 @@ class TestProbeBinding(unittest.TestCase):
         self.assertEqual(seen, ["A.tar.gz"])
 
 
+
+class TestProbesConcurrently(unittest.TestCase):
+    """The store checks run at once, the results in the manifest's order."""
+
+    def test_concurrent_and_in_order(self):
+        # NEGATIVE CONTROL: ignore probe.jobs and the second peak is 1.
+        import threading
+        import time as _t
+        lock, live, peak = threading.Lock(), [0], [0]
+
+        def probe(arch, h, tarball=None):
+            with lock:
+                live[0] += 1
+                peak[0] = max(peak[0], live[0])
+            _t.sleep(0.05)
+            with lock:
+                live[0] -= 1
+            return None if h == "h3" else "sha256:" + h
+        common = {"packages": [_pkg("P%d" % i, "h%d" % i, "sha256:h%d" % i) for i in range(10)]}
+        common["packages"][5]["tarball_sha256"] = "sha256:other"
+        fatal, missing = certify.validate_against_store(common, probe)
+        self.assertEqual(peak[0], 1)                  # a probe that says nothing: one by one
+        probe.jobs = 8
+        fatal, missing = certify.validate_against_store(common, certify._cached_probe(probe))
+        self.assertGreater(peak[0], 1)
+        self.assertEqual([p["hash"] for p in missing], ["h3"])
+        self.assertEqual(len(fatal), 1)
+        self.assertIn("h5", fatal[0])
+
+    def test_a_store_error_is_raised(self):
+        def probe(arch, h, tarball=None):
+            if h == "h2":
+                raise certify.CertifyError("store check failed")
+            return "sha256:" + h
+        common = {"packages": [_pkg("P%d" % i, "h%d" % i, "sha256:h%d" % i) for i in range(4)]}
+        with self.assertRaises(certify.CertifyError):
+            certify.validate_against_store(common, probe)
+
 class TestKeyPolicySemantics(unittest.TestCase):
     """trust.key_authorized: listed keys restricted, unlisted governed by default."""
 

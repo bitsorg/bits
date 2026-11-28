@@ -460,6 +460,18 @@ class ProbeCacheTest(_Base):
         with self.assertRaises(certify.CertifyError):          # not "absent": the run fails
             probe("el9", "h1abc", "p-1-1.el9.tar.gz")
 
+    def test_store_validation_keeps_the_sqlite_cache_in_its_thread(self):
+        # NEGATIVE CONTROL: probe from a worker thread and sqlite refuses the connection.
+        key = "TARS/el9/store/h1/h1abc/p-1-1.el9.tar.gz"
+        s3 = FakeS3({key: b"bytes"})
+        import hashlib
+        probe = certify._cached_probe(
+            certify.s3_probe(s3, "b", "el9", cache=shadow.DigestCache(self.conn)))
+        sha = "sha256:" + hashlib.sha256(b"bytes").hexdigest()
+        common = {"packages": [{"package": "p", "hash": "h1abc", "effective_architecture": "el9",
+                                "tarball": "p-1-1.el9.tar.gz", "tarball_sha256": sha}]}
+        self.assertEqual(certify.validate_against_store(common, probe), ([], []))
+
 
 class RedirectTest(unittest.TestCase):
     def test_a_redirect_is_followed_without_the_token(self):
