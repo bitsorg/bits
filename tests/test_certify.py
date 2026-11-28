@@ -867,32 +867,26 @@ class TestCertifyEndToEnd(unittest.TestCase):
         _, ship_idx = trust.trusted_index(out, accept_groups=["ship"])
         self.assertEqual(ship_idx, {})
 
-    def test_doSign_cli_defaults_to_workdir_manifests(self):
-        # Lay two per-build BOMs under WORKDIR/MANIFESTS/<build_id>/ and certify
-        # the whole directory with the CLI entrypoint (offline merge).
-        man_root = os.path.join(self.tmp, "sw", "MANIFESTS")
-        for bid, pkgs in (("release-b1", [_pkg("A", "h1", "sha256:aa")]),
-                          ("release-b2", [_pkg("B", "h2", "sha256:bb")])):
-            d = os.path.join(man_root, bid)
-            os.makedirs(d)
-            with open(os.path.join(d, "host-20260101T000000Z.json"), "w") as fh:
-                json.dump(_manifest(bid, pkgs), fh)
+    def test_doSign_needs_the_boms(self):
+        # WORKDIR/MANIFESTS holds build manifests and fetched signed manifests, never
+        # BOMs: signing it re-signed those. NEGATIVE CONTROL: restore the default.
+        man_root = os.path.join(self.tmp, "sw", "MANIFESTS", "trust")
+        os.makedirs(man_root)
+        with open(os.path.join(man_root, "common-manifest-slc7_x86-64.json"), "w") as fh:
+            json.dump(_manifest("b1", [_pkg("A", "h1", "sha256:aa")]), fh)
         out = os.path.join(self.tmp, "out", "common.json")
 
         class _Parser:
             def error(self, msg):
-                raise AssertionError("parser.error: %s" % msg)
+                raise SystemExit(msg)
 
         args = SimpleNamespace(manifests=[], out=out, key=self.key_pem,
                                certifyStore="", noStoreCheck=True,
                                workDir=os.path.join(self.tmp, "sw"),
                                architecture="slc7_x86-64")
-        certify.doSign(args, _Parser())
-        # Both BOMs are slc7_x86-64, so they land in one per-arch manifest.
-        per_arch = certify._arch_stem(out, "slc7_x86-64")
-        kid, index = trust.trusted_index(per_arch)
-        self.assertIsNotNone(kid)
-        self.assertEqual(index, {"h1": "sha256:aa", "h2": "sha256:bb"})
+        with self.assertRaisesRegex(SystemExit, "needs the BOMs"):
+            certify.doSign(args, _Parser())
+        self.assertFalse(os.path.exists(os.path.dirname(out)))
 
 
 class TestIsExpired(unittest.TestCase):

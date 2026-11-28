@@ -978,8 +978,8 @@ def doSign(args, parser):
     if getattr(args, "requireApproval", False):
         approval_check = _make_approval_check(args, parser)
     sources = list(getattr(args, "manifests", None) or [])
-    if not sources:
-        sources = [os.path.join(args.workDir, "MANIFESTS")]
+    if not sources:   # never WORKDIR/MANIFESTS: build manifests and signed ones, no BOMs
+        parser.error("bits sign needs the BOMs to merge (MANIFEST...)")
     if approval_check is not None and getattr(args, "changedGroups", None) \
        and not getattr(args, "group", None):
         sources = load_build_manifests(sources)   # each must be in its group's directory

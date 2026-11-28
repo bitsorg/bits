@@ -1243,9 +1243,9 @@ def add_sign_arguments(subparsers, ctx):
       ),
   )
   # Options for the certify subcommand
-  certify_parser.add_argument("manifests", metavar="MANIFEST", nargs="*", default=None,
-                              help=("Build-manifest JSON files or directories to merge. A directory "
-                                    "is scanned recursively for *.json. Default: WORKDIR/MANIFESTS."))
+  certify_parser.add_argument("manifests", metavar="MANIFEST", nargs="+",
+                              help=("BOM JSON files or directories to merge (a manifests repository's "
+                                    "manifests/). A directory is scanned recursively for *.json."))
   certify_parser.add_argument("-o", "--out", dest="out", metavar="FILE", required=True,
                               help="Path to write the merged common manifest (its .sig is written alongside).")
   certify_parser.add_argument("--key", dest="key", metavar="PEM", required=False,

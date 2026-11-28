@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits sign` needs the BOMs to merge (`MANIFEST...`): without them it merged `<work dir>/MANIFESTS`, which holds no BOMs but the build manifests and the signed manifests fetched from the stores, and signed those again under its key.
 - **[Change]** `bits build --cvmfs-prefix` is removed: it mounted the work dir at the CVMFS path in the container, the retired approach `--no-relocate` served; bits-console does not pass it. The `system:` `prefix`/`cvmfs_prefix` of the defaults (the CVMFS layout) and `BITS_CVMFS_PREFIX` are unchanged.
 - **[Change]** `bits publish --no-relocate` is removed: it published the build host's installed tree unchecked, for the retired approach of building in the final `/cvmfs` path. Every package is published from its certified tarball, relocated to `--cvmfs-target`.
 - **[Fix]** `bits cleanup` does not evict, and `bits cleanup --retain` does not sweep, a package a running build uses: each build lists the packages it touches in a file under `<work dir>/.in-use/`, held (flock) until the build exits. The build lock the module described was never taken, so only the sentinel's age protected a running build, and the retention sweep looked at no lock at all.
