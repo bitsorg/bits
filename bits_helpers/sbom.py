@@ -228,7 +228,7 @@ def components(manifest):
     """The release as component dicts — built packages in manifest order, then
     the system-provided ones — each with a unique ``ref`` and resolved
     ``deps`` (runtime) / ``build_deps`` refs."""
-    built, by_name, refs = [], {}, set()
+    built, by_name, refs, listed = [], {}, set(), set()
 
     def unique(ref):
         base, n = ref, 1
@@ -244,8 +244,9 @@ def components(manifest):
             continue
         h = e.get("hash") if isinstance(e.get("hash"), str) else ""
         name, key = str(e["package"]), h or _full_version(e)
-        if any((c["name"], c["key"]) == (name, key) for c in built):
+        if (name, key) in listed:
             continue   # listed twice (e.g. several build passes)
+        listed.add((name, key))
         ident = h[:16] if h else _full_version(e) or "unversioned"
         c = {"name": name, "key": key, "entry": e, "system": False,
              "ref": unique("%s@%s" % (name, ident))}
