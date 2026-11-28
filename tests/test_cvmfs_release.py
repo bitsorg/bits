@@ -75,7 +75,7 @@ class FindAndMergeTest(unittest.TestCase):
                   "k1": _bom(ARCH, [_pkg("ROOT", "r1")], build_id="b")})
         with self.assertLogs("bits", level="WARNING") as logs:
             rel.find_boms(s3, "bkt", pipeline="4242")
-        self.assertIn("without its NOTICE", "\n".join(logs.output))
+        self.assertIn("build b was published without its NOTICE", "\n".join(logs.output))
 
     def test_a_pipeline_with_several_builds_needs_the_build_id(self):
         a = _bom(ARCH, [_pkg("ROOT", "r1")], build_id="b-opt")

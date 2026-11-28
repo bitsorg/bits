@@ -61,7 +61,7 @@ def find_boms(s3, bucket, pipeline=None, build_id=None):
     id (MANIFESTS/<build_id>/), or by both (that build of that pipeline)."""
     keys, indexed, others = None, False, []
     if pipeline:
-        builds = {}
+        builds, bare = {}, set()
         for key in list_keys(s3, bucket, "BUILDS/by-pipeline/%s/" % pipeline):
             try:
                 index = get_json(s3, bucket, key)
@@ -69,10 +69,12 @@ def find_boms(s3, bucket, pipeline=None, build_id=None):
                 raise ReleaseError("unreadable %s: %s" % (key, exc))
             builds[index.get("build_id", "")] = index.get("keys") or []
             if index.get("compliance_files") is False:
-                warning("build %s was published without its NOTICE, source offer or SBOMs "
-                        "(see its publish log)", index.get("build_id"))
+                bare.add(index.get("build_id", ""))
         if build_id:
             builds = {b: k for b, k in builds.items() if b == build_id}
+        for b in sorted(bare & set(builds)):
+            warning("build %s was published without its NOTICE and source offer "
+                    "(see its publish log)", b)
         if len(builds) > 1:
             raise ReleaseError("pipeline %s published several builds (%s): name one "
                                "with --build-id" % (pipeline, ", ".join(sorted(builds))))

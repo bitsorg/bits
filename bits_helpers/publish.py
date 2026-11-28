@@ -680,7 +680,7 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                 try:
                     if not _put_object(w, _index, _json.dumps({
                             "build_id": build_id,
-                            "compliance_files": bool(_compliance),   # NOTICE, offer, SBOMs
+                            "compliance_files": bool(_compliance),   # NOTICE, source offer
                             "keys": ["MANIFESTS/%s/%s.%s.json" % (build_id, _stem, _a)
                                      for _a, _d in bom]}, indent=1).encode()):
                         # another publish of this pipeline recorded it first: take its BOMs
