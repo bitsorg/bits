@@ -6,7 +6,7 @@
 Covers:
   - bits cleanup subparser: defaults and explicit values
   - bits build --cvmfs-prefix: accepted and stored correctly
-  - bits publish --no-relocate: accepted and stored correctly
+  - bits publish --no-relocate: refused (removed)
   - Backward compatibility: omitting new flags leaves existing defaults unchanged
 """
 import os
@@ -137,32 +137,22 @@ class BuildCvmfsPrefixTest(unittest.TestCase):
                          "registry.cern.ch/alisw/el9-builder")
 
 
-class PublishNoRelocateTest(unittest.TestCase):
-    """bits publish --no-relocate is accepted and defaults to False."""
+class PublishNoRelocateRemovedTest(unittest.TestCase):
+    """bits publish --no-relocate is gone: a --cvmfs-prefix build is relocated too."""
 
-    def test_default_is_false(self):
-        args = _parse(["publish", "ROOT",
-                       "--cvmfs-target", "/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0",
-                       "--prepub-url", "https://prepub.example.org",
-                       "-a", _ARCH])
-        self.assertFalse(args.noRelocate)
+    def test_no_relocate_is_refused(self):
+        with self.assertRaises(SystemExit):
+            _parse(["publish", "ROOT",
+                    "--cvmfs-target", "/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0",
+                    "--prepub-url", "https://prepub.example.org",
+                    "-a", _ARCH, "--no-relocate"])
 
-    def test_no_relocate_flag_set(self):
-        args = _parse(["publish", "ROOT",
-                       "--cvmfs-target", "/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0",
-                       "--prepub-url", "https://prepub.example.org",
-                       "-a", _ARCH,
-                       "--no-relocate"])
-        self.assertTrue(args.noRelocate)
-
-    def test_backward_compat_existing_publish_args(self):
-        """Existing publish invocations without --no-relocate are unaffected."""
+    def test_existing_publish_args(self):
         args = _parse(["publish", "ROOT", "6.32.0-1",
                        "--cvmfs-target", "/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0",
                        "--prepub-url", "https://prepub.example.org",
                        "-a", _ARCH,
                        "--scratch-dir", "/tmp/bits-scratch"])
-        self.assertFalse(args.noRelocate)
         self.assertEqual(args.workDir, "sw")
         self.assertEqual(args.scratchDir, "/tmp/bits-scratch")
 

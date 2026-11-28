@@ -982,7 +982,7 @@ A selection of the main test files (`tests/` holds over 100):
 | Test file | What it covers |
 |-----------|---------------|
 | `test_args.py` | CLI argument parsing (legacy tests) |
-| `test_new_args.py` | New CLI arguments: `bits prune`/`cleanup` subparser, `--cvmfs-prefix`, `--no-relocate`; store/publish group renames; backward-compatibility assertions |
+| `test_new_args.py` | New CLI arguments: `bits prune`/`cleanup` subparser, `--cvmfs-prefix`; store/publish group renames; backward-compatibility assertions |
 | `test_cleanup.py` | `bits_helpers/cleanup.py`: sentinel paths, LRU eviction, age-based eviction, disk-pressure mode, flock concurrency safety |
 | `test_container_workdir.py` | `container_workDir` / `cachedTarball` path rewriting logic in `build.py`; all four flag combinations; `re.escape()` correctness for paths with regex metacharacters |
 | `test_always_on_providers.py` | `_parse_provider_url`, `_make_bits_providers_spec`, `load_always_on_providers` (BITS_PROVIDERS path, `always_load` scan, double-clone prevention, failure isolation) |
@@ -2251,8 +2251,7 @@ A single package's S3-store write is `bits store upload`.
 
 The tarball is the work directory's (`TARS/<arch>/store/<h2>/<hash>/`), else fetched from
 `--remote-store`, e.g. when the build removed it after uploading it. The installed tree is
-not used: it is already relocated to the work directory, and it is never changed. With
-`--no-relocate` (a `--cvmfs-prefix` build) the installed tree is what is published.
+not used: it is already relocated to the work directory, and it is never changed.
 Only the package's own paths are mapped to `--cvmfs-target`: paths into its dependencies'
 installations become `<target>/<arch>/<dependency>/<version>`, which does not exist
 (`bits cvmfs publish` places a whole build, dependencies included).
@@ -2267,9 +2266,8 @@ bits publish [--manifest [FILE]] [--remote-store URL]       # bulk S3 upload
 |--------|-------------|
 | `PACKAGE [VERSION]` | Package to publish; `VERSION` (optionally with revision) defaults to the latest build. |
 | `--cvmfs-target PATH` | Absolute CVMFS path the package will occupy. With `--release-view`, the CVMFS root the `Views/` tree lives under. |
-| `--module-target PATH` | CVMFS path of the separate modules tree; the package's `etc/modulefiles` are published there as an independent job (also with `--no-relocate`). |
+| `--module-target PATH` | CVMFS path of the separate modules tree; the package's `etc/modulefiles` are published there as an independent job. |
 | `--release-view NAME` | Publish the merged view of a release to `<cvmfs-target>/Views/NAME-<build_id>/<arch>/` instead of a package; the build id is read from the packages' `.meta.json`. (`--view` is the deprecated spelling.) |
-| `--no-relocate` | Skip relocation — for packages built at their final path with `bits build --cvmfs-prefix`. |
 | `--scratch-dir DIR` | Directory for the temporary CVMFS working copy (default: under the work directory's `TMP/`). |
 | `-w DIR`, `-a ARCH` | Work directory (default `sw`) and architecture. |
 | `-n`, `--dry-run` | Show what would be published, without submitting anything. |
@@ -4592,22 +4590,12 @@ Whatever its mount point, the work dir is read-write in the container, but for w
 
 In a conventional CVMFS publishing workflow the package is first compiled with the bits workDir as its install prefix (e.g. `/data/alice/sw/slc9_x86-64/ROOT/6.32.0-1`), and then `relocate-me.sh` rewrites every embedded path to the final CVMFS location (e.g. `/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0`). Relocation is a post-build transformation that can be expensive for packages with many compiled files.
 
-`--cvmfs-prefix` (with `--docker`) removes this step: the workDir is mounted at the final CVMFS prefix inside the container, so install paths embedded at build time already point under that prefix. The package is installed at `<prefix>/<arch>[/<family>]/<package>/<version>-<revision>`, and that must be the `--cvmfs-target` passed to `bits publish --no-relocate`, since no paths are rewritten.
-
-> **Note.** In the normal bits-console workflow these commands are run by the CI pipeline on a registered build runner — not typed by the user. bits-console passes `cvmfs_prefix` from the community's `ui-config.yaml` to the pipeline, which then calls `bits build --docker --cvmfs-prefix …` and `bits publish --no-relocate` automatically. The flags are documented here for CI pipeline authors and runner administrators.
+`--cvmfs-prefix` (with `--docker`) removes this step: the workDir is mounted at the final CVMFS prefix inside the container, so install paths embedded at build time already point under that prefix. The package is installed at `<prefix>/<arch>[/<family>]/<package>/<version>-<revision>`.
 
 ```bash
-# These commands run inside the bits-console-triggered CI pipeline on the build runner.
-# Pipeline stage 1 — build with deployment paths embedded at compile time:
 bits build --docker \
            --cvmfs-prefix /cvmfs/sft.cern.ch/lcg/releases \
            ROOT
-
-# Pipeline stage 1 (continued) — hand to cvmfs-prepub; no relocation needed:
-bits publish ROOT \
-           --cvmfs-target /cvmfs/sft.cern.ch/lcg/releases/slc9_x86-64/ROOT/6.32.0-1 \
-           --prepub-url https://prepub.example.org:8080 \
-           --no-relocate
 ```
 
 **Persistent workDir across CI jobs.** For communities that publish to CVMFS regularly, keeping the workDir alive between CI jobs (on a persistent build runner) turns `--cvmfs-prefix` into an incremental cache: only packages whose recipe or source changed are rebuilt; already-installed dependencies are reused from the previous run. The `bits prune` subcommand manages the cache size over time (see [bits prune](#bits-prune)).

@@ -1101,8 +1101,7 @@ def add_publish_arguments(subparsers, ctx):
                               help="CVMFS path of the separate modules tree. When given (prepub path), "
                                    "the package's etc/modulefiles are tar'd and published as an "
                                    "independent job here, since modulefiles live in a different tree "
-                                   "(module_dir) from the payload — so they are installed even with "
-                                   "--no-relocate.")
+                                   "(module_dir) from the payload.")
   ctx.work_dir(publish_parser,
                help="bits work directory containing the installed packages. Default: %(default)s.")
   ctx.architecture(publish_parser,
@@ -1110,10 +1109,6 @@ def add_publish_arguments(subparsers, ctx):
   ctx.arch_defaults(publish_parser)
   publish_parser.add_argument("--scratch-dir", dest="scratchDir", default=None, metavar="DIR",
                               help="Directory for the temporary CVMFS working copy. Defaults to the work dir's TMP/.")
-  publish_parser.add_argument("--no-relocate", dest="noRelocate", action="store_true", default=False,
-                              help=("Skip the relocation step. Use this when the package was built "
-                                    "directly at its final CVMFS path (--cvmfs-prefix on bits build), "
-                                    "so all embedded paths are already correct."))
   # `bits publish PACKAGE` is CVMFS-only. The single-package S3-store
   # write moved to `bits store upload`; the bulk `--from-manifest` S3 upload below
   # is unchanged. `--to`/`--write-store` were removed with the single-package s3 path.
@@ -1734,10 +1729,7 @@ def add_build_arguments(subparsers, ctx):
                                   "so that packages are compiled with PATH as their install prefix. "
                                   "PATH should be the community's CVMFS releases path "
                                   "(e.g. /cvmfs/sft.cern.ch/lcg/releases). "
-                                  "With this option the relocation step in 'bits publish' is not needed "
-                                  "because the embedded paths are already correct for CVMFS. "
-                                  "Implies --container-use-workdir behaviour for the CVMFS mount. "
-                                  "Use --no-relocate on 'bits publish' to skip relocation when publishing."))
+                                  "Implies --container-use-workdir behaviour for the CVMFS mount."))
   build_docker.add_argument("--docker-platform", dest="dockerPlatform", metavar="PLATFORM", default=None,
                             help=("Docker --platform argument for cross-compilation "
                                   "(e.g. linux/arm64, linux/amd64, linux/ppc64le). "

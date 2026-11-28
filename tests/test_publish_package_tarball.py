@@ -71,14 +71,13 @@ class TarballTest(unittest.TestCase):
     os.makedirs(d)
     shutil.copy(self.tar, d)
 
-  def publish(self, store_has=True, no_relocate=False, dry_run=False, recorded=True, signed=None):
+  def publish(self, store_has=True, dry_run=False, recorded=True, signed=None):
     args = SimpleNamespace(publishView=None, fromManifest=None, package="zlib", version=None,
                            workDir=self.work, architecture="el9", cvmfsTarget=TARGET,
                            scratchDir=None, prepubUrl="https://prepub", prepubToken=None,
                            prepubRepo=None, prepubPath=None, prepubWebhook=None,
                            prepubPollInterval=10, prepubTimeout=60, prepubNoVerifyTls=False,
-                           dryRun=dry_run, publishStore="b3://bucket",
-                           noRelocate=no_relocate)
+                           dryRun=dry_run, publishStore="b3://bucket")
     published, self.asked = {}, []
     if recorded:
       self.record(checksum_file(self.tar))
@@ -95,7 +94,7 @@ class TarballTest(unittest.TestCase):
          patch("bits_helpers.cvmfs_publish.fetch_store_tarball", fetch), \
          patch.object(publish, "_publish_tree", publish_tree):
       publish.doPublish(args, Parser())
-    if not dry_run and not no_relocate:
+    if not dry_run:
       self.assertEqual(idx.call_args[0][2], ["el9"])
     return published
 
@@ -180,13 +179,6 @@ class TarballTest(unittest.TestCase):
       self.assertIn("store" if local else "fetched from the stores", text)
       self.assertEqual(self.asked, [])                       # not fetched either
       shutil.rmtree(os.path.join(self.work, "TARS"), ignore_errors=True)
-
-  def test_no_relocate_publishes_the_installed_tree(self):
-    """Built with --cvmfs-prefix, the installed tree has the final paths; the tarball not."""
-    got = self.publish(store_has=False, no_relocate=True)
-    self.assertEqual(got["lib/zlib.pc"], "libdir=%s/%s/lib\n" % (self.work, PP))
-    self.assertEqual(self.asked, [])
-    self.assert_installed_untouched()
 
   def test_a_familys_package_by_its_own_name(self):
     root = os.path.join(self.work, "el9", "externals", "foo", "1.0-1")

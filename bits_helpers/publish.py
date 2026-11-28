@@ -1,14 +1,14 @@
 # SPDX-FileCopyrightText: 2015-2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""bits publish — copy, relocate, and hand a built package to cvmfs-prepub.
+"""bits publish — relocate a built package and hand it to cvmfs-prepub.
 
 Pipeline on the build host
 ---------------------------
 1. Locate the package's immutable INSTALLROOT under *workDir*.
-2. ``rsync`` it to a temporary CVMFS working copy (scratch directory).
-3. Run ``relocate-me.sh`` inside the copy, rewriting all embedded paths to
-   the final CVMFS target path.
+2. Unpack its tarball (the one the manifests certify) into a working copy.
+3. Run the tarball's ``relocate-me.sh`` in the copy, rewriting the package's
+   own paths to the final CVMFS target path.
 4. Package the relocated tree as a tar and POST it to the cvmfs-prepub REST
    API (``--prepub-url``), which ingests it into CVMFS; poll until published.
 5. Remove the working copy from the scratch directory.
@@ -960,13 +960,11 @@ def doPublish(args, parser):
     info("cvmfs target: %s", cvmfs_target)
     info("prepub url  : %s", prepub_url)
 
-    no_relocate = getattr(args, "noRelocate", False)
     if getattr(args, "dryRun", False):    # what it would do: nothing fetched, unpacked or sent
-        tar_gz = None if no_relocate else _package_tarball(args, work_dir, installroot, package,
-                                                           version_dir, None, fetch=False)
-        banner("[dry-run] would publish %s to %s from %s%s", pkg_id, cvmfs_target,
-               "the installed tree" if no_relocate else tar_gz or "its tarball, fetched from "
-               "the stores (--remote-store)", "" if no_relocate else ", relocated there")
+        tar_gz = _package_tarball(args, work_dir, installroot, package, version_dir, None,
+                                  fetch=False)
+        banner("[dry-run] would publish %s to %s from %s, relocated there", pkg_id, cvmfs_target,
+               tar_gz or "its tarball, fetched from the stores (--remote-store)")
         if getattr(args, "moduleTarget", None):
             info("[dry-run] and its modulefiles to %s", args.moduleTarget)
         return
@@ -974,7 +972,7 @@ def doPublish(args, parser):
     # ------------------------------------------------------------------
     # 2. The working copy (INSTALLROOT is never touched). Relocated: the package's
     #    tarball, which holds the build's own paths for relocate-me.sh to map (the
-    #    installed tree is already relocated to the work dir). --no-relocate: a copy.
+    #    installed tree is already relocated to the work dir).
     # ------------------------------------------------------------------
     if scratch_dir:
         os.makedirs(scratch_dir, exist_ok=True)
@@ -989,60 +987,50 @@ def doPublish(args, parser):
 
     try:   # the working copy goes, whatever stops the publish
         from bits_helpers import cvmfs_publish
-        if no_relocate:
-            # ------------------------------------------------------------------
-            # 3. No relocation: built with --cvmfs-prefix, the installed tree's
-            #    paths are already the CVMFS ones (the tarball's are not).
-            # ------------------------------------------------------------------
-            copy_dir = join(unpack_dir, pkg_id)
-            subprocess.run(["rsync", "-a", installroot + "/", copy_dir + "/"], check=True)
-            info("working copy: %s", copy_dir)
-            info("--no-relocate: skipping relocation (package built at final CVMFS path)")
-        else:
-            # ------------------------------------------------------------------
-            # 3. Relocate the tarball's tree to the target, as cvmfs-publish does:
-            #    its own script, run from the unpack dir; the content goes to the
-            #    target itself, without the arch/pkg/ver levels (STRIP_PP).
-            # ------------------------------------------------------------------
-            tar_gz = _package_tarball(args, work_dir, installroot, package, version_dir,
-                                      join(unpack_dir, "store"))
-            info("tarball     : %s", tar_gz)
-            tree = join(unpack_dir, "tree")
-            os.makedirs(tree)
-            copy_dir = cvmfs_publish.unpack_package(tar_gz, tree, pkg_id, package, version_dir)
-            info("working copy: %s", copy_dir)
-            # written at install, not packed: strict symlink reuse reads it on CVMFS
-            shutil.copy2(join(installroot, ".build-hash"), join(copy_dir, ".build-hash"))
-            relocate_script = join(copy_dir, "relocate-me.sh")
-            if not exists(relocate_script):
-                error("relocate-me.sh not found in %s's tarball — was it built with bits?", pkg_id)
-                sys.exit(1)
-            cvmfs_publish.refuse_old_relocation(relocate_script, pkg_id, cvmfs_target)
-            info("Relocating to %s …", cvmfs_target)
-            from bits_helpers.cmd import credential_free_env
-            # the package's own script: none of the job's credentials (PREPUB_API_TOKEN)
-            env = {**credential_free_env(), "INSTALL_BASE": cvmfs_target,
-                   "WORK_DIR": tree, "BITS_RELOCATE_STRIP_PP": "1"}
-            before = cvmfs_publish._files_under(tree)
-            result = subprocess.run(
-                ["bash", "-e", os.path.relpath(relocate_script, tree)],
-                cwd=tree,
-                env=env,
-                check=False,
-            )
-            if result.returncode != 0:
-                error("relocate-me.sh failed (exit %d)", result.returncode)
-                sys.exit(result.returncode)
-            for dp, _dn, fns in os.walk(copy_dir):
-                for f in fns:
-                    if f.endswith(".unrelocated"):
-                        os.remove(join(dp, f))
-            leaked = cvmfs_publish._writes_outside_pkgroot(before, cvmfs_publish._files_under(tree),
-                                                           copy_dir)
-            if leaked:
-                error("post-relocate.sh wrote outside the package, so not published: %s",
-                      " ".join(os.path.relpath(f, tree) for f in leaked))
-                sys.exit(1)
+        # ------------------------------------------------------------------
+        # 3. Relocate the tarball's tree to the target, as cvmfs-publish does:
+        #    its own script, run from the unpack dir; the content goes to the
+        #    target itself, without the arch/pkg/ver levels (STRIP_PP).
+        # ------------------------------------------------------------------
+        tar_gz = _package_tarball(args, work_dir, installroot, package, version_dir,
+                                  join(unpack_dir, "store"))
+        info("tarball     : %s", tar_gz)
+        tree = join(unpack_dir, "tree")
+        os.makedirs(tree)
+        copy_dir = cvmfs_publish.unpack_package(tar_gz, tree, pkg_id, package, version_dir)
+        info("working copy: %s", copy_dir)
+        # written at install, not packed: strict symlink reuse reads it on CVMFS
+        shutil.copy2(join(installroot, ".build-hash"), join(copy_dir, ".build-hash"))
+        relocate_script = join(copy_dir, "relocate-me.sh")
+        if not exists(relocate_script):
+            error("relocate-me.sh not found in %s's tarball — was it built with bits?", pkg_id)
+            sys.exit(1)
+        cvmfs_publish.refuse_old_relocation(relocate_script, pkg_id, cvmfs_target)
+        info("Relocating to %s …", cvmfs_target)
+        from bits_helpers.cmd import credential_free_env
+        # the package's own script: none of the job's credentials (PREPUB_API_TOKEN)
+        env = {**credential_free_env(), "INSTALL_BASE": cvmfs_target,
+               "WORK_DIR": tree, "BITS_RELOCATE_STRIP_PP": "1"}
+        before = cvmfs_publish._files_under(tree)
+        result = subprocess.run(
+            ["bash", "-e", os.path.relpath(relocate_script, tree)],
+            cwd=tree,
+            env=env,
+            check=False,
+        )
+        if result.returncode != 0:
+            error("relocate-me.sh failed (exit %d)", result.returncode)
+            sys.exit(result.returncode)
+        for dp, _dn, fns in os.walk(copy_dir):
+            for f in fns:
+                if f.endswith(".unrelocated"):
+                    os.remove(join(dp, f))
+        leaked = cvmfs_publish._writes_outside_pkgroot(before, cvmfs_publish._files_under(tree),
+                                                       copy_dir)
+        if leaked:
+            error("post-relocate.sh wrote outside the package, so not published: %s",
+                  " ".join(os.path.relpath(f, tree) for f in leaked))
+            sys.exit(1)
 
         # ------------------------------------------------------------------
         # 4. cvmfs-prepub path — each independent directory tree is
@@ -1064,9 +1052,7 @@ def doPublish(args, parser):
         repo, subpath = _resolve_repo_subpath(prepub_repo, prepub_path, cvmfs_target, parser)
         debug("prepub repo=%s  path=%s", repo, subpath)
 
-        # Modulefiles tree (independent of relocation): published to module_dir when
-        # --module-target is given, so they reach the separate modules tree even when
-        # the package itself is published with --no-relocate.
+        # Modulefiles tree: published to module_dir when --module-target is given.
         module_target = getattr(args, "moduleTarget", None)
         module_dir = join(copy_dir, "etc", "modulefiles")
         publish_modules = bool(module_target) and os.path.isdir(module_dir) and os.listdir(module_dir)
