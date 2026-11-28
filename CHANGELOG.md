@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** The release source offer (`LICENSE-SOURCE-OFFER.txt`) checks each source archive it names against an S3 store: one that is not there is marked "not archived" and warned about, instead of being offered as available for three years. A bits-store keeps sources apart, so there they are not checked.
 - **[Fix]** `bits sign --require-approval` counts merge-request approvals only of a merged merge request, the one of the commit (`CI_COMMIT_SHA`): an open one (`CI_MERGE_REQUEST_IID`, or the first of `CI_OPEN_MERGE_REQUESTS` in a branch pipeline) counted too.
 - **[Fix]** `bits sign` needs the BOMs to merge (`MANIFEST...`): without them it merged `<work dir>/MANIFESTS`, which holds no BOMs but the build manifests and the signed manifests fetched from the stores, and signed those again under its key.
 - **[Change]** `bits build --cvmfs-prefix` is removed: it mounted the work dir at the CVMFS path in the container, the retired approach `--no-relocate` served; bits-console does not pass it. The `system:` `prefix`/`cvmfs_prefix` of the defaults (the CVMFS layout) and `BITS_CVMFS_PREFIX` are unchanged.

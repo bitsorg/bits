@@ -304,6 +304,22 @@ def _put_object(w, key, data):
     return True
 
 
+def _archived(w):
+    """Whether *w*'s S3 store has a key: True, False, or None (cannot tell; bits-store
+    keeps sources apart)."""
+    if getattr(w, "create_only", False) or getattr(w, "s3", None) is None:
+        return None
+
+    def has(key):
+        try:
+            w.s3.head_object(Bucket=w.writeStore, Key=key)
+            return True
+        except Exception as exc:          # pylint: disable=broad-except
+            code = str(getattr(exc, "response", {}).get("Error", {}).get("Code", ""))
+            return False if code in ("404", "NoSuchKey", "NotFound") else None
+    return has
+
+
 def _pipeline():
     """This CI pipeline's id, and the prefix of what it names beside BOMs (pipeline_prefix)."""
     from bits_helpers.provenance import pipeline_prefix
@@ -653,7 +669,8 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             from bits_helpers.notice import upload_release_compliance
             upload_release_compliance(getattr(w, "s3", None), w.writeStore, build_id, entries,
                                       store_url=store_url, manifest=_sbom_manifest,
-                                      put=(lambda k, b: _put_object(w, k, b)), prefix=_pre)
+                                      put=(lambda k, b: _put_object(w, k, b)), prefix=_pre,
+                                      archived=_archived(w))
             # Found again by the pipeline that made it: bits cvmfs release --pipeline.
             # One file per build (a pipeline may build several platforms), outside
             # MANIFESTS/ so the tools that read every BOM there do not see it.

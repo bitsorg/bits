@@ -66,6 +66,34 @@ class ReleaseNoticeTestCase(unittest.TestCase):
         self.assertNotIn("qgraf", txt)
         self.assertIn("until at least", txt)
 
+    def test_an_archive_the_store_lacks_is_not_offered(self):
+        # NEGATIVE CONTROL: ignore *archived* and the path is offered as available.
+        path = "SOURCES/cache/ab/abcd/root.tar.gz"
+        with self.assertLogs("bits", level="WARNING") as logs:
+            txt = notice.generate_source_offer(ENTRIES, "b3://bkt", "r", archived=lambda p: False)
+        self.assertIn("%s  (not archived" % path, txt)
+        self.assertIn(path, "\n".join(logs.output))
+        for unknown_or_there in (lambda p: None, lambda p: True):
+            txt = notice.generate_source_offer(ENTRIES, "b3://bkt", "r", archived=unknown_or_there)
+            self.assertIn("  %s\n" % path, txt)
+
+    def test_the_publish_asks_an_s3_store_only(self):
+        from types import SimpleNamespace
+        from bits_helpers.publish import _archived
+
+        class _Err(Exception):
+            def __init__(self, code):
+                self.response = {"Error": {"Code": code}}
+
+        def store(code):
+            s3 = MagicMock()
+            s3.head_object.side_effect = _Err(code) if code else None
+            return SimpleNamespace(s3=s3, writeStore="bkt")
+        self.assertTrue(_archived(store(None))("k"))
+        self.assertIs(_archived(store("404"))("k"), False)
+        self.assertIsNone(_archived(store("403"))("k"))              # cannot tell
+        self.assertIsNone(_archived(SimpleNamespace(create_only=True, s3=MagicMock())))
+
     def test_upload_and_write_best_effort(self):
         s3 = MagicMock()
         self.assertTrue(notice.upload_release_compliance(s3, "bkt", "b1", ENTRIES))

@@ -115,8 +115,10 @@ def generate_notice(entries, build_id="unknown") -> str:
     return "\n".join(lines) + "\n"
 
 
-def generate_source_offer(entries, store_url=None, build_id="unknown") -> str:
-    """Return the written source offer for the release's copyleft components."""
+def generate_source_offer(entries, store_url=None, build_id="unknown", archived=None) -> str:
+    """Return the written source offer for the release's copyleft components.
+    *archived*(store path) says whether the store has an archive: True, False, or
+    None (cannot tell); one it does not have is named as such, not offered."""
     now = datetime.datetime.now(datetime.timezone.utc)
     # NOT now.replace(year=+N): that raises ValueError on Feb 29 (the target
     # year is never a leap year), and the best-effort wrappers would then
@@ -133,6 +135,7 @@ def generate_source_offer(entries, store_url=None, build_id="unknown") -> str:
             " in the bits source store", until.strftime("%Y-%m-%d")),
         "",
     ]
+    missing = []
     for e in sorted(_distributed(entries),
                     key=lambda e: str(e.get("package", "")).lower()):
         lic = e.get("license") or ""
@@ -150,22 +153,30 @@ def generate_source_offer(entries, store_url=None, build_id="unknown") -> str:
                  if isinstance(s, dict) and s.get("store_path")]
         commit = e.get("commit_hash")
         for p in paths:
-            lines.append("  %s" % p)
+            if archived is not None and archived(p) is False:
+                missing.append(p)
+                lines.append("  %s  (not archived: request it from the release maintainers)" % p)
+            else:
+                lines.append("  %s" % p)
         if not paths and commit:
             lines.append("  git checkout of commit %s" % commit)
         elif not paths:
             lines.append("  (source location not recorded — request from the "
                          "release maintainers)")
         lines.append("")
+    if missing:
+        warning("source-offer: %d source archive(s) the offer names are not in the store: %s",
+                len(missing), " ".join(missing))
     return "\n".join(lines) + "\n"
 
 
-def _release_files(entries, build_id, store_url=None, manifest=None):
+def _release_files(entries, build_id, store_url=None, manifest=None, archived=None):
     """[(name, text)] of the release's compliance files: NOTICE, the source
     offer and, given the full *manifest*, its SBOMs (CycloneDX and SPDX). An
     SBOM that cannot be generated is left out with a warning."""
     files = [("NOTICE", generate_notice(entries, build_id)),
-             ("LICENSE-SOURCE-OFFER.txt", generate_source_offer(entries, store_url, build_id))]
+             ("LICENSE-SOURCE-OFFER.txt",
+              generate_source_offer(entries, store_url, build_id, archived))]
     if manifest:
         try:
             from bits_helpers import sbom
@@ -176,13 +187,14 @@ def _release_files(entries, build_id, store_url=None, manifest=None):
 
 
 def upload_release_compliance(s3, bucket, build_id, entries, store_url=None, manifest=None,
-                              put=None, prefix=""):
+                              put=None, prefix="", archived=None):
     """Upload NOTICE + LICENSE-SOURCE-OFFER.txt (+ the SBOMs, given the full
     *manifest*) next to the release's BOMs, named *prefix*<name>; through *put*(key,
-    bytes) when given (a False answer: there already). Never raises, never fails a publish.
+    bytes) when given (a False answer: there already). *archived*: see
+    generate_source_offer. Never raises, never fails a publish.
     """
     try:
-        for name, body in _release_files(entries, build_id, store_url, manifest):
+        for name, body in _release_files(entries, build_id, store_url, manifest, archived):
             key = "MANIFESTS/%s/%s%s" % (build_id, prefix, name)
             if put is None:
                 s3.put_object(Bucket=bucket, Key=key, Body=body.encode("utf-8"))
