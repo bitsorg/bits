@@ -34,6 +34,7 @@ signals fallback.
 """
 
 import argparse
+import hashlib
 import os
 import re
 import sqlite3
@@ -109,19 +110,66 @@ def data_url_for_hash(host, cat_hash):
   return "%s/data/%s/%sC" % (host.rstrip("/"), h[:2], h[2:])
 
 
-def fetch_and_decompress(url, timeout=30):
-  """Download a cvmfs data object and zlib-decompress it."""
+# A catalog object past this, compressed or not, is refused, not held in memory.
+MAX_CATALOG_BYTES = 1 << 30
+
+# CVMFS names an object by the digest of its stored, compressed bytes; the
+# algorithm is the suffix (none = SHA-1). Every content digest is 20 bytes.
+_DIGESTS = {
+    "": lambda b: hashlib.sha1(b).hexdigest(),
+    "-rmd160": lambda b: hashlib.new("ripemd160", b).hexdigest(),
+    "-shake128": lambda b: hashlib.shake_128(b).hexdigest(20),
+}
+_OBJECT_HASH = re.compile(r"([0-9a-f]{40})(-rmd160|-shake128)?")
+
+
+def object_digest(blob, cat_hash):
+  """The digest of blob in the algorithm cat_hash names, as cat_hash spells it."""
+  m = _OBJECT_HASH.fullmatch(cat_hash.strip())
+  if not m:
+    raise FastPathUnavailable("cannot verify catalog hash %r" % cat_hash)
+  suffix = m.group(2) or ""
+  try:
+    return _DIGESTS[suffix](blob) + suffix
+  except ValueError as exc:  # e.g. an OpenSSL without ripemd160
+    raise FastPathUnavailable("cannot verify %s catalog: %s" % (suffix, exc))
+
+
+def fetch_and_decompress(url, timeout=30, *, expected,
+                         max_bytes=MAX_CATALOG_BYTES):
+  """Download a cvmfs data object, check it is `expected`, and decompress it."""
   req = urllib.request.Request(url, headers={"User-Agent": "bits-q-catalog"})
   try:
+    chunks, n = [], 0
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-      blob = resp.read()
+      # In chunks: before 3.10, read(n) allocates n bytes up front.
+      while n <= max_bytes:
+        c = resp.read(1 << 20)
+        if not c:
+          break
+        chunks.append(c)
+        n += len(c)
+    blob = b"".join(chunks)
   except Exception as exc:  # noqa: BLE001 - any network error => fall back
     raise FastPathUnavailable("could not fetch catalog: %s" % exc)
+  if len(blob) > max_bytes:
+    raise FastPathUnavailable("catalog at %s exceeds %d bytes" % (url, max_bytes))
+  got = object_digest(blob, expected)
+  if got != expected.strip():
+    raise FastPathUnavailable("catalog at %s is not object %s (got %s)"
+                              % (url, expected, got))
   for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+    d = zlib.decompressobj(wbits)
     try:
-      return zlib.decompressobj(wbits).decompress(blob)
+      out = d.decompress(blob, max_bytes)
     except zlib.error:
       continue
+    if d.unconsumed_tail:
+      raise FastPathUnavailable("catalog at %s expands past %d bytes"
+                                % (url, max_bytes))
+    if not d.eof:
+      raise FastPathUnavailable("catalog at %s is truncated" % url)
+    return out
   raise FastPathUnavailable("could not decompress catalog at %s" % url)
 
 
@@ -194,7 +242,8 @@ def list_entries(path):
         % nested)
 
   host = read_xattr(path, "user.host").strip()
-  blob = fetch_and_decompress(data_url_for_hash(host, info["hash"]))
+  blob = fetch_and_decompress(data_url_for_hash(host, info["hash"]),
+                              expected=info["hash"])
   with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tf:
     tf.write(blob)
     db_path = tf.name

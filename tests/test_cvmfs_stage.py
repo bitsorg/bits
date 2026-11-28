@@ -565,7 +565,7 @@ class TestProbeStagedObject(unittest.TestCase):
     def test_silent_when_the_object_is_there(self):
         seen = []
 
-        def ok(url, timeout=30):
+        def ok(url, timeout=30, expected=None):
             seen.append(url)
             return b"blob"
 
@@ -580,7 +580,7 @@ class TestProbeStagedObject(unittest.TestCase):
         """The whole reason this function exists. Without it a bad staging URL
         surfaces as find_subtree_catalog's "the prepare did not produce a
         subtree catalog for this path", which points at swissknife."""
-        def missing(url, timeout=30):
+        def missing(url, timeout=30, expected=None):
             raise IOError("HTTP Error 404: Not Found")
 
         with _patched_fetch(missing):
@@ -604,7 +604,7 @@ class TestProbeStagedObject(unittest.TestCase):
         """
         calls = []
 
-        def flaky(url, timeout=30):
+        def flaky(url, timeout=30, expected=None):
             calls.append(url)
             if len(calls) == 1:
                 raise IOError("Connection reset by peer")
@@ -623,7 +623,7 @@ class TestProbeStagedObject(unittest.TestCase):
         NEGATIVE CONTROL: move data_url_for_hash out of the try and this fails
         with FastPathUnavailable instead of StageError.
         """
-        def explode(url, timeout=30):
+        def explode(url, timeout=30, expected=None):
             raise AssertionError("must not fetch on a malformed hash")
 
         with _patched_fetch(explode):
@@ -740,7 +740,7 @@ class TestMainWiring(unittest.TestCase):
         self.cmd.prepare_lock = lambda *a, **k: (
             entered.append("x"), contextlib.nullcontext())[1]
 
-        def not_found(url, timeout=30):
+        def not_found(url, timeout=30, expected=None):
             raise IOError("HTTP Error 404: Not Found")
 
         def run(extra):
@@ -773,7 +773,7 @@ class TestMainWiring(unittest.TestCase):
         spool = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, spool, True)
 
-        def nothing_anywhere(url, timeout=30):
+        def nothing_anywhere(url, timeout=30, expected=None):
             raise IOError("HTTP Error 404: Not Found")
 
         err = io.StringIO()
@@ -807,7 +807,7 @@ class TestMainWiring(unittest.TestCase):
         # caught exactly that: mutating new_base = base left the test green.
         heads = ["c" * 40, "d" * 40]
         self.cmd.fetch_published_root = \
-            lambda url, timeout=30: heads[min(len(self.prepared_bases), 1)]
+            lambda url, timeout=30, expected=None: heads[min(len(self.prepared_bases), 1)]
         self.prepared_bases = []
         self.addCleanup(setattr, self.cmd, "fetch_published_root",
                         self.cmd.fetch_published_root)
@@ -837,7 +837,7 @@ class TestMainWiring(unittest.TestCase):
                 H_SUB: make_catalog("/p/1.0"),
             }
 
-            def serve(url, timeout=30):
+            def serve(url, timeout=30, expected=None):
                 seg = url.rstrip("/").split("/")
                 return objects[seg[-2] + seg[-1][:-1]]
 
@@ -866,7 +866,7 @@ class TestMainWiring(unittest.TestCase):
         self.addCleanup(shutil.rmtree, spool, True)
         reads = []
 
-        def head(url, timeout=30):
+        def head(url, timeout=30, expected=None):
             reads.append(url)
             if len(reads) > 1:
                 raise urllib.error.URLError("no route to stratum0")
@@ -991,7 +991,7 @@ class TestMainWiring(unittest.TestCase):
         }
         urls = []
 
-        def record(url, timeout=30):
+        def record(url, timeout=30, expected=None):
             urls.append(url)
             tail = url.rsplit("/data/", 1)[1]      # <2>/<rest>C
             h = tail.replace("/", "")[:-1]         # drop separator + C suffix
@@ -1098,10 +1098,44 @@ class TestMainWiring(unittest.TestCase):
             self.ROOT: make_catalog("/", nested=[("/p/1.0", H_SUB)]),
             H_SUB: make_catalog("/p/1.0"),
         }
-        def serve(url, timeout=30):
+        def serve(url, timeout=30, expected=None):
             seg = url.rstrip("/").split("/")
             return objects[seg[-2] + seg[-1][:-1]]
         return serve
+
+
+class TestEveryFetchNamesItsObject(unittest.TestCase):
+    """fetch_and_decompress checks the bytes against `expected`; a caller that
+    passed another hash would verify the wrong thing."""
+
+    def test_each_caller_expects_the_hash_it_addresses(self):
+        import bits_helpers.cvmfs_stage as mod
+        seen = []
+
+        def record(url, timeout=30, expected=None):
+            seen.append((url.rsplit("/data/", 1)[1].replace("/", "")[:-1],
+                         expected))
+            if url.startswith("http://stage"):
+                raise IOError("HTTP Error 404: Not Found")
+            return b"blob"
+
+        h = "c" * 40
+        with _patched_fetch(record):
+            mod.http_fetcher("http://stage", "http://repo")(h)
+            mod.fetch_repo_catalog("http://repo", h)
+            probe_staged_object("http://repo/stage", h)
+        self.assertEqual(seen, [(h, h)] * 4)
+
+    def test_a_failed_fallback_keeps_the_staging_answer(self):
+        import bits_helpers.cvmfs_stage as mod
+
+        def answer(url, timeout=30, expected=None):
+            raise IOError("is not object" if url.startswith("http://stage")
+                          else "HTTP Error 404: Not Found")
+
+        with _patched_fetch(answer):
+            with self.assertRaisesRegex(Exception, "404.*staging: is not object"):
+                mod.http_fetcher("http://stage", "http://repo")("c" * 40)
 
 
 import contextlib  # noqa: E402

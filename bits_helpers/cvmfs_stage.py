@@ -63,9 +63,11 @@ import time
 import zlib
 
 try:  # reuse the existing primitives when running inside bits
-    from bits_helpers.cvmfs_catalog import data_url_for_hash, fetch_and_decompress
+    from bits_helpers.cvmfs_catalog import (
+        FastPathUnavailable, data_url_for_hash, fetch_and_decompress)
 except ImportError:  # pragma: no cover - standalone use
-    from cvmfs_catalog import data_url_for_hash, fetch_and_decompress
+    from cvmfs_catalog import (
+        FastPathUnavailable, data_url_for_hash, fetch_and_decompress)
 
 
 class StageError(Exception):
@@ -142,10 +144,15 @@ def http_fetcher(stage_url, repo_url, timeout=30):
     def fetch(cat_hash):
         try:
             return fetch_and_decompress(data_url_for_hash(stage_url, cat_hash),
-                                        timeout=timeout)
-        except Exception:
-            return fetch_and_decompress(data_url_for_hash(repo_url, cat_hash),
-                                        timeout=timeout)
+                                        timeout=timeout, expected=cat_hash)
+        except Exception as staged:
+            try:
+                return fetch_and_decompress(
+                    data_url_for_hash(repo_url, cat_hash),
+                    timeout=timeout, expected=cat_hash)
+            except Exception as exc:
+                raise FastPathUnavailable("%s (staging: %s)"
+                                          % (exc, staged)) from exc
     return fetch
 
 
@@ -157,7 +164,7 @@ def fetch_repo_catalog(repo_url, cat_hash, timeout=30):
     published?", where a staged copy would produce a false yes.
     """
     return fetch_and_decompress(data_url_for_hash(repo_url, cat_hash),
-                                timeout=timeout)
+                                timeout=timeout, expected=cat_hash)
 
 
 def find_subtree_catalog(root_hash, lease_path, fetch):
@@ -428,7 +435,7 @@ def probe_staged_object(stage_url, cat_hash, timeout=30, retry_delay=2):
     last = None
     for attempt in (1, 2):
         try:
-            fetch_and_decompress(url, timeout=timeout)
+            fetch_and_decompress(url, timeout=timeout, expected=cat_hash)
             return
         except Exception as exc:
             last = exc
@@ -440,8 +447,9 @@ def probe_staged_object(stage_url, cat_hash, timeout=30, retry_delay=2):
         "back (2 attempts):\n"
         "  %s\n"
         "  %s\n"
-        "That object was written moments ago, so either the staging URL is "
-        "wrong or the object store is unreachable. If the error above is a "
+        "That object was written moments ago, so the staging URL is wrong, "
+        "the object store is unreachable, or something between answered "
+        "with other bytes (\"is not object\"). If the error above is a "
         "404, it is the URL: check the community's stratum0_url in "
         "bits-console -- it must be the bucket root followed by the "
         "repository's S3 alias, and the bucket root must be the host serving "

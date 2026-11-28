@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A CVMFS catalog fetched by hash (`bits q`, `bits cvmfs stage`) must be the object it was asked for: the digest of its stored bytes is compared with the hash (SHA-1, or the `-rmd160`/`-shake128` the hash names) and other bytes are refused, as is an object over 1 GiB compressed or decompressed; whatever answered was believed, so anyone on the plain-http path to the store could name any existing object as the subtree to graft.
 - **[Feature]** bits-console backend: a build job records the host it ran on (`host` in `/ops/builds`), from the start of its log: the host the job names (`[setup] build host:`), else the runner's own name; finished builds recorded before get it once.
 - **[Improvement]** A store tarball the signed-reuse gate checked is not hashed again for the build manifest: its digest is passed on.
 - **[Improvement]** `bits sign --digest-cache FILE` hashes a store tarball once: each object's sha256 is kept in FILE with its key, ETag and size (which S3 sets), and an unchanged object is not downloaded again; it downloaded and hashed every tarball of every BOM on every run. Off by default: FILE's entries are signed as they are, so it must be writable by the signer only (never a CI cache other jobs restore).
