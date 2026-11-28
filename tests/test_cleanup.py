@@ -11,7 +11,7 @@ Covers:
   - flock concurrency: packages held by another job are skipped
   - dry-run: reports without deleting
   - graceful handling of missing workDir or empty sentinel tree
-  - acquire_build_lock returns a file handle that prevents exclusive lock
+  - what a running build uses (its in-use file) is neither evicted nor swept
 """
 import fcntl
 import glob
@@ -29,7 +29,6 @@ from bits_helpers.cleanup import (
     _list_sentinels,
     _pressure_order,
     _try_evict,
-    acquire_build_lock,
     mark_in_store,
     retention_sweep,
     doCleanup,
@@ -40,6 +39,20 @@ from bits_helpers.cleanup import (
 
 
 ARCH = "x86_64-el9"
+
+
+def _end_build():
+    """What the end of a build process does: its in-use files are released."""
+    from bits_helpers import cleanup
+    for fh in cleanup._in_use_files.values():
+        fh.close()
+    cleanup._in_use_files.clear()
+
+
+def _used(*args, **kwargs):
+    """A package a build touched, and the build has ended since."""
+    touch_sentinel(*args, **kwargs)
+    _end_build()
 
 
 class SentinelPathTest(unittest.TestCase):
@@ -102,7 +115,7 @@ class ListSentinelsTest(unittest.TestCase):
 
     def _make_sentinel(self, package, version, age_days):
         """Create a sentinel with mtime set to `age_days` days ago."""
-        touch_sentinel(self.tmpdir, ARCH, package, version)
+        _used(self.tmpdir, ARCH, package, version)
         spath = sentinel_path(self.tmpdir, ARCH, package, version)
         old_mtime = time.time() - age_days * 86400
         os.utime(spath, (old_mtime, old_mtime))
@@ -130,13 +143,13 @@ class ListSentinelsTest(unittest.TestCase):
     def test_size_bytes_none_when_not_recorded(self):
         # A plain (transitive) touch records no size; _list_sentinels must not
         # walk the tree, so the cached size is None until resolved on demand.
-        touch_sentinel(self.tmpdir, ARCH, "orphan", "1.0-1")
+        _used(self.tmpdir, ARCH, "orphan", "1.0-1")
         entries = _list_sentinels(self.tmpdir, ARCH)
         self.assertIsNone(entries[0].size_bytes)
 
     def test_size_recorded_zero_for_missing_pkg_dir(self):
         # Recording a size for a package with no install dir yields 0.
-        touch_sentinel(self.tmpdir, ARCH, "orphan", "1.0-1", record_size=True)
+        _used(self.tmpdir, ARCH, "orphan", "1.0-1", record_size=True)
         entries = _list_sentinels(self.tmpdir, ARCH)
         self.assertEqual(entries[0].size_bytes, 0)
 
@@ -146,7 +159,7 @@ class ListSentinelsTest(unittest.TestCase):
         os.makedirs(pkg_dir)
         with open(os.path.join(pkg_dir, "libROOT.so"), "wb") as f:
             f.write(b"x" * 1024)
-        touch_sentinel(self.tmpdir, ARCH, "ROOT", "6.32.0-1", record_size=True)
+        _used(self.tmpdir, ARCH, "ROOT", "6.32.0-1", record_size=True)
         entries = _list_sentinels(self.tmpdir, ARCH)
         self.assertGreater(entries[0].size_bytes, 0)
 
@@ -161,7 +174,7 @@ class TryEvictTest(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _make_entry(self, package="ROOT", version="6.32.0-1", age_days=10):
-        touch_sentinel(self.tmpdir, ARCH, package, version)
+        _used(self.tmpdir, ARCH, package, version)
         spath = sentinel_path(self.tmpdir, ARCH, package, version)
         old_mtime = time.time() - age_days * 86400
         os.utime(spath, (old_mtime, old_mtime))
@@ -226,7 +239,7 @@ class DoCleanupAgeBasedTest(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _make_pkg(self, package, version, age_days):
-        touch_sentinel(self.tmpdir, ARCH, package, version)
+        _used(self.tmpdir, ARCH, package, version)
         spath = sentinel_path(self.tmpdir, ARCH, package, version)
         mtime = time.time() - age_days * 86400
         os.utime(spath, (mtime, mtime))
@@ -310,7 +323,7 @@ class DoCleanupDiskPressureTest(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _make_pkg(self, package, version, age_days):
-        touch_sentinel(self.tmpdir, ARCH, package, version)
+        _used(self.tmpdir, ARCH, package, version)
         spath = sentinel_path(self.tmpdir, ARCH, package, version)
         mtime = time.time() - age_days * 86400
         os.utime(spath, (mtime, mtime))
@@ -398,7 +411,7 @@ class AllArchitecturesTest(unittest.TestCase):
         self._make("slc8_x86-64", "mid", time.time() - 10 * day, 50)
 
     def _make(self, arch, package, mtime, size):
-        touch_sentinel(self.tmpdir, arch, package, "1-1")
+        _used(self.tmpdir, arch, package, "1-1")
         spath = sentinel_path(self.tmpdir, arch, package, "1-1")
         with open(spath, "w") as fh:
             fh.write("%d\n" % size)
@@ -436,9 +449,12 @@ class AllArchitecturesTest(unittest.TestCase):
             doCleanup(self._args(keep_recent=0), parser=None)
         self.assertEqual(self._left(), [])
 
-    def test_a_held_package_stays(self):
-        fh = acquire_build_lock(self.tmpdir, "x86_64-el9", "big", "1-1")
-        self.addCleanup(fh.close)
+    def test_a_package_a_running_build_uses_stays(self):
+        # NEGATIVE CONTROL: drop the in-use check in _try_evict and big goes.
+        touch_sentinel(self.tmpdir, "x86_64-el9", "big", "1-1")    # this build is running
+        self.addCleanup(_end_build)
+        spath = sentinel_path(self.tmpdir, "x86_64-el9", "big", "1-1")
+        os.utime(spath, (self.t30, self.t30))
         with patch("bits_helpers.cleanup._free_bytes", return_value=0):
             doCleanup(self._args(keep_recent=0), parser=None)
         self.assertEqual(self._left(), ["x86_64-el9/big/1-1"])
@@ -549,7 +565,7 @@ class TarballsTest(unittest.TestCase):
         self._tarball("Moore", self.H3)                  # its package is not installed
 
     def _package(self, pkg, h):
-        touch_sentinel(self.wd, self.ARCH, pkg, "1-1")
+        _used(self.wd, self.ARCH, pkg, "1-1")
         spath = sentinel_path(self.wd, self.ARCH, pkg, "1-1")
         os.utime(spath, (self.old, self.old))
         d = os.path.join(self.wd, self.ARCH, pkg, "1-1")
@@ -705,64 +721,6 @@ class MarkInStoreTest(unittest.TestCase):
         self.assertFalse(self._sync(""))
 
 
-class AcquireBuildLockTest(unittest.TestCase):
-    """acquire_build_lock() holds a shared flock and prevents exclusive eviction."""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_returns_open_file_handle(self):
-        fh = acquire_build_lock(self.tmpdir, ARCH, "ROOT", "6.32.0-1")
-        try:
-            self.assertFalse(fh.closed)
-            # Sentinel file should exist after locking.
-            spath = sentinel_path(self.tmpdir, ARCH, "ROOT", "6.32.0-1")
-            self.assertTrue(os.path.isfile(spath))
-        finally:
-            fh.close()
-
-    def test_shared_lock_blocks_exclusive(self):
-        """While build lock is held, an exclusive (eviction) lock must fail."""
-        fh = acquire_build_lock(self.tmpdir, ARCH, "ROOT", "6.32.0-1")
-        try:
-            spath = sentinel_path(self.tmpdir, ARCH, "ROOT", "6.32.0-1")
-            with open(spath, "r+") as evict_fh:
-                with self.assertRaises((BlockingIOError, OSError)):
-                    fcntl.flock(evict_fh,
-                                fcntl.LOCK_EX | fcntl.LOCK_NB)
-        finally:
-            fh.close()
-
-    def test_lock_released_on_close(self):
-        """After the build lock file handle is closed, exclusive lock succeeds."""
-        fh = acquire_build_lock(self.tmpdir, ARCH, "ROOT", "6.32.0-1")
-        fh.close()
-        spath = sentinel_path(self.tmpdir, ARCH, "ROOT", "6.32.0-1")
-        with open(spath, "r+") as evict_fh:
-            # Must not raise after the shared lock is released.
-            fcntl.flock(evict_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(evict_fh, fcntl.LOCK_UN)
-
-    def test_refreshes_mtime(self):
-        """acquire_build_lock touches the sentinel mtime."""
-        # Create a stale sentinel first.
-        touch_sentinel(self.tmpdir, ARCH, "ROOT", "6.32.0-1")
-        spath = sentinel_path(self.tmpdir, ARCH, "ROOT", "6.32.0-1")
-        old_t = time.time() - 100
-        os.utime(spath, (old_t, old_t))
-
-        time.sleep(0.02)
-        fh = acquire_build_lock(self.tmpdir, ARCH, "ROOT", "6.32.0-1")
-        fh.close()
-
-        self.assertGreater(os.path.getmtime(spath), old_t,
-                           "acquire_build_lock should refresh the sentinel mtime")
-
-
-
 class PublishRecordRefreshTest(unittest.TestCase):
     """mark_published_from reads the publish record fetched now, not a copy a
     previous run left in MANIFESTS/retention."""
@@ -799,7 +757,7 @@ class FamilySentinelTest(unittest.TestCase):
             os.makedirs(tree)
             with open(os.path.join(tree, "f"), "w") as fh:
                 fh.write("x" * 5000)
-            touch_sentinel(work, arch, pkg, "1-1", record_size=True, family=family)
+            _used(work, arch, pkg, "1-1", record_size=True, family=family)
         got = {e.pkg_dir: e for e in _list_all_sentinels(work)}
         foo = os.path.join(work, ARCH, "externals", "foo", "1-1")
         self.assertEqual(sorted(got), sorted([os.path.join(work, "share", "data", "1-1"), foo,
@@ -825,13 +783,13 @@ class FamilySentinelTest(unittest.TestCase):
         stored = os.path.join(work, "TARS", "own-abc", "store", h[:2], h)
         os.makedirs(stored)
         mark_in_store(work, "own-abc", h)
-        touch_sentinel(work, ARCH, "GCC", "15-1", record_size=True)  # as bits did before
+        _used(work, ARCH, "GCC", "15-1", record_size=True)  # as bits did before
         entry = _list_sentinels(work, ARCH)[0]
         self.assertEqual(_try_evict(entry, dry_run=False, assume_stored=True), 0)
         self.assertTrue(os.path.isfile(os.path.join(tree, "f")))
         self.assertTrue(os.path.isdir(stored))                         # its tarball stays
         self.assertFalse(os.path.exists(entry.sentinel_path))
-        touch_sentinel(work, ARCH, "GCC", "15-1")                      # retention drops it
+        _used(work, ARCH, "GCC", "15-1")                      # retention drops it
         with patch("bits_helpers.gc._localize_manifest", return_value="m.json"), \
              patch("bits_helpers.trust.trusted_records",
                    return_value=("kid", [{"effective_architecture": ARCH}])):
@@ -889,6 +847,69 @@ class RetentionDryRunTest(unittest.TestCase):
                        return_value=("kid", [{"effective_architecture": "el9"}])):
                 self.assertEqual(cleanup.retention_sweep(args, None), 0)
             self.assertEqual((os.path.exists(sentinel), os.path.lexists(link)), (kept, kept))
+
+
+class InUseTest(unittest.TestCase):
+    """A build's in-use file lists what it touched while the build runs."""
+
+    def setUp(self):
+        self.work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.work, True)
+        self.addCleanup(_end_build)
+
+    def test_listed_while_held_stale_once_released(self):
+        from bits_helpers.cleanup import IN_USE, _in_use
+        touch_sentinel(self.work, ARCH, "zlib", "1.3-1")
+        touch_sentinel(self.work, "share", "data", "1-1", family="externals")
+        self.assertEqual(_in_use(self.work, prune=True),
+                         {ARCH + "/zlib/1.3-1", "share/externals/data/1-1"})
+        _end_build()                                    # the build exits
+        self.assertEqual(_in_use(self.work), set())
+        self.assertEqual(len(os.listdir(os.path.join(self.work, IN_USE))), 1)
+        _in_use(self.work, prune=True)
+        self.assertEqual(os.listdir(os.path.join(self.work, IN_USE)), [])
+
+    def test_builder_threads_share_one_held_file(self):
+        # NEGATIVE CONTROL: without the lock, records land in files no one holds.
+        import threading
+        from bits_helpers.cleanup import _in_use
+        start = threading.Barrier(8)
+
+        def touch(i):
+            start.wait()
+            touch_sentinel(self.work, ARCH, "p%d" % i, "1-1")
+        threads = [threading.Thread(target=touch, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(_in_use(self.work, prune=True),
+                         {"%s/p%d/1-1" % (ARCH, i) for i in range(8)})
+
+    def test_the_retention_sweep_keeps_what_a_running_build_uses(self):
+        # NEGATIVE CONTROL: drop the in-use keep in retention_sweep and both go.
+        from bits_helpers.cleanup import retention_sweep
+        h = "cd" * 20
+        tree = os.path.join(self.work, ARCH, "zlib", "1-1")
+        stored = os.path.join(self.work, "TARS", ARCH, "store", h[:2], h)
+        for d in (tree, stored):
+            os.makedirs(d)
+        with open(os.path.join(tree, ".build-hash"), "w") as fh:
+            fh.write(h)
+        open(os.path.join(stored, "zlib-1-1.%s.tar.gz" % ARCH), "w").close()
+        touch_sentinel(self.work, ARCH, "zlib", "1-1")
+        old = time.time() - 30 * 86400
+        for d in (tree, stored):
+            os.utime(d, (old, old))
+        args = Namespace(workDir=self.work, dryRun=False, trustManifests=["m"])
+        certified = ("kid", [{"effective_architecture": ARCH, "package": "other"}])
+        with patch("bits_helpers.gc._localize_manifest", return_value="m.json"), \
+             patch("bits_helpers.trust.trusted_records", return_value=certified):
+            self.assertEqual(retention_sweep(args, None), 0)
+            self.assertTrue(os.path.isdir(tree) and os.path.isdir(stored))
+            _end_build()                                # once it has ended, they go
+            self.assertEqual(retention_sweep(args, None), 0)
+        self.assertFalse(os.path.exists(tree) or os.path.exists(stored))
 
 
 if __name__ == "__main__":

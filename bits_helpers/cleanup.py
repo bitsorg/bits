@@ -31,14 +31,12 @@ The cleanup command supports two eviction modes, which may be combined:
 
 Concurrency safety
 ------------------
-A shared ``flock`` advisory lock is held on the sentinel file for the
-duration of any build job that uses the package.  The cleanup command
-requests an exclusive non-blocking lock before evicting; if it cannot
-acquire the lock the package is actively in use and is skipped.  The OS
-releases all flock locks automatically when a process exits (crash, kill, or
-OOM included), so stale locks never accumulate and no cleanup on job start is
-required.  Multiple concurrent build jobs from the same community are fully
-supported without any "one job at a time" restriction.
+A build records each tree it touches in its own file under ``workDir/.in-use/``,
+on which it holds a shared ``flock`` until it exits (crash, kill or OOM
+included: the OS releases it). Eviction takes an exclusive lock on the
+sentinel, then skips what a held in-use file lists; the retention sweep keeps
+those trees and their hashes. A file no process holds is stale and removed.
+Multiple concurrent build jobs from the same community are fully supported.
 """
 
 import fcntl
@@ -47,6 +45,8 @@ import os
 import re
 import shutil
 import sys
+import tempfile
+import threading
 import time
 from os.path import abspath, basename, dirname, exists, join
 from typing import List, NamedTuple, Optional
@@ -99,8 +99,10 @@ def touch_sentinel(work_dir: str, architecture: str, package: str, version: str,
                     fh.write("%d\n" % size_bytes)
                     fh.flush()
                 os.utime(path, None)          # set mtime = now
+                _record_in_use(work_dir, _split_sentinel(path)[1])
                 fcntl.flock(fh, fcntl.LOCK_UN)
             except BlockingIOError:
+                _record_in_use(work_dir, _split_sentinel(path)[1])   # a cleanup may only be checking
                 # Cleanup is about to evict this package — log and carry on.
                 # The build will fail shortly with a "not found" error, which
                 # is the correct outcome when a package has been evicted.
@@ -125,33 +127,56 @@ def _read_cached_size(sentinel_file: str) -> Optional[int]:
         return None
 
 
-def acquire_build_lock(work_dir: str, architecture: str, package: str,
-                       version: str, family: str = ""):
-    """Acquire a shared flock on the sentinel for the duration of a build.
+IN_USE = ".in-use"     # workDir/.in-use/<file>: one per running build
+_in_use_files = {}      # work dir -> this process's in-use file, held while it runs
+_in_use_lock = threading.Lock()    # builder threads touch concurrently
 
-    Returns an open file object that holds the lock.  The caller **must**
-    close it when the build (or use) of the package is complete::
 
-        lock_fh = acquire_build_lock(work_dir, arch, pkg, ver)
-        try:
-            ...  # build or use the package
-        finally:
-            lock_fh.close()   # releases the shared lock
+def _record_in_use(work_dir: str, rel: str) -> None:
+    """Add *rel* (<arch>/[<family>/]<pkg>/<ver>) to this process's in-use file."""
+    work = abspath(work_dir)
+    with _in_use_lock:
+        _append_in_use(work, rel)
 
-    The lock is *blocking*: if a cleanup is currently evicting this package
-    the call will wait until eviction is finished.  In practice eviction is
-    fast (``shutil.rmtree`` + ``unlink``), so the wait is negligible.
-    """
-    path = sentinel_path(work_dir, architecture, package, version, family)
-    os.makedirs(dirname(path), exist_ok=True)
-    fh = open(path, "a")
+
+def _append_in_use(work: str, rel: str) -> None:
+    fh = _in_use_files.get(work)
     try:
-        fcntl.flock(fh, fcntl.LOCK_SH)   # blocking shared lock
-        os.utime(path, None)              # refresh mtime while holding lock
-    except OSError:
-        fh.close()
-        raise
-    return fh
+        if fh is None:
+            d = join(work, IN_USE)
+            os.makedirs(d, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=d, prefix=".new-")
+            fh = os.fdopen(fd, "a")
+            fcntl.flock(fh, fcntl.LOCK_SH)    # before it is named: never seen unheld
+            os.rename(tmp, join(d, basename(tmp)[len(".new-"):]))
+            _in_use_files[work] = fh
+        fh.write(rel + "\n")
+        fh.flush()
+    except OSError as exc:
+        warning("Could not record %s as in use: %s", rel, exc)
+
+
+def _in_use(work_dir: str, prune: bool = False) -> set:
+    """The trees running builds use (what their held in-use files list). With
+    *prune*, an in-use file no process holds is removed."""
+    d = join(abspath(work_dir), IN_USE)
+    live = set()
+    for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if name.startswith("."):
+            continue
+        try:
+            fh = open(join(d, name), "r+")    # NFS grants LOCK_EX only on a writable fd
+        except OSError:
+            continue
+        with fh:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:               # held, or not lockable here: live either way
+                live.update(line.strip() for line in fh if line.strip())
+                continue
+            if prune:
+                _unlink_quiet(join(d, name))
+    return live
 
 
 # ---------------------------------------------------------------------------
@@ -507,9 +532,12 @@ def _try_evict(entry: _SentinelEntry, dry_run: bool, assume_stored: bool = False
         fh.close()
         return None
 
-    # We hold the exclusive lock — safe to evict.
+    # We hold the exclusive lock: no build can record it in use meanwhile.
     try:
-        label = _split_sentinel(entry.sentinel_path)[1]   # <arch>/[<family>/]<pkg>/<ver>
+        work, label = _split_sentinel(entry.sentinel_path)   # <arch>/[<family>/]<pkg>/<ver>
+        if label in _in_use(work):
+            debug("Skipping %s — a running build uses it", entry.pkg_dir)
+            return None
         age_days = (time.time() - entry.mtime) / 86400
         linked = os.path.islink(entry.pkg_dir)   # not its tree (an old sentinel at a bridge link)
         tars = [] if linked else _package_tarballs(entry, assume_stored)
@@ -800,6 +828,17 @@ def retention_sweep(args, parser):
 
     keep_paths, keep_hashes, released_n = set(), set(), 0
 
+    def _keep_hash(root):
+        try:
+            with open(join(root, ".build-hash")) as fh:
+                keep_hashes.update(fh.read().split()[:1])
+        except OSError:
+            pass
+
+    for rel in _in_use(work_dir, prune=not dry_run):   # what running builds use stays
+        keep_paths.add(os.path.normpath(join(work_dir, rel)))
+        _keep_hash(join(work_dir, rel))
+
     def _keep(e):
         install, h = _entry_paths(work_dir, e)
         if install:
@@ -857,6 +896,28 @@ def retention_sweep(args, parser):
         stats["evicted"] += 1
         stats["freed"]   += size
 
+    def _rm_unused(root):
+        """Remove an install tree unless a build has begun to use it since."""
+        rel = os.path.relpath(root, work_dir)
+        if dry_run:
+            if rel not in _in_use(work_dir):
+                _rm(root, "install")
+            return
+        sentinel = join(work_dir, ".packages", rel)   # locked: no touch meanwhile
+        try:
+            os.makedirs(dirname(sentinel), exist_ok=True)
+            fh = open(sentinel, "a")
+        except OSError:
+            return
+        with fh:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return _keep_hash(root)   # a build is touching it now
+            if rel in _in_use(work_dir):
+                return _keep_hash(root)
+            _rm(root, "install")
+
     # 4. Install trees — ALL architectures with a verified certified set.
     for arch in sorted(arches):
         if arch not in verified_arches:
@@ -867,7 +928,7 @@ def retention_sweep(args, parser):
         for root in list(_iter_install_dirs(archdir)):
             if os.path.normpath(root) in keep_paths or _young(root):
                 continue
-            _rm(root, "install")
+            _rm_unused(root)
         if not dry_run:
             _prune_empty_dirs(archdir)
 
@@ -958,6 +1019,7 @@ def doCleanup(args, parser):
     stored_tarballs = getattr(args, "storedTarballs", None)
     if stored_tarballs is not None and stored_tarballs < 0:
         stored_tarballs = keep_recent             # --stored-tarballs without DAYS (its const)
+    _in_use(work_dir, prune=not dry_run)          # the in-use files of builds gone
     if leftovers or stored_tarballs is not None:
         before = _free_bytes(work_dir)
         n = _remove_leftovers(work_dir, keep_recent, dry_run, assume_stored, leftovers,
