@@ -164,25 +164,20 @@ class GitLabForge(Forge):
 
     @classmethod
     def from_env(cls, env=None):
-        """Build from GitLab CI variables, or return None if it can't identify an MR.
+        """Build from GitLab CI variables, or return None if it can't identify a commit.
 
-        Works both in a merge-request pipeline (``CI_MERGE_REQUEST_IID``) and in
-        the post-merge branch pipeline, where the MR is resolved from the merged
-        commit (``CI_COMMIT_SHA``) — the realistic place the signing job runs.
+        The MR is the merged one of the commit (``CI_COMMIT_SHA``): the post-merge
+        branch pipeline the signing job runs in. An open MR's approvals never count.
         """
         env = env if env is not None else os.environ
         api = env.get("CI_API_V4_URL")
         pid = env.get("CI_PROJECT_ID")
-        iid = env.get("CI_MERGE_REQUEST_IID") or env.get("CI_OPEN_MERGE_REQUESTS")
         sha = env.get("CI_COMMIT_SHA")
         token = (env.get("BITS_FORGE_TOKEN") or env.get("GITLAB_TOKEN")
                  or env.get("CI_JOB_TOKEN"))
-        if not (api and pid and token and (iid or sha)):
+        if not (api and pid and token and sha):
             return None
-        # CI_OPEN_MERGE_REQUESTS is "group/proj!iid,…"; take the first iid.
-        if iid and "!" in str(iid):
-            iid = str(iid).split(",")[0].split("!")[-1]
-        return cls(api, pid, iid, token, commit_sha=sha)
+        return cls(api, pid, None, token, commit_sha=sha)
 
     def _get(self, path):
         import requests
@@ -192,9 +187,10 @@ class GitLabForge(Forge):
         return resp.json()
 
     def _resolve_iid(self):
-        """Return the MR iid, resolving it from the merged commit if needed."""
-        if self.mr_iid:
-            return self.mr_iid
+        """Return the iid of a merged MR: the given one, else the commit's."""
+        if self.mr_iid:   # only once merged: approvals of an open MR do not count
+            mr = self._get("merge_requests/%s" % self.mr_iid) or {}
+            return self.mr_iid if mr.get("state") == "merged" else None
         if not self.commit_sha:
             return None
         mrs = self._get("repository/commits/%s/merge_requests" % self.commit_sha) or []

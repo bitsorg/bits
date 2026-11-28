@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits sign --require-approval` counts merge-request approvals only of a merged merge request, the one of the commit (`CI_COMMIT_SHA`): an open one (`CI_MERGE_REQUEST_IID`, or the first of `CI_OPEN_MERGE_REQUESTS` in a branch pipeline) counted too.
 - **[Fix]** `bits sign` needs the BOMs to merge (`MANIFEST...`): without them it merged `<work dir>/MANIFESTS`, which holds no BOMs but the build manifests and the signed manifests fetched from the stores, and signed those again under its key.
 - **[Change]** `bits build --cvmfs-prefix` is removed: it mounted the work dir at the CVMFS path in the container, the retired approach `--no-relocate` served; bits-console does not pass it. The `system:` `prefix`/`cvmfs_prefix` of the defaults (the CVMFS layout) and `BITS_CVMFS_PREFIX` are unchanged.
 - **[Change]** `bits publish --no-relocate` is removed: it published the build host's installed tree unchecked, for the retired approach of building in the final `/cvmfs` path. Every package is published from its certified tarball, relocated to `--cvmfs-target`.

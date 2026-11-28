@@ -17,15 +17,32 @@ class TestGitLabForge(unittest.TestCase):
         self.assertIsNone(forge.GitLabForge.from_env(
             {"CI_API_V4_URL": "u", "CI_PROJECT_ID": "1"}))  # missing iid/token
 
-    def test_from_env_builds_and_parses_open_mr_form(self):
-        gl = forge.GitLabForge.from_env({
-            "CI_API_V4_URL": "https://gl/api/v4",
-            "CI_PROJECT_ID": "42",
-            "CI_OPEN_MERGE_REQUESTS": "grp/proj!9,other!3",
-            "BITS_FORGE_TOKEN": "tok",
-        })
-        self.assertEqual(gl.mr_iid, "9")
-        self.assertEqual(gl.context(), "42 MR !9")
+    def test_an_open_mr_is_never_taken_from_the_environment(self):
+        # NEGATIVE CONTROL: read CI_OPEN_MERGE_REQUESTS again and this has an iid.
+        env = {"CI_API_V4_URL": "https://gl/api/v4", "CI_PROJECT_ID": "42",
+               "CI_OPEN_MERGE_REQUESTS": "grp/proj!9,other!3",
+               "CI_MERGE_REQUEST_IID": "9", "BITS_FORGE_TOKEN": "tok"}
+        self.assertIsNone(forge.GitLabForge.from_env(env))      # no commit: nothing
+        gl = forge.GitLabForge.from_env(dict(env, CI_COMMIT_SHA="deadbeef"))
+        self.assertIsNone(gl.mr_iid)                             # resolved from the commit
+
+    def test_a_given_mr_counts_only_once_merged(self):
+        gl = forge.GitLabForge("https://gl/api/v4", "42", "7", "tok")
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"iid": 7, "state": "opened"}
+
+        def _fake_get(url, headers=None, timeout=None):
+            if url.endswith("/merge_requests/7"):
+                return _Resp()
+            raise AssertionError("must not read approvals of an open MR: %s" % url)
+
+        with patch("requests.get", side_effect=_fake_get):
+            self.assertEqual(gl.list_approvers(), set())
 
     def test_list_approvers_parses_api_payload(self):
         gl = forge.GitLabForge("https://gl/api/v4", "42", "7", "tok")
@@ -35,7 +52,7 @@ class TestGitLabForge(unittest.TestCase):
                 pass
 
             def json(self):
-                return {"approved_by": [
+                return {"state": "merged", "approved_by": [
                     {"user": {"username": "alice"}},
                     {"user": {"username": "bob"}},
                     {"user": {}},          # tolerate malformed entry
