@@ -1298,9 +1298,10 @@ def add_sign_arguments(subparsers, ctx):
                                     "BOMs are all gone gets an EMPTY signed manifest (revocation). "
                                     "Default: every architecture present in the manifests."))
   certify_parser.add_argument("--certifier", dest="certifier", metavar="USERNAME", default=None,
-                              help=("GitLab username of the already-authenticated initiator (default: "
-                                    "$GITLAB_USER_LOGIN, which GitLab sets for an API-triggered pipeline). "
-                                    "Must be an authorised admin; recorded as certified_by. No API call."))
+                              help=("GitLab username of the certifier, as a caller that authenticated "
+                                    "it gives it (the manifests CI: the merged merge request's author). "
+                                    "Must be an authorised admin; recorded as certified_by. No API call: "
+                                    "taken as given."))
   certify_parser.add_argument("--certifier-token", dest="certifierToken", metavar="PAT", default=None,
                               help=("A GitLab PAT that identifies the initiating admin (GET /user). When "
                                     "given (or $BITS_CERTIFIER_TOKEN), that authenticated identity must be "

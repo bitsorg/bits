@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits sign --require-approval` takes the certifier only from `--certifier`, not from `$GITLAB_USER_LOGIN`: every pipeline has that variable and a pipeline variable overrides it, so whoever could set one named an admin, and the merge-request check behind it was never reached. The manifests CI passes `--certifier` (the merged merge request's author).
 - **[Fix]** The merge request whose approvals `bits sign --require-approval` reads is the one that merged the commit (its merge, squash or head commit) into the pipeline's branch: the first merged one containing the commit counted, which could be an older one, or one into another branch.
 - **[Improvement]** A build published without its NOTICE, source offer or SBOMs says so in its pipeline record (`compliance_files: false` in `BUILDS/by-pipeline/`), and `bits cvmfs release --pipeline` warns about it: writing them is best-effort, and the only trace was a warning in the publish log.
 - **[Fix]** The release source offer (`LICENSE-SOURCE-OFFER.txt`) checks each source archive it names against an S3 store: one that is not there is marked "not archived" and warned about, instead of being offered as available for three years. A bits-store keeps sources apart, so there they are not checked.

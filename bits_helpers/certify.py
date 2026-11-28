@@ -883,9 +883,9 @@ def _make_approval_check(args, parser):
                if g.strip()]
     cert_token = getattr(args, "certifierToken", None) or os.environ.get("BITS_CERTIFIER_TOKEN")
     api_url = os.environ.get("CI_API_V4_URL") or getattr(args, "apiUrl", None)
-    # A pre-authenticated identity: GitLab sets GITLAB_USER_LOGIN to the user who
-    # triggered an API pipeline (unforgeable inside CI), so we trust it directly.
-    certifier = getattr(args, "certifier", None) or os.environ.get("GITLAB_USER_LOGIN")
+    # A name the caller authenticated (the manifests CI: the merged MR's author).
+    # Not $GITLAB_USER_LOGIN: a pipeline variable overrides it, and every pipeline has it.
+    certifier = getattr(args, "certifier", None)
     grouprefs = _forge.admin_policy_grouprefs(policy)
 
     def _needed(common):

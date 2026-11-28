@@ -472,8 +472,8 @@ class TestCertifyEndToEnd(unittest.TestCase):
         self.assertFalse(os.path.exists(out))
 
     def test_certifier_username_recorded_without_api(self):
-        # A pre-authenticated identity (e.g. GITLAB_USER_LOGIN) is trusted
-        # directly; no forge call is made. alice is an overall admin.
+        # A name the caller authenticated (--certifier) is taken as given;
+        # no forge call is made. alice is an overall admin.
         admins = os.path.join(self.tmp, "ADMINS")
         with open(admins, "w") as fh:
             fh.write("@alice\n")
@@ -492,6 +492,35 @@ class TestCertifyEndToEnd(unittest.TestCase):
         certify.doSign(args, _P())
         per_arch = certify._arch_stem(out, "slc7_x86-64")
         self.assertEqual(json.loads(Path(per_arch).read_text())["certified_by"], ["alice"])
+
+    def test_gitlab_user_login_is_no_certifier(self):
+        # Every pipeline has it and a pipeline variable overrides it: the forge decides.
+        # NEGATIVE CONTROL: default --certifier to $GITLAB_USER_LOGIN and alice signs.
+        from bits_helpers import forge
+        admins = os.path.join(self.tmp, "ADMINS")
+        with open(admins, "w") as fh:
+            fh.write("@alice\n")
+        out = os.path.join(self.tmp, "out", "common.json")
+        args = SimpleNamespace(
+            manifests=[_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
+            out=out, key=self.key_pem, certifyStore="", noStoreCheck=True,
+            workDir=self.tmp, architecture="slc7_x86-64", group=None,
+            requireApproval=True, admins=admins, validDays=None, sourceCommit=None,
+            changedGroups=None, certifier=None, certifierToken=None, apiUrl=None)
+
+        class _Err(Exception):
+            pass
+
+        class _P:
+            def error(self, m):
+                raise _Err(m)
+
+        with patch.dict(os.environ, {"GITLAB_USER_LOGIN": "alice"}), \
+             patch.dict(os.environ, {"BITS_CERTIFIER_TOKEN": ""}), \
+             patch.object(forge, "forge_from_env", return_value=None):
+            with self.assertRaisesRegex(_Err, "no forge"):
+                certify.doSign(args, _P())
+        self.assertFalse(os.path.exists(out))
 
     def test_certifier_username_rejected_when_not_admin(self):
         admins = os.path.join(self.tmp, "ADMINS")

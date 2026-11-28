@@ -361,9 +361,10 @@ signed as they are, so FILE must be the signer's alone (never a shared CI cache)
 In the manifests-repo CI,
 `--require-approval --admins ADMINS` refuses to sign unless the certifier is an
 authorised admin. The identity is established in one of three ways (in order):
-`--certifier USERNAME` (default `$GITLAB_USER_LOGIN` — the pipeline initiator
-GitLab already authenticated; no API call); `--certifier-token PAT` (identify via
-`GET /user`); or, failing both, reading who approved the merge request. See the
+`--certifier USERNAME` (taken as given, from a caller that authenticated it: the
+manifests CI's merged merge request author; no API call); `--certifier-token PAT`
+(identify via `GET /user`); or, failing both, reading who approved the merge
+request that merged `$CI_COMMIT_SHA` into `$CI_COMMIT_BRANCH`. See the
 `bits-manifests` repo for the pipeline scaffolding.
 
 Offline freshness: `--valid-days N` stamps an `expires` timestamp and
