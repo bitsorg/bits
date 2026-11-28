@@ -5,7 +5,7 @@
 
 Covers:
   - bits cleanup subparser: defaults and explicit values
-  - bits build --cvmfs-prefix: accepted and stored correctly
+  - bits build --cvmfs-prefix: refused (removed)
   - bits publish --no-relocate: refused (removed)
   - Backward compatibility: omitting new flags leaves existing defaults unchanged
 """
@@ -102,40 +102,21 @@ class CleanupSubparserTest(unittest.TestCase):
         self.assertEqual(args.workDir, "/data/lhcb/sw")
 
 
-class BuildCvmfsPrefixTest(unittest.TestCase):
-    """bits build --cvmfs-prefix is accepted and defaults to None."""
+class BuildCvmfsPrefixRemovedTest(unittest.TestCase):
+    """bits build --cvmfs-prefix is gone; system: cvmfs_prefix (the CVMFS layout) is not."""
 
-    def test_default_is_none(self):
-        args = _parse(["build", "--force-unknown-architecture",
-                       "-a", _ARCH, "ROOT"])
-        self.assertIsNone(getattr(args, "cvmfsPrefix", None))
+    def test_cvmfs_prefix_is_refused(self):
+        with self.assertRaises(SystemExit):
+            _parse(["build", "--force-unknown-architecture", "-a", _ARCH,
+                    "--cvmfs-prefix", "/cvmfs/sft.cern.ch/lcg/releases", "ROOT"])
 
-    def test_cvmfs_prefix_stored(self):
-        args = _parse(["build", "--force-unknown-architecture",
-                       "-a", _ARCH,
-                       "--cvmfs-prefix", "/cvmfs/sft.cern.ch/lcg/releases",
-                       "ROOT"])
-        self.assertEqual(args.cvmfsPrefix, "/cvmfs/sft.cern.ch/lcg/releases")
-
-    def test_cvmfs_prefix_does_not_affect_docker_flag(self):
-        # --cvmfs-prefix alone must not implicitly enable --docker.
-        args = _parse(["build", "--force-unknown-architecture",
-                       "-a", _ARCH,
-                       "--cvmfs-prefix", "/cvmfs/sft.cern.ch/lcg/releases",
-                       "ROOT"])
-        self.assertFalse(args.docker)
-
-    def test_backward_compat_no_cvmfs_prefix(self):
-        """Existing invocations without --cvmfs-prefix are unaffected."""
+    def test_docker_build_without_it(self):
         args = _parse_with_docker(["build", "--force-unknown-architecture",
                                    "-a", _ARCH,
                                    "--docker-image", "registry.cern.ch/alisw/el9-builder",
                                    "ROOT"])
-        self.assertIsNone(getattr(args, "cvmfsPrefix", None))
+        self.assertFalse(hasattr(args, "cvmfsPrefix"))
         self.assertTrue(args.docker)
-        self.assertEqual(args.dockerImage,
-                         "registry.cern.ch/alisw/el9-builder")
-
 
 class PublishNoRelocateRemovedTest(unittest.TestCase):
     """bits publish --no-relocate is gone: a --cvmfs-prefix build is relocated too."""

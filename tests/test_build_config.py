@@ -32,8 +32,7 @@ class BuildConfigFromArgsTest(unittest.TestCase):
                     monitor="on", monitorUrl="https://m", monitorInstance="i7",
                     monitorInterval=30.0, monitorDiskInterval=90.0,
                     brew=True, autoPatch=False, autoResources=True,
-                    provider_policy={"p": "prepend"}, buildLocal=["a", "b"],
-                    cvmfsPrefix="/cvmfs/alice")
+                    provider_policy={"p": "prepend"}, buildLocal=["a", "b"])
     self.assertEqual(cfg.oversubscribe, 2.5)
     self.assertIs(cfg.unleash_final, False)
     self.assertIs(cfg.critical_path_schedule, False)
@@ -59,7 +58,6 @@ class BuildConfigFromArgsTest(unittest.TestCase):
     self.assertIs(cfg.auto_resources, True)
     self.assertEqual(cfg.provider_policy, {"p": "prepend"})
     self.assertEqual(cfg.build_local, ["a", "b"])
-    self.assertEqual(cfg.cvmfs_prefix, "/cvmfs/alice")
 
   def test_oversubscribe_zero_guards_to_one(self):
     # Resolution may set 0.0 (system: build_oversubscribe: 0); the read sites
@@ -95,7 +93,6 @@ class BuildConfigFromArgsTest(unittest.TestCase):
     self.assertIs(cfg.auto_resources, False)
     self.assertEqual(cfg.provider_policy, {})
     self.assertIsNone(cfg.build_local)
-    self.assertIsNone(cfg.cvmfs_prefix)
 
   def test_reuse_policy_falsy_guards_to_strict(self):
     self.assertEqual(self._cfg(reusePolicy="").reuse_policy, "strict")

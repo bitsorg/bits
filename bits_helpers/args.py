@@ -1724,12 +1724,6 @@ def add_build_arguments(subparsers, ctx):
   build_docker.add_argument("--container-use-workdir", dest="containerUseWorkDir", action="store_true", default=False,
                             help="Use the host work directory inside container. "
                                  "By default it uses /container/bits/sw directory inside container.")
-  build_docker.add_argument("--cvmfs-prefix", dest="cvmfsPrefix", default=None, metavar="PATH",
-                            help=("When set, bind-mount the host workDir at PATH inside the container "
-                                  "so that packages are compiled with PATH as their install prefix. "
-                                  "PATH should be the community's CVMFS releases path "
-                                  "(e.g. /cvmfs/sft.cern.ch/lcg/releases). "
-                                  "Implies --container-use-workdir behaviour for the CVMFS mount."))
   build_docker.add_argument("--docker-platform", dest="dockerPlatform", metavar="PLATFORM", default=None,
                             help=("Docker --platform argument for cross-compilation "
                                   "(e.g. linux/arm64, linux/amd64, linux/ppc64le). "

@@ -27,10 +27,9 @@ computing:
 
 **CVMFS-native publishing pipeline.** No other general-purpose build system has a
 first-class, integrated publishing path to CVMFS. Spack has community-contributed
-CVMFS support, but it is bolted on externally. The bits `--cvmfs-prefix` flag
-combined with the bits-console build pipeline produces tarballs with final CVMFS
-paths already embedded, which are ingested directly by the CVMFS publisher with no
-relocation step. For the O(10⁴) users of CERN experiment software on CVMFS this is
+CVMFS support, but it is bolted on externally. The bits-console build pipeline
+relocates each certified tarball to its final CVMFS path and hands it to the CVMFS
+publisher. For the O(10⁴) users of CERN experiment software on CVMFS this is
 the central value proposition.
 
 **Packages published once, releases as views.** With `cvmfs_packages_template` each

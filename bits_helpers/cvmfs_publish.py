@@ -1474,7 +1474,7 @@ def refuse_old_relocation(script, label, target):
     """Stop unless the tarball's *script* (relocate-me.sh) can place a package at
     *target*: one from a bits before 2026-07-11 has no BITS_RELOCATE_STRIP_PP and
     doubles <arch>/<pkg>/<ver>; one before 2026-10-09 rewrites again a target that
-    contains the build's PKG_DIR (a --cvmfs-prefix build)."""
+    contains the build's PKG_DIR (a build with the removed --cvmfs-prefix)."""
     with open(script, errors="replace") as fh:
         text = fh.read()
     if "BITS_RELOCATE_STRIP_PP" not in text:

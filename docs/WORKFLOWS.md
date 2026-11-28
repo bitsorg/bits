@@ -373,7 +373,7 @@ bits verify --from-manifest …                                            ← c
 |-------|----------|
 | Nightly slots and CI builds (the orchestrator) | `console-backend/README.md`: *Nightly schedules*, *Commit CI* |
 | Full command reference (`bits build`, `bits status`, `bits verify`, …) | [REFERENCE.md §16](REFERENCE.md#16-command-line-reference) |
-| Docker builds and `--cvmfs-prefix` | [REFERENCE.md §22](REFERENCE.md#22-docker-support) |
+| Docker builds | [REFERENCE.md §22](REFERENCE.md#22-docker-support) |
 | Remote binary store backends (S3, HTTP, rsync) | [REFERENCE.md §21](REFERENCE.md#21-remote-binary-store-backends) |
 | Repository provider feature | [REFERENCE.md §13](REFERENCE.md#13-repository-provider-feature) |
 | CVMFS publishing pipeline | [REFERENCE.md §26](REFERENCE.md#26-cvmfs-publishing-pipeline) |

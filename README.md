@@ -270,8 +270,6 @@ bits build --remote-store s3://mybucket/builds::rw ROOT
 remote store applies. `--store` is a deprecated spelling of `--remote-store` on `bits publish`,
 `certify`, `sign`, `compliance`, `prune` and `bits store upload` (not on `bits build`).
 
-The `--cvmfs-prefix` flag (which embeds the final CVMFS deployment path at compile time so no relocation is needed at publish time) is used by the **bits-console-triggered CI pipeline** on the build runners — they are not normally typed by end users. See [WORKFLOWS.md Phase 4](docs/WORKFLOWS.md#phase-4--ci-build-and-cvmfs-publication-via-bits-console) for the user-facing workflow and [docs/REFERENCE.md §22](docs/REFERENCE.md#22-docker-support) for the flag reference.
-
 [Docker support](docs/REFERENCE.md#22-docker-support) | [Cross-compilation via QEMU](docs/REFERENCE.md#222-cross-compilation-via-qemu) | [Remote stores](docs/REFERENCE.md#21-remote-binary-store-backends)
 
 ---

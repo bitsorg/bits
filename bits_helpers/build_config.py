@@ -57,7 +57,6 @@ class BuildConfig:
   auto_resources: bool           # measurement-driven --builders
   provider_policy: dict          # provider prepend/append overrides
   build_local: object            # None | str | comma-list (site normalises)
-  cvmfs_prefix: Optional[str]    # CVMFS prefix override
 
   @classmethod
   def from_args(cls, args):
@@ -94,5 +93,4 @@ class BuildConfig:
         auto_resources=getattr(args, "autoResources", False),
         provider_policy=getattr(args, "provider_policy", {}),
         build_local=getattr(args, "buildLocal", None),
-        cvmfs_prefix=getattr(args, "cvmfsPrefix", None),
     )

@@ -129,9 +129,8 @@ the result for:
 
 - **provenance:** the resolved paths are recorded in each package's `.meta.json`,
   so publishing and the release-view tools find the target trees without
-  re-reading the defaults profile. Docker builds do *not* take `--cvmfs-prefix`
-  from the layout: they build relocatably and are relocated on publish; pass
-  `--cvmfs-prefix` explicitly to compile at the final CVMFS path;
+  re-reading the defaults profile. Builds, in Docker or not, build relocatably
+  and are relocated to these paths on publish;
 - **reuse:** `--reuse-from cvmfs` resolves the deployed modules tree from the
   same layout (or, if none is declared, from the group's
   `cvmfs_modules_template`), so already-deployed components are set up from
@@ -982,7 +981,7 @@ A selection of the main test files (`tests/` holds over 100):
 | Test file | What it covers |
 |-----------|---------------|
 | `test_args.py` | CLI argument parsing (legacy tests) |
-| `test_new_args.py` | New CLI arguments: `bits prune`/`cleanup` subparser, `--cvmfs-prefix`; store/publish group renames; backward-compatibility assertions |
+| `test_new_args.py` | New CLI arguments: `bits prune`/`cleanup` subparser; store/publish group renames; backward-compatibility assertions |
 | `test_cleanup.py` | `bits_helpers/cleanup.py`: sentinel paths, LRU eviction, age-based eviction, disk-pressure mode, flock concurrency safety |
 | `test_container_workdir.py` | `container_workDir` / `cachedTarball` path rewriting logic in `build.py`; all four flag combinations; `re.escape()` correctness for paths with regex metacharacters |
 | `test_always_on_providers.py` | `_parse_provider_url`, `_make_bits_providers_spec`, `load_always_on_providers` (BITS_PROVIDERS path, `always_load` scan, double-clone prevention, failure isolation) |
@@ -1176,8 +1175,7 @@ Build in a container with your own image, for another Linux or CPU, and isolate 
 | `--docker-image IMAGE` | Docker image to use. Implies `--docker`. Default: derived from the architecture and registry (see [§22](#22-docker-support)). |
 | `--docker-extra-args ARGS` | Extra arguments for `docker run`. Implies `--docker`. bits always adds `--network=host` and, unless given, `--cpuset-cpus=<host CPUs>`. |
 | `-v VOLUME` | Additional volume to mount in the container (repeatable; passed to `docker run`). |
-| `--cvmfs-prefix PATH` | Bind-mount the work directory at `PATH` inside the container so packages compile with their final CVMFS paths embedded and need no relocation at publish time. Only used with `--docker`. See [No-relocation builds](#no-relocation-builds-with---cvmfs-prefix). |
-| `--container-use-workdir` | Mount the work directory at the same absolute path inside the container (without this flag it is mounted at `/container/bits/sw`). Ignored when `--cvmfs-prefix` is set. |
+| `--container-use-workdir` | Mount the work directory at the same absolute path inside the container (without this flag it is mounted at `/container/bits/sw`). |
 | `--confine-work-dir` | Mount the work directory read-only, but for the package's own paths: its `BUILD/<hash>`, `INSTALLROOT/<hash>`, `TMP/<hash>`, tarball folder, installation and fetch cache. A build can then not change another package's files. For shared build hosts; needs `--docker`. See [workDir mount point inside the container](#workdir-mount-point-inside-the-container). |
 | `--docker-platform PLATFORM` | Docker `--platform` for cross-compilation (e.g. `linux/arm64`). Inferred automatically from `--architecture`; pass `native` to suppress. Requires QEMU binfmt handlers. See [§22.2 Cross-compilation via QEMU](#222-cross-compilation-via-qemu). |
 | `--sandbox MODE` | Sandbox recipe builds: `off` (default), `auto`, `podman`, or `sandbox-exec` (macOS). See [§22.1 Recipe Sandbox](#221-recipe-sandbox). |
@@ -2469,7 +2467,7 @@ The shell reads `prefix` and `cvmfs_modules_template` as plain `key: value` line
 modules template that is not `<absolute directory with {arch} or {install_dir}>/{pkg}`,
 or a file without `prefix`, gives `bits q`, `enter` and `load` no CVMFS modules.
 
-Before a package is unpacked, its tarball's sha256 must be the one certified for it: the entry of the store's signed manifests (`--trust-manifest URLS`, default the store's, found as a build finds them; `none` uses the build manifest alone), else, for a build not signed yet, the build manifest's `tarball_sha256`. A local tarball that differs is replaced by the certified object fetched from the store (`--store`, comma-separated, default `$BITS_REMOTE_STORE`, else `$REMOTE_STORE`); without one the package is refused. A tarball packed by a bits older than 2026-07-11 is refused too (by `bits publish PACKAGE` as well): its `relocate-me.sh` cannot place it on CVMFS; so is one older than 2026-10-09 whose target contains its build's `PKG_DIR` (a `--cvmfs-prefix` build). Rebuild such a package.
+Before a package is unpacked, its tarball's sha256 must be the one certified for it: the entry of the store's signed manifests (`--trust-manifest URLS`, default the store's, found as a build finds them; `none` uses the build manifest alone), else, for a build not signed yet, the build manifest's `tarball_sha256`. A local tarball that differs is replaced by the certified object fetched from the store (`--store`, comma-separated, default `$BITS_REMOTE_STORE`, else `$REMOTE_STORE`); without one the package is refused. A tarball packed by a bits older than 2026-07-11 is refused too (by `bits publish PACKAGE` as well): its `relocate-me.sh` cannot place it on CVMFS; so is one older than 2026-10-09 whose target contains its build's `PKG_DIR` (a build with the removed `--cvmfs-prefix`). Rebuild such a package.
 
 `bits cvmfs publish` places every package of the build with the build's own CVMFS
 templates (recorded in its manifest). A group that sets `cvmfs_packages_template`
@@ -4577,28 +4575,15 @@ The build runs under your own user ID, with `HOME=/tmp` and `SHELL=/bin/bash`. B
 
 ### workDir mount point inside the container
 
-By default the workDir is bind-mounted at `/container/bits/sw` inside the container, so that the container-internal paths do not collide with the host paths. Two flags change this behaviour:
+By default the workDir is bind-mounted at `/container/bits/sw` inside the container, so that the container-internal paths do not collide with the host paths. One flag changes this behaviour:
 
 | Flag | Effect |
 |------|--------|
 | `--container-use-workdir` | Mount the workDir at the same path as on the host (i.e. `container_workDir = workDir`). Useful when the host and container share the same filesystem. |
-| `--cvmfs-prefix PATH` | Mount the workDir at `PATH` inside the container. Packages then compile with `PATH` embedded in all install-time paths. |
 
 Whatever its mount point, the work dir is read-write in the container, but for what the host reuses after a build (`REPOS/`, the git mirrors, `LOGS/`, `MANIFESTS/`, a CI job's `jobs/`) and `SOURCES/`. With `--confine-work-dir` it is read-only, and only the package's own paths are mounted read-write. bits makes them before the container starts and stops when one is reached through a symlink. The `latest` links and the tarball's version link are made by bits on the host. A recipe that writes elsewhere in the work dir (another package's installation, `MODULES/`) fails with "Read-only file system". Two of its paths are per version, not per build: its installation (`<arch>/<pkg>/<version>-<revision>`) and its fetch cache, so a build of the same version can still change them.
 
-### No-relocation builds with `--cvmfs-prefix`
-
-In a conventional CVMFS publishing workflow the package is first compiled with the bits workDir as its install prefix (e.g. `/data/alice/sw/slc9_x86-64/ROOT/6.32.0-1`), and then `relocate-me.sh` rewrites every embedded path to the final CVMFS location (e.g. `/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0`). Relocation is a post-build transformation that can be expensive for packages with many compiled files.
-
-`--cvmfs-prefix` (with `--docker`) removes this step: the workDir is mounted at the final CVMFS prefix inside the container, so install paths embedded at build time already point under that prefix. The package is installed at `<prefix>/<arch>[/<family>]/<package>/<version>-<revision>`.
-
-```bash
-bits build --docker \
-           --cvmfs-prefix /cvmfs/sft.cern.ch/lcg/releases \
-           ROOT
-```
-
-**Persistent workDir across CI jobs.** For communities that publish to CVMFS regularly, keeping the workDir alive between CI jobs (on a persistent build runner) turns `--cvmfs-prefix` into an incremental cache: only packages whose recipe or source changed are rebuilt; already-installed dependencies are reused from the previous run. The `bits prune` subcommand manages the cache size over time (see [bits prune](#bits-prune)).
+**Persistent workDir across CI jobs.** For communities that publish to CVMFS regularly, keeping the workDir alive between CI jobs (on a persistent build runner) turns it into an incremental cache: only packages whose recipe or source changed are rebuilt; already-installed dependencies are reused from the previous run. The `bits prune` subcommand manages the cache size over time (see [bits prune](#bits-prune)).
 
 ---
 

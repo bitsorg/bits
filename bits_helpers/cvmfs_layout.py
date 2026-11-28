@@ -23,10 +23,8 @@ trees and are published separately. ``shared_dir`` is deliberately NOT arch-
 scoped: noarch packages live in one place regardless of build architecture.
 
 ``install_path`` / ``module_path`` / ``shared_path`` / ``views_path`` are the resolved absolutes
-(``cvmfs_dir`` joined with the relative dir). When the build runs in a docker
-container, ``install_path`` is the natural value for ``--cvmfs-prefix`` (build
-in place, no-op relocation); ``cvmfs_dir`` is the natural ``--remote-store
-cvmfs://`` root for reusing already-deployed components.
+(``cvmfs_dir`` joined with the relative dir). ``cvmfs_dir`` is the natural
+``--remote-store cvmfs://`` root for reusing already-deployed components.
 """
 
 import os

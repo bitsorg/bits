@@ -2526,8 +2526,7 @@ def build_one_package(p, ctx):
         return
       _runtime_work = workDir
       if args.docker:
-        _runtime_work = (cfg.cvmfs_prefix or
-                         (workDir if args.containerUseWorkDir else "/container/bits/sw"))
+        _runtime_work = workDir if args.containerUseWorkDir else "/container/bits/sw"
       _local_reuse = stage_reused_package(
           spec, _linked["install_base"], workDir, args.architecture,
           runtime_work_dir=_runtime_work, source_path=_linked["source"],
@@ -3202,15 +3201,7 @@ def build_one_package(p, ctx):
   container_workDir = ""
   cachedTarball = spec["cachedTarball"]
   if args.docker:
-    cvmfs_prefix = cfg.cvmfs_prefix
-    if cvmfs_prefix:
-      # When --cvmfs-prefix is set, mount workDir at the CVMFS path inside
-      # the container.  The build system then compiles packages with their
-      # final CVMFS install prefix, eliminating the relocation step on publish.
-      container_workDir = cvmfs_prefix
-      # Adjust any cached tarball path the same way.
-      cachedTarball = re.sub("^" + re.escape(workDir), container_workDir, cachedTarball)
-    elif not args.containerUseWorkDir:
+    if not args.containerUseWorkDir:
       container_workDir = "/container/bits/sw"
       cachedTarball = re.sub("^" + re.escape(workDir), container_workDir, cachedTarball)
     else:
