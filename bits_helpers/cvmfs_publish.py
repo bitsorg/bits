@@ -775,6 +775,14 @@ def published_state(ctx, path):
     return None
 
 
+def published_states(ctx, paths):
+    """{path: published_state(ctx, path)} for *paths*, 8 asked at a time."""
+    from concurrent.futures import ThreadPoolExecutor
+    paths = list(dict.fromkeys(paths))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return dict(zip(paths, pool.map(lambda p: published_state(ctx, p), paths)))
+
+
 PUBLISHED_FILES_BATCH = 200   # prepub answers at most 512 paths per request
 
 
@@ -873,7 +881,7 @@ def module_links(ctx, specs):
             if (ctx.get("templates") or {}).get("modules") else None)
     if not root:
         return None
-    links = []
+    cands = []
     for s_ in specs:
         mod = _spec_path(s_, ctx, "modules")
         if not mod:
@@ -881,17 +889,15 @@ def module_links(ctx, specs):
         rev = s_.get("revision", "")
         link = "%s/%s" % (mod, s_.get("version", "") + ("-" + rev if rev else ""))
         target = "%s/etc/modulefiles/%s" % (package_path(s_, ctx), s_["package"])
-        has = s_.get("_modulefile")   # known when this run extracted the package
-        if ctx["submit"]:
-            st = published_state(ctx, link)
-            if st and st.get("exists"):
-                continue
-            if has is None:           # published before: ask whether it has one
-                st = published_state(ctx, target)
-                has = bool(st and st.get("exists"))
-        if has:
-            links.append((link, target))
-    return root, links
+        cands.append((link, target, s_.get("_modulefile")))   # known when this run extracted it
+    if ctx["submit"]:
+        st = published_states(ctx, [link for link, _t, _h in cands])
+        cands = [c for c in cands if not (st[c[0]] and st[c[0]].get("exists"))]
+        # published before: ask whether the package has a modulefile
+        st = published_states(ctx, [t for _l, t, has in cands if has is None])
+        cands = [(l, t, bool(st[t] and st[t].get("exists")) if has is None else has)
+                 for l, t, has in cands]
+    return root, [(link, target) for link, target, has in cands if has]
 
 
 def publish_links(ctx, root, links, label):
@@ -2323,14 +2329,13 @@ def _publish_release_links(ctx, specs, emit):
     platforms) and ingest only adds, so only the missing links are sent; an
     existing link is kept as it is. Returns the rc contribution."""
     root = view_root(ctx)
-    links = []
+    wanted = []
     for s_ in specs:
         vpath = _spec_path(s_, ctx, "view")
-        if not vpath:
-            continue
-        st = published_state(ctx, vpath) if ctx["submit"] else None
-        if not (st and st.get("exists")):
-            links.append((vpath, package_path(s_, ctx)))
+        if vpath:
+            wanted.append((vpath, package_path(s_, ctx)))
+    st = published_states(ctx, [v for v, _p in wanted]) if ctx["submit"] else {}
+    links = [(v, p) for v, p in wanted if not (st.get(v) and st[v].get("exists"))]
     label = "release-view@%s" % root
     if not links:
         emit(["SKIPPED %s: every link is already published" % label])

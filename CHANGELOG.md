@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Improvement]** `bits cvmfs publish` asks prepub whether each release link and module link is published 8 at a time: it asked once per package, one after the other.
 - **[Improvement]** `bits compliance` (the audit and `--enforce`) reads the store's manifests 8 at a time: it fetched them one by one, one request per BOM per run.
 - **[Improvement]** `bits sign` checks the store objects of a certification 8 at a time: it asked (and, for a new object, downloaded and hashed) one after the other. The orchestrator's certifier, whose digest cache is an sqlite connection, still checks one by one.
 - **[Fix]** An SBOM leaves out a source URL's fragment when it carries a secret (`#access_token=…`), as it did the query; a secret in the URL's path cannot be told apart and stays.

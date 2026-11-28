@@ -2342,5 +2342,32 @@ class TestPublishOverlayTars(unittest.TestCase):
             P._publish_tar = orig
 
 
+class PublishedStatesTest(unittest.TestCase):
+    """prepub is asked about many paths 8 at a time, each answer by its path."""
+
+    def test_concurrent_by_path(self):
+        # NEGATIVE CONTROL: ask one at a time and the peak is 1.
+        import threading
+        import time as _t
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        lock, live, peak = threading.Lock(), [0], [0]
+
+        def state(ctx, path):
+            with lock:
+                live[0] += 1
+                peak[0] = max(peak[0], live[0])
+            _t.sleep(0.02)
+            with lock:
+                live[0] -= 1
+            return {"exists": path.endswith("1")}
+        paths = ["p%d" % i for i in range(20)] + ["p1"]
+        with mock.patch.object(cp, "published_state", state):
+            got = cp.published_states({}, paths)
+        self.assertEqual(sorted(got), sorted(set(paths)))
+        self.assertEqual([p for p, s in got.items() if s["exists"]], ["p1", "p11"])
+        self.assertGreater(peak[0], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
