@@ -291,7 +291,7 @@ See: [bits stats](REFERENCE.md#bits-stats).
 
 ### How do I build in docker with my own image?
 
-Use `bits build --docker-image IMAGE ...`, which implies `--docker`; without it the image is derived from the architecture and registry. Extra `docker run` arguments go in `--docker-extra-args ARGS` (bits always adds `--network=host` and, unless given, `--cpuset-cpus=<host CPUs>`), and `-v VOLUME` mounts an additional volume (repeatable).
+Use `bits build --docker-image IMAGE ...`, which implies `--docker`; without it the image is derived from the architecture and registry. Extra `docker run` arguments go in `--docker-extra-args ARGS` (bits adds, unless given, `--network=host` and `--cpuset-cpus=<host CPUs>`), and `-v VOLUME` mounts an additional volume (repeatable).
 
 See: [bits build](REFERENCE.md#bits-build).
 

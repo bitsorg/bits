@@ -233,6 +233,14 @@ class CpusetInjectionTestCase(unittest.TestCase):
     args = self._parse("build zlib -a slc7_x86-64 --docker", cpuset_return="0-7")
     self.assertIn("--network=host", args["docker_extra_args"])
 
+  def test_a_network_given_replaces_host(self):
+    # NEGATIVE CONTROL: append --network=host always and both reach the engine.
+    for given in ("--network=bridge", "--net=none", "--network bridge"):
+      with self.subTest(given=given):
+        args = self._parse("build zlib -a slc7_x86-64 --docker-extra-args='%s'" % given,
+                           cpuset_return="0-7")
+        self.assertNotIn("--network=host", args["docker_extra_args"])
+
   def test_host_online_cpus_sysfs(self):
     """_host_online_cpus() reads /sys/devices/system/cpu/online when available."""
     mock_open = mock.mock_open(read_data="0-11\n")

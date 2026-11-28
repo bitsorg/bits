@@ -409,7 +409,7 @@
   must_not: []
   answer: Use `bits build --docker-image IMAGE ...`, which implies `--docker`; without it the image is
     derived from the architecture and registry. Extra `docker run` arguments go in `--docker-extra-args
-    ARGS` (bits always adds `--network=host` and, unless given, `--cpuset-cpus=<host CPUs>`), and `-v
+    ARGS` (bits adds, unless given, `--network=host` and `--cpuset-cpus=<host CPUs>`), and `-v
     VOLUME` mounts an additional volume (repeatable).
 - id: build-offline-laptop
   kind: docs

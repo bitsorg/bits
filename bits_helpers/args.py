@@ -1717,8 +1717,9 @@ def add_build_arguments(subparsers, ctx):
                             help=("Command-line arguments to pass to 'docker run'. "
                                   "Passed through verbatim -- separate multiple arguments "
                                   "with spaces, and make sure quoting is correct! Implies --docker. "
-                                  "bits always appends --network=host (--network=none for a recipe "
-                                  "the sandbox keeps offline) and, unless already present, "
+                                  "bits appends --network=host unless a network is given here "
+                                  "(--network=none for a recipe the sandbox keeps offline) and, "
+                                  "unless already present, "
                                   "--cpuset-cpus=<host-online-CPUs> so that make -j "
                                   "see the full host core count. Pass --cpuset-cpus=... explicitly "
                                   "to override the automatic value."))
@@ -2371,7 +2372,9 @@ def _finalise_docker(args, parser):
   choose(getattr(args, "containerEngine", None))
 
   args.docker_extra_args = shlex.split(args.docker_extra_args)
-  args.docker_extra_args.append("--network=host")
+  if not any(a in ("--network", "--net") or a.startswith(("--network=", "--net="))
+             for a in args.docker_extra_args):   # one given here is the one used
+    args.docker_extra_args.append("--network=host")
   # Pin the build container to the full set of online host CPUs so that
   # make -j sees the real core count rather than the cgroup
   # quota inherited from the GitLab runner process.

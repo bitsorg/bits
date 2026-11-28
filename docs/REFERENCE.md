@@ -1174,7 +1174,7 @@ Build in a container with your own image, for another Linux or CPU, and isolate 
 | `--docker` | Build inside a Docker container. |
 | `--container-engine docker\|podman` | The engine containers run with (default: `$BITS_CONTAINER_ENGINE`, else `docker`). `podman` runs them rootless (see [Rootless podman](#22-docker-support)); also for `bits deps`, `bits doctor` and `bits status`. |
 | `--docker-image IMAGE` | Docker image to use. Implies `--docker`. Default: derived from the architecture and registry (see [§22](#22-docker-support)). |
-| `--docker-extra-args ARGS` | Extra arguments for `docker run`. Implies `--docker`. bits always adds `--network=host` and, unless given, `--cpuset-cpus=<host CPUs>`. |
+| `--docker-extra-args ARGS` | Extra arguments for `docker run`. Implies `--docker`. bits adds, unless given, `--network=host` and `--cpuset-cpus=<host CPUs>`. |
 | `-v VOLUME` | Additional volume to mount in the container (repeatable; passed to `docker run`). |
 | `--container-use-workdir` | Mount the work directory at the same absolute path inside the container (without this flag it is mounted at `/container/bits/sw`). |
 | `--confine-work-dir` | Mount the work directory read-only, but for the package's own paths: its `BUILD/<hash>`, `INSTALLROOT/<hash>`, `TMP/<hash>`, tarball folder, installation and fetch cache. A build can then not change another package's files. For shared build hosts; needs `--docker`. See [workDir mount point inside the container](#workdir-mount-point-inside-the-container). |
@@ -4570,7 +4570,7 @@ Without `--docker-image`, the image is derived from the architecture as `<regist
 
 Bits mounts into the container the work directory (read-write, except `SOURCES/`, which is read-only so a recipe cannot modify shared sources in place; `BITS_READONLY_SOURCES=0` turns this off), the recipe directory (read-only), the bits installation, and any `-v` volumes. `~/.ssh` is **not** mounted. When components deployed on CVMFS are reused (`--reuse-from`), `/cvmfs` is also mounted read-only.
 
-The build runs under your own user ID, with `HOME=/tmp` and `SHELL=/bin/bash`. Bits adds `--network=host` to `docker run` and, unless you pass them yourself in `--docker-extra-args`, `--cpuset-cpus=<all online host CPUs>` and a memory cap of host memory minus max(4 GiB, 10 %) (`BITS_DOCKER_MEMORY=<size>` sets the cap, `BITS_DOCKER_MEMORY=off` removes it).
+The build runs under your own user ID, with `HOME=/tmp` and `SHELL=/bin/bash`. Unless you pass them yourself in `--docker-extra-args`, bits adds `--network=host`, `--cpuset-cpus=<all online host CPUs>` and a memory cap of host memory minus max(4 GiB, 10 %) (`BITS_DOCKER_MEMORY=<size>` sets the cap, `BITS_DOCKER_MEMORY=off` removes it).
 
 **Rootless podman.** With `--container-engine podman` (or `BITS_CONTAINER_ENGINE=podman`), bits runs its containers with podman itself: no root daemon, and a recipe that leaves its container has only your own privileges. The same holds when `docker` is podman run by a non-root user (for example via `podman-docker`). Either way bits runs the container with `--userns=keep-id` instead of `--user`, disables SELinux labelling (`--security-opt=label=disable`) unless you pass a `--security-opt` yourself, and drops any CPU or memory limit whose cgroup controller is not delegated to your user, with a warning explaining how to delegate it. `bits doctor` checks this setup.
 

@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** A network given in `--docker-extra-args` (`--network=…`, `--net …`) is the one the build container uses: bits appended `--network=host` after it, so both reached the engine.
 - **[Fix]** A `%` in a `--reference-sources` path is taken as it is, and `--from-manifest` with a JSON file that is not an object says so: both ended in a traceback.
 - **[Fix]** `bits sbom` (and the release SBOMs) render a manifest whose package `hash` is not a string, or whose licence nests more than 32 parentheses (not taken as an SPDX expression), instead of ending in a traceback.
 - **[Change]** `bits cleanup --retain` removes a store or BUILD folder only when its name is a bits hash (40 hex digits), as the leftovers sweep does: it took 40 to 64.
