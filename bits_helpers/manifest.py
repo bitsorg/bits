@@ -385,6 +385,19 @@ def sbom_tool(spec):
 
 # ── BuildManifest ─────────────────────────────────────────────────────────────
 
+def _new_file(directory, stem):
+    """A new, empty <stem>.json in *directory*, else <stem>-2.json, ...: two builds
+    of one target started in the same second each get their own."""
+    for n in range(1, 1000):
+        path = os.path.join(directory, stem + ("-%d" % n if n > 1 else "") + ".json")
+        try:
+            open(path, "x").close()
+            return path
+        except FileExistsError:
+            continue
+    raise OSError("no free name for %s in %s" % (stem, directory))
+
+
 class BuildManifest:
     """Incremental build manifest written to ``$WORK_DIR/bits-manifest-*.json``.
 
@@ -425,12 +438,12 @@ class BuildManifest:
         # Sanitise the target name so it is always safe as a filename component
         # (package names are typically alphanumeric + hyphens, but guard anyway).
         _safe_target = re.sub(r"[^A-Za-z0-9_.+-]", "_", target) if target else ""
-        _name = (
-            "bits-manifest-{}-{}.json".format(_safe_target, timestamp)
+        _stem = (
+            "bits-manifest-{}-{}".format(_safe_target, timestamp)
             if _safe_target
-            else "bits-manifest-{}.json".format(timestamp)
+            else "bits-manifest-{}".format(timestamp)
         )
-        self._path = os.path.join(self._manifest_dir, _name)
+        self._path = _new_file(self._manifest_dir, _stem)
         # Disk-write coordination: _save serialises a snapshot under _lock,
         # _write_pending performs the I/O under _io_lock with a monotonic
         # sequence so racing writers converge on the newest snapshot.
@@ -462,7 +475,12 @@ class BuildManifest:
         if cvmfs_templates:
             self._data["cvmfs_templates"] = dict(cvmfs_templates)
         self._save()
-        self._write_pending()
+        try:
+            self._write_pending()
+        except BaseException:
+            if not os.path.getsize(self._path):   # the reserved name, still empty
+                os.unlink(self._path)
+            raise
         debug("manifest: initialised at %s", self._path)
 
     # ── Accessors ─────────────────────────────────────────────────────────────
@@ -753,7 +771,7 @@ class BuildManifest:
             # Update the ``bits-manifest-latest.json`` symlink atomically.
             # The symlink lives alongside the timestamped files inside MANIFESTS/.
             latest = os.path.join(self._manifest_dir, self._LATEST_SYMLINK)
-            tmp_link = latest + ".tmp"
+            tmp_link = "%s.%d.tmp" % (latest, os.getpid())   # another bits may be here too
             try:
                 if os.path.lexists(tmp_link):
                     os.unlink(tmp_link)

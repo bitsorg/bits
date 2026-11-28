@@ -674,6 +674,25 @@ class TestLatestSymlink(unittest.TestCase):
         self.assertEqual(os.readlink(latest), os.path.basename(m2.path))
 
 
+    def test_two_builds_in_one_second_keep_their_own_files(self):
+        # NEGATIVE CONTROL: name the file by the timestamp alone and m1's is overwritten.
+        from datetime import datetime, timezone
+        fixed = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed
+        with patch("bits_helpers.manifest.datetime", _Clock):
+            m1, m2 = _make_manifest(self.tmp), _make_manifest(self.tmp)
+        self.assertNotEqual(m1.path, m2.path)
+        m1.add_package(_make_spec(pkg="A"), "already_installed")
+        m1.flush()
+        m2.flush()
+        with open(m1.path) as fh:
+            self.assertEqual([p["package"] for p in json.load(fh)["packages"]], ["A"])
+
+
 # ── _git_remote_url ───────────────────────────────────────────────────────────
 
 class TestGitRemoteUrl(unittest.TestCase):
