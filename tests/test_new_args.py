@@ -102,6 +102,30 @@ class CleanupSubparserTest(unittest.TestCase):
         self.assertEqual(args.workDir, "/data/lhcb/sw")
 
 
+class PercentAndManifestShapeTest(unittest.TestCase):
+    """A % in a path, or a manifest that is not an object: an answer, not a traceback."""
+
+    def test_percent_in_reference_sources(self):
+        # NEGATIVE CONTROL: format it with % again and this is a ValueError.
+        args = _parse(["build", "--force-unknown-architecture", "-a", _ARCH,
+                       "--reference-sources", "/data/100%/MIRROR", "ROOT"])
+        self.assertEqual(args.referenceSources, "/data/100%/MIRROR")
+        args = _parse(["build", "--force-unknown-architecture", "-a", _ARCH, "ROOT"])
+        self.assertEqual(args.referenceSources, "sw/MIRROR")
+
+    def test_from_manifest_that_is_a_list(self):
+        import json, tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump(["ROOT"], fh)
+        self.addCleanup(os.unlink, fh.name)
+        import contextlib, io
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(err):
+            _parse(["build", "--force-unknown-architecture", "-a", _ARCH,
+                    "--from-manifest", fh.name, "ROOT"])
+        self.assertIn("not a build manifest", err.getvalue())
+
+
 class BuildCvmfsPrefixRemovedTest(unittest.TestCase):
     """bits build --cvmfs-prefix is gone; system: cvmfs_prefix (the CVMFS layout) is not."""
 

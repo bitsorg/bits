@@ -2510,7 +2510,7 @@ def finaliseArgs(args, parser):
     args.disable       = normalise_multiple_options(args.disable)
     args.force_rebuild = normalise_multiple_options(args.force_rebuild)
     args.flavours      = _parse_flavours(getattr(args, "flavours", None))
-    args.referenceSources = args.referenceSources % {"workDir": args.workDir}
+    args.referenceSources = args.referenceSources.replace("%(workDir)s", args.workDir)
     # Repository-provider configuration, mirroring the general path below:
     # `bits status` reports what `bits build` WOULD do, so it must resolve
     # recipes through the same provider repositories — without this it
@@ -2574,10 +2574,13 @@ def finaliseArgs(args, parser):
         _manifest_data = json.load(_fh)
     except (ValueError, OSError) as _exc:
       parser.error("--from-manifest: cannot read manifest: %s" % _exc)
+    if not isinstance(_manifest_data, dict):
+      parser.error("--from-manifest: %s is not a build manifest (not a JSON object)" % from_manifest)
     # If no packages were given on the command line, fill them in from the
     # manifest so the user can just say: bits build --from-manifest FILE
     if not getattr(args, "pkgname", None):
-      args.pkgname = list(_manifest_data.get("requested_packages", []))
+      _req = _manifest_data.get("requested_packages")
+      args.pkgname = [p for p in _req if isinstance(p, str)] if isinstance(_req, list) else []
       if not args.pkgname:
         parser.error("--from-manifest: manifest has no 'requested_packages'")
     # Keep the loaded manifest on args (currently only requested_packages is used).
@@ -2616,7 +2619,7 @@ def finaliseArgs(args, parser):
     args.force_rebuild = normalise_multiple_options(args.force_rebuild)
 
   if args.action in ["build", "init"]:
-    args.referenceSources = args.referenceSources % {"workDir": args.workDir}
+    args.referenceSources = args.referenceSources.replace("%(workDir)s", args.workDir)
     # Do this cleanup as early as possible to avoid false positives due to
     # stale git logs from previous invocations.
     cleanup_git_log(args.referenceSources)
