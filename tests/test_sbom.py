@@ -398,5 +398,22 @@ class TestSchemaValidation(unittest.TestCase):
             self.assertEqual(validate_full_spdx_document(parse_file(path)), [])
 
 
+class TestMalformedManifest(unittest.TestCase):
+    """A hash that is not a string or a deeply nested licence renders, without a traceback."""
+
+    def test_it_renders(self):
+        # NEGATIVE CONTROL: without the checks, a TypeError and a RecursionError.
+        m = {"schema_version": 4, "packages": [
+            {"package": "A", "version": "1", "hash": 12345,
+             "license": "(" * 400 + "MIT" + ")" * 400},
+            {"package": "B", "version": "2", "hash": ["x"], "license": "MIT"}]}
+        for fmt in sbom.FILES:
+            self.assertIn("B", sbom.render(m, fmt, "b"))
+        self.assertIsNone(sbom.spdx_expression("(" * 400 + "MIT" + ")" * 400))
+        self.assertEqual(sbom.spdx_expression("((MIT))"), "((MIT))")
+        many = " AND ".join(["(MIT OR Apache-2.0)"] * 40)          # wide, not deep
+        self.assertEqual(sbom.spdx_expression(many), many)
+
+
 if __name__ == "__main__":
     unittest.main()

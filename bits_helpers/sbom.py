@@ -89,6 +89,11 @@ def spdx_expression(text):
     one (unknown ids, free text, local LicenseRef with bad characters, or a
     DocumentRef, which would need an external document)."""
     tokens = re.findall(r"\(|\)|[^\s()]+", str(text or ""))
+    depth = 0
+    for tok in tokens:   # no real licence nests deeper; the parser recurses
+        depth += (tok == "(") - (tok == ")")
+        if depth > 32:
+            return None
     pos, out = 0, []
 
     def peek():
@@ -233,10 +238,11 @@ def components(manifest):
         if not isinstance(e, dict) or not e.get("package") or _skip(e["package"]) \
                 or e.get("provides_repository"):
             continue
-        name, key = str(e["package"]), e.get("hash") or _full_version(e)
+        h = e.get("hash") if isinstance(e.get("hash"), str) else ""
+        name, key = str(e["package"]), h or _full_version(e)
         if any((c["name"], c["key"]) == (name, key) for c in built):
             continue   # listed twice (e.g. several build passes)
-        ident = e.get("hash", "")[:16] if e.get("hash") else _full_version(e) or "unversioned"
+        ident = h[:16] if h else _full_version(e) or "unversioned"
         c = {"name": name, "key": key, "entry": e, "system": False,
              "ref": unique("%s@%s" % (name, ident))}
         built.append(c)

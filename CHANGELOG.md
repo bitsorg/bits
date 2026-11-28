@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits sbom` (and the release SBOMs) render a manifest whose package `hash` is not a string, or whose licence nests more than 32 parentheses (not taken as an SPDX expression), instead of ending in a traceback.
 - **[Change]** `bits cleanup --retain` removes a store or BUILD folder only when its name is a bits hash (40 hex digits), as the leftovers sweep does: it took 40 to 64.
 - **[Fix]** `bits compliance --enforce` and the other orchestrator actions report an action the console answers without an id as it is, instead of a traceback (KeyError).
 - **[Fix]** Two builds of one target started in the same second write their own build manifests (`bits-manifest-<target>-<time>-2.json`, ...) instead of the same file, and two bits processes in one work dir no longer race on the `latest` link's temporary name.
