@@ -145,8 +145,11 @@ def failed_in(job, phase_marks):
 
 
 def host(job, variables):
-    """The build host it ran on: the one it was pinned to (bits-host-<name>, as
-    the queue pins its builds), else its runner's description."""
+    """The build host it ran on: as read from its log (reconcile.job_host), else the
+    one it was pinned to (bits-host-<name>, as the queue pins its builds), else its
+    runner's description."""
+    if job.get("host"):
+        return str(job["host"])
     try:
         tag = str(json.loads(variables or "{}").get("BITS_RUNNER_TAG") or "")
     except (ValueError, AttributeError):

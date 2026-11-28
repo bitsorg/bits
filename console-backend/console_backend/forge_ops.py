@@ -298,6 +298,26 @@ class GitLabForge:
                 raise ForgeError(0, str(e)[:200])
             return bytes(buf[-max_bytes:])
 
+    def job_log_head(self, job_id, max_bytes=64 << 10, max_seconds=30):
+        """The start of a job's log, at most *max_bytes* (what came in *max_seconds*);
+        None when it has none."""
+        import time as _time
+        r = self._stream("/jobs/%s/trace" % job_id, {"Range": "bytes=0-%d" % (max_bytes - 1)})
+        with r:
+            if r.status_code in (404, 416):
+                return None
+            if r.status_code // 100 != 2:
+                raise ForgeError(r.status_code, "GET /jobs/%s/trace -> %s" % (job_id, r.status_code))
+            buf, began = bytearray(), _time.monotonic()
+            try:
+                for chunk in r.iter_content(16 * 1024):
+                    buf += chunk
+                    if len(buf) >= max_bytes or _time.monotonic() - began > max_seconds:
+                        break
+            except requests.RequestException as e:
+                raise ForgeError(0, str(e)[:200])
+            return bytes(buf[:max_bytes])
+
     def job_log_tail(self, job_id, max_bytes=1 << 20):
         """The end of a job's log (GitLab keeps at most its log limit, 4 MB by
         default, and cuts the rest)."""

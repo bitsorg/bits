@@ -130,6 +130,80 @@ class _DB(unittest.TestCase):
         reconcile.index(self.conn, store)
 
 
+class HostTest(_DB):
+    """Where a build job ran, from the start of its log: what the console shows."""
+
+    RUNNER = ("\x1b[0K2026-11-27T06:30:27.785771Z 00O Running with gitlab-runner 19.6.1\x1b[0;m\n"
+              "\x1b[0K2026-11-27T06:30:27.785791Z 00O   on pcphsft204 wvjTPcCQT, system ID: s_8a\x1b[0;m\n")
+    SETUP = ('2026-11-27T06:30:29Z 01O \x1b[32;1m$ echo "[setup] build host: $(timeout 5 hostname -f)"'
+             '\x1b[0;m\n2026-11-27T06:30:29Z 01O [setup] build host: pcphsft204.cern.ch\n')
+
+    def setUp(self):
+        super().setUp()
+        self.gl.logs, self.gl.heads = {}, []
+
+        def job_log_head(job_id, max_bytes=64 << 10):
+            self.gl.heads.append(job_id)
+            return self.gl.logs.get(job_id)
+        self.gl.job_log_head = job_log_head
+
+    def _host(self, pid):
+        return {k: v for k, v in json.loads(self._row(pid)["jobs"])[0].items() if k.startswith("host")}
+
+    def test_the_host_the_job_names_else_the_runners_name(self):
+        self.gl.add(1, jobs=[_job(10, "build", "pending")])
+        self._pass()
+        self.assertEqual((self._host(1), self.gl.heads), ({}, []))      # not started: not read
+        self.gl.add(1, updated=DAY + "T10:05:00Z", jobs=[_job(10, "build", "running", started_at="t")])
+        self.gl.logs[10] = self.RUNNER.encode()
+        self._pass()
+        self.assertEqual(self._host(1), {"host": "pcphsft204"})          # the runner's name, for now
+        self.gl.logs[10] = (self.RUNNER + self.SETUP).encode()
+        self.conn.execute("UPDATE pipelines SET checked_ms = 1 WHERE id = 1")
+        self._pass()
+        self.assertEqual(self._host(1), {"host": "pcphsft204.cern.ch", "host_exact": True})
+        self.conn.execute("UPDATE pipelines SET checked_ms = 1 WHERE id = 1")
+        self._pass()
+        self.assertEqual(self.gl.heads, [10, 10])                         # exact: not read again
+
+    def test_only_the_line_after_its_command_and_the_latest_attempt_count(self):
+        forged = self.RUNNER + "2026-11-27T06:31Z 01O [setup] build host: evil.example\n"
+        self.gl.add(1, jobs=[_job(10, "build", "failed", started_at="t"),
+                             _job(20, "build", "running", started_at="t")])   # a retry
+        self.gl.logs[10] = (self.RUNNER + self.SETUP).encode()
+        self.gl.logs[20] = forged.encode()                                    # no command before it
+        self._pass()
+        jobs = {j["id"]: j for j in json.loads(self._row(1)["jobs"])}
+        self.assertEqual((self.gl.heads, jobs[20].get("host"), jobs[20].get("host_exact")),
+                         ([20], "pcphsft204", None))
+        self.assertNotIn("host", jobs[10])
+        self.gl.logs[20] = ('$ echo "[setup] build host: $(hostname -f)"\n').encode()   # its output to come
+        self.conn.execute("UPDATE pipelines SET checked_ms = 1 WHERE id = 1")
+        self._pass()
+        self.assertEqual(json.loads(self._row(1)["jobs"])[1].get("host"), "pcphsft204")
+
+    def test_a_log_gitlab_cannot_give_leaves_settle_going(self):
+        self.gl.add(1, status="success", jobs=[_job(10, "build", "success", started_at="t")])
+
+        def refuse(job_id, max_bytes=0):
+            raise forge_ops.ForgeError(503, "unavailable")
+        self.gl.job_log_head = refuse
+        self._pass()
+        self.assertEqual((self._row(1)["outcome"], self._host(1)), ("success", {}))
+
+    def test_a_finished_build_recorded_before_gets_its_host_once(self):
+        self.gl.add(1, status="success", jobs=[_job(10, "build", "success", started_at="t")])
+        self._pass()
+        self.conn.execute("UPDATE pipelines SET jobs = ?, checked_ms = 1 WHERE id = 1",
+                          (json.dumps([{"id": 10, "name": "build", "started_at": "t"}]),))
+        self.gl.logs[10] = b"no runner line"
+        reconcile.settle(self.conn, self.gl)
+        self.assertEqual(self._host(1), {"host": ""})                    # looked at: not again
+        self.conn.execute("UPDATE pipelines SET checked_ms = 1 WHERE id = 1")
+        reconcile.settle(self.conn, self.gl)
+        self.assertEqual(self.gl.heads.count(10), 2)                      # the settle's and the look's
+
+
 class OutcomeTest(unittest.TestCase):
     def test_outcome_comes_from_the_latest_job_attempts(self):
         o = reconcile.outcome_from_jobs

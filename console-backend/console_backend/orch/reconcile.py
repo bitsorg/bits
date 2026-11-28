@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Reconcile: what the worker knows of builds, from GitLab and S3, never from
-what a job reports about itself.
+what a job reports about itself (but for the host it ran on, shown, never used).
 
 Each pass:
 
@@ -119,6 +119,61 @@ def outcome_from_jobs(gl_status, jobs):
     if any(j.get("status") == "success" for j in jl):
         return "success"
     return "canceled"
+
+
+# Where a build job ran, from the start of its log (for display, never a decision): the
+# host the job names itself, right after its command (cvmfs-prepub-publish.yml), else
+# the runner's own "on <name>".
+_HOST_CMD = '$ echo "[setup] build host:'
+_HOST_LINE = re.compile(r"\[setup\] build host: ([A-Za-z0-9._-]+)")
+_RUNNER_LINE = re.compile(r"^(?:\S+ \S+ )?\s*on ([A-Za-z0-9._-]+) [A-Za-z0-9_-]+(?:,|$)", re.M)
+_BUILD_JOB = re.compile(r"build")
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _build_job(summary):
+    """The latest attempt of the build job (a retry has a higher id)."""
+    jobs = [j for j in summary if _BUILD_JOB.search(j.get("name") or "")
+            and "status" not in (j.get("name") or "")]
+    return max(jobs, key=lambda j: j.get("id") or 0) if jobs else None
+
+
+def job_host(reader, job, known=None):
+    """{"host", "host_exact"} for *job* (a summary entry): *known* (an earlier pass's)
+    when it is exact or the job has not started, else read from the start of its log
+    (host "" when it names none: looked at)."""
+    known = {k: v for k, v in (known or {}).items() if k in ("host", "host_exact")}
+    read = getattr(reader, "job_log_head", None)
+    if known.get("host_exact") or not job.get("started_at") or read is None:
+        return known
+    try:
+        head = _ANSI.sub("", (read(job["id"]) or b"").decode("utf-8", "replace"))
+    except forge_ops.ForgeError as e:
+        log.info("log head of job %s: %s", job.get("id"), e)
+        return known
+    at = head.find(_HOST_CMD)
+    m = _HOST_LINE.search(head, at + len(_HOST_CMD), at + 2048) if at >= 0 else None
+    if m:
+        return {"host": m.group(1), "host_exact": True}
+    m = _RUNNER_LINE.search(head[:4096])
+    return {"host": m.group(1)} if m else {"host": known.get("host", "")}
+
+
+def _with_host(reader, summary, old_jobs):
+    """*summary* with its build job's host (see job_host), kept from *old_jobs*."""
+    job = _build_job(summary)
+    if job is not None:
+        known = next((j for j in old_jobs if j.get("id") == job.get("id")), None)
+        job.update(job_host(reader, job, known))
+    return summary
+
+
+def _old_jobs(r):
+    try:
+        old = json.loads(r["jobs"] or "[]")
+    except ValueError:
+        old = []
+    return old if isinstance(old, list) else []
 
 
 def job_summary(jobs):
@@ -357,11 +412,16 @@ def settle(conn, reader):
                                  (db.now_ms(), r["id"]))
             continue
         if r["outcome"] != "running" and r["checked_ms"]:   # the daily look: only whether it is gone
+            old = _old_jobs(r)                              # and where its build ran, if unknown
+            job = _build_job(old)
+            if job is not None and "host" not in job:
+                job.update(job_host(reader, job))
             with db.transaction(conn):
-                conn.execute("UPDATE pipelines SET checked_ms = ? WHERE id = ?", (db.now_ms(), r["id"]))
+                conn.execute("UPDATE pipelines SET checked_ms = ?, jobs = ? WHERE id = ?",
+                             (db.now_ms(), json.dumps(old) if job else r["jobs"], r["id"]))
             continue
         outcome = outcome_from_jobs(r["gl_status"], jobs)
-        summary = job_summary(jobs)
+        summary = _with_host(reader, job_summary(jobs), _old_jobs(r))
         extra = {"failed_jobs": [j["name"] for j in summary
                                  if j.get("status") == "failed" and not j.get("allow_failure")]}
         created = _when(r["created_at"])

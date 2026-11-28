@@ -137,6 +137,8 @@ class StepTest(unittest.TestCase):
         self.assertEqual([got[p]["host"] for p in (100, 101, 102)],
                          ["gjuan-desktop", "pcphsft204", "pcphsft204"])     # else the runner's description
         self.assertEqual(phases.host({"runner": "r"}, "not json"), "r")
+        self.assertEqual(phases.host({"runner": "r", "host": "h.cern.ch"},
+                                     json.dumps({"BITS_RUNNER_TAG": "bits-host-x"})), "h.cern.ch")
 
     def test_a_failed_publish_is_recorded_and_served(self):
         self._pipeline(100, [dict(_job(7), status="failed")], outcome="failed")

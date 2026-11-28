@@ -413,6 +413,22 @@ class TailTest(unittest.TestCase):
         with patch.object(forge_ops.requests, "get", lambda *a, **k: self._resp(404, [])):
             self.assertIsNone(f.job_artifact_tail(5, "bits-build.log"))
 
+    def test_the_head_asks_for_the_start_and_stops_there(self):
+        f = forge_ops.GitLabForge("https://gl/api/v4", "t", "42")
+        seen = {}
+
+        def get(url, headers, timeout, stream, allow_redirects=True):
+            seen["range"] = headers.get("Range")
+            def chunks():
+                yield from (b"start", b"x" * 10)
+                raise AssertionError("read past max_bytes")
+            return self._resp(200, chunks())                                # a whole body
+        with patch.object(forge_ops.requests, "get", get):
+            self.assertEqual(f.job_log_head(5, max_bytes=8), b"startxxx")
+        self.assertEqual(seen["range"], "bytes=0-7")
+        with patch.object(forge_ops.requests, "get", lambda *a, **k: self._resp(404, [])):
+            self.assertIsNone(f.job_log_head(5))
+
 
 class ApiTest(_DB):
     def setUp(self):

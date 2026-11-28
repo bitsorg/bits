@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** bits-console backend: a build job records the host it ran on (`host` in `/ops/builds`), from the start of its log: the host the job names (`[setup] build host:`), else the runner's own name; finished builds recorded before get it once.
 - **[Improvement]** A store tarball the signed-reuse gate checked is not hashed again for the build manifest: its digest is passed on.
 - **[Improvement]** `bits sign --digest-cache FILE` hashes a store tarball once: each object's sha256 is kept in FILE with its key, ETag and size (which S3 sets), and an unchanged object is not downloaded again; it downloaded and hashed every tarball of every BOM on every run. Off by default: FILE's entries are signed as they are, so it must be writable by the signer only (never a CI cache other jobs restore).
 - **[Improvement]** The build manifest is written at most every 5 seconds while packages are recorded (and before each build script, at the end and at exit; a killed build may miss the packages of its last seconds): it was written whole for every package, so a stack of 1000 reused packages serialised gigabytes of JSON.
