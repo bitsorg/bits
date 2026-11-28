@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** An SBOM leaves out a source URL's fragment when it carries a secret (`#access_token=…`), as it did the query; a secret in the URL's path cannot be told apart and stays.
 - **[Fix]** `bits cleanup --retain --mark-published-from` keys a CVMFS publish marker by the build's architecture and `<version>-<revision>`, which the bits-console publish record now names (`architecture`, `version_dir`): it used the console platform (`x86_64-el9` for `x86_64-el9-gcc14-opt`), so nothing was ever seen as published and the sweep released no certified content. A record entry that names a path is refused.
 - **[Fix]** A network given in `--docker-extra-args` (`--network=…`, `--net …`) is the one the build container uses: bits appended `--network=host` after it, so both reached the engine.
 - **[Fix]** A `%` in a `--reference-sources` path is taken as it is, and `--from-manifest` with a JSON file that is not an object says so: both ended in a traceback.

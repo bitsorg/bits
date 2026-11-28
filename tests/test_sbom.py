@@ -162,6 +162,9 @@ class TestComponents(unittest.TestCase):
         self.assertEqual(sbom.clean_url("https://u:p@ss@host/a.tgz?private_token=x&v=1"),
                          "https://host/a.tgz?v=1")
         self.assertEqual(sbom.clean_url("/home/u/src/root"), "")   # a development checkout
+        # A secret in the fragment goes with it; a checksum there stays.
+        self.assertEqual(sbom.clean_url("https://h/a.tgz#access_token=x"), "https://h/a.tgz")
+        self.assertEqual(sbom.clean_url("https://h/a.whl#sha256=00"), "https://h/a.whl#sha256=00")
         self.assertEqual(sbom.clean_url("git@github.com:a/b.git"), "")
         e = {"package": "p", "source": "/home/u/src/p",
              "source_checksums": [{"url": "https://t:s@x.org/p.tgz", "checksum": "sha256:abc"}]}

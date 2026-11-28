@@ -70,8 +70,12 @@ def clean_url(url):
     parts = urlsplit(url)
     q = parse_qsl(parts.query, keep_blank_values=True)
     kept = [(k, v) for k, v in q if not _SECRET_KEY.search(k)]
-    if len(kept) != len(q):   # rebuilt only when a secret was removed
-        url = urlunsplit(parts._replace(query=urlencode(kept)))
+    secret_fragment = any(_SECRET_KEY.search(k) for k, _v in
+                          parse_qsl(parts.fragment, keep_blank_values=True))
+    if len(kept) != len(q) or secret_fragment:   # rebuilt only when a secret was removed
+        url = urlunsplit(parts._replace(query=urlencode(kept) if len(kept) != len(q)
+                                        else parts.query,
+                                        fragment="" if secret_fragment else parts.fragment))
     return url
 
 
