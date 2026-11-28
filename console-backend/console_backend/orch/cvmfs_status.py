@@ -30,7 +30,8 @@ def _missing(e):
 
 
 def _built(store, keys, package):
-    """(the build arch, version-revision of *package*) from a build's BOMs. A BOM
+    """(the build arch, version-revision of *package*, its own effective architecture)
+    from a build's BOMs. A BOM
     gone from the store is passed over; any other read error is raised, so the
     build is looked at again on the next pass."""
     from bits_helpers.cvmfs_release import build_architecture, get_json, is_bom
@@ -49,13 +50,12 @@ def _built(store, keys, package):
     bom, entry = next(((b, p) for b in boms for p in b["packages"]
                        if p.get("package") == package), (None, None))
     if entry is None:
-        return "", ""
+        return "", "", ""
     rev = str(entry.get("revision") or "")
     vdir = "%s-%s" % (entry.get("version"), rev) if rev else str(entry.get("version"))
     # The build's arch as the CI job named it; older BOMs record the host's.
-    arch = build_architecture(boms) or str(entry.get("effective_architecture")
-                                           or bom.get("effective_architecture") or "")
-    return arch, vdir
+    own = str(entry.get("effective_architecture") or bom.get("effective_architecture") or "")
+    return build_architecture(boms) or own, vdir, own
 
 
 def records(conn, store, since):
@@ -76,13 +76,14 @@ def records(conn, store, since):
             log.debug("pipeline %s: no CVMFS publish (PUBLISH_CVMFS %r)",
                       r["pipeline_id"], v.get("PUBLISH_CVMFS"))
             continue
-        arch, vdir = _built(store, json.loads(r["bom_keys"] or "[]"), package)
+        arch, vdir, own = _built(store, json.loads(r["bom_keys"] or "[]"), package)
         if not (arch and vdir):
             log.warning("build %s of pipeline %s: no %s in its BOMs, no CVMFS status",
                         r["build_id"], r["pipeline_id"], package)
             continue
         out.append({"pkg_id": "%s-%s-%s" % (package, vdir, arch.replace("/", "_")),
                     "package": package, "version": v.get("VERSION", ""),
+                    "architecture": own, "version_dir": vdir,   # what bits cleanup keys by
                     "platform": v.get("PLATFORM", ""), "community": v.get("COMMUNITY", ""),
                     "published_at": r["published_at"] or time.strftime(
                         "%Y-%m-%dT%H:%M:%SZ", time.gmtime(r["recorded_ms"] / 1000)),

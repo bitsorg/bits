@@ -76,6 +76,7 @@ class CvmfsStatusTest(unittest.TestCase):
         rec = doc["packages"][1]
         self.assertEqual((rec["status"], rec["run_id"], rec["version"], rec["community"]),
                          ("published", "1", "110", "LCG"))
+        self.assertEqual((rec["architecture"], rec["version_dir"]), (ARCH, "110-2"))
         self.assertEqual(doc["updated_at"], "2026-10-20T10:00:00Z")
         # Nothing new: no upload.
         self.assertEqual(cvmfs_status.step(self.conn, forge, self.store), 0)
@@ -88,6 +89,19 @@ class CvmfsStatusTest(unittest.TestCase):
         self._build(1, "b3", ["MANIFESTS/b3/a.json"])
         cvmfs_status.step(self.conn, forge, self.store)
         self.assertEqual(forge.doc()["packages"][0]["pkg_id"], "LCG-110-3-%s" % ARCH)
+
+    def test_a_noarch_package_is_marked_under_its_own_architecture(self):
+        # bits cleanup looks a marker up by the entry's effective_architecture.
+        # NEGATIVE CONTROL: record the build arch and this says x86_64-el9-gcc14-opt.
+        self.s3.objects["MANIFESTS/b4/s.json"] = json.dumps(
+            _bom("share", [("LCG", "110", "4")])).encode()
+        self.s3.objects["MANIFESTS/b4/a.json"] = json.dumps(
+            _bom(ARCH, [("ROOT", "6", "1")])).encode()
+        forge = FakeForge()
+        self._build(1, "b4", ["MANIFESTS/b4/s.json", "MANIFESTS/b4/a.json"])
+        cvmfs_status.step(self.conn, forge, self.store)
+        rec = forge.doc()["packages"][0]
+        self.assertEqual((rec["pkg_id"], rec["architecture"]), ("LCG-110-4-%s" % ARCH, "share"))
 
     def test_a_pipeline_retried_to_success_and_a_store_error(self):
         forge = FakeForge()

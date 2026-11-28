@@ -688,19 +688,24 @@ def published_marker_path(work_dir, arch, pkg, verrev):
 
 
 def record_published(work_dir, arch, pkg, verrev):
-    """Persist "this package build is on CVMFS" (idempotent)."""
+    """Persist "this package build is on CVMFS" (idempotent); False when refused."""
+    if any(not c or "/" in c or c in (".", "..") for c in (arch, pkg, verrev)):
+        warning("retention: %r/%r/%r is not a package build: no marker", arch, pkg, verrev)
+        return False   # the record is fetched: it must not name a path elsewhere
     p = published_marker_path(work_dir, arch, pkg, verrev)
     os.makedirs(dirname(p), exist_ok=True)
     with open(p, "a"):
         pass
+    return True
 
 
 def mark_published_from(work_dir, src):
     """Backfill publish markers from a cvmfs-status.json record (path/URL).
 
-    Record entries carry package/version/platform plus a pkg_id of the form
-    ``<package>-<version>-<revision>-<platform>`` — the revision is recovered
-    from it so markers are revision-precise. Returns the number recorded.
+    An entry names the build's architecture and <version>-<revision>
+    (``architecture``, ``version_dir``); an older one only package/version/platform
+    and a pkg_id ``<package>-<version>-<revision>-<platform>``, the revision taken
+    from it. Returns the number recorded.
     """
     import json
     path = src
@@ -712,7 +717,11 @@ def mark_published_from(work_dir, src):
         data = json.load(fh)
     n = 0
     for e in data.get("packages") or []:
-        pkg  = str(e.get("package") or "")
+        pkg, vdir = str(e.get("package") or ""), str(e.get("version_dir") or "")
+        arch = str(e.get("architecture") or "")
+        if pkg and vdir and arch:   # the platform is the console's, not the build's
+            n += record_published(work_dir, arch, pkg, vdir)
+            continue
         ver  = str(e.get("version") or "")
         plat = str(e.get("platform") or "")
         if not (pkg and ver and plat):
@@ -721,9 +730,7 @@ def mark_published_from(work_dir, src):
         head, tail = "%s-%s-" % (pkg, ver), "-%s" % plat
         rev = pid[len(head):-len(tail)] \
             if pid.startswith(head) and pid.endswith(tail) else ""
-        record_published(work_dir, plat, pkg,
-                         "%s-%s" % (ver, rev) if rev else ver)
-        n += 1
+        n += record_published(work_dir, plat, pkg, "%s-%s" % (ver, rev) if rev else ver)
     info("retention: %d CVMFS publish marker(s) recorded from %s", n, src)
     return n
 

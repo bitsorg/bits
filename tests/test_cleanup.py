@@ -746,6 +746,30 @@ class PublishRecordRefreshTest(unittest.TestCase):
         self.assertTrue(os.path.exists(published_marker_path(work, "x86_64-el9", "zlib", "1.3-2")))
 
 
+class PublishRecordArchitectureTest(unittest.TestCase):
+    """A marker is keyed by the build's architecture, which the record names, not
+    by the console platform (x86_64-el9 for x86_64-el9-gcc14-opt)."""
+
+    def test_markers_by_architecture(self):
+        # NEGATIVE CONTROL: key by "platform" and the first marker is under x86_64-el9.
+        import json
+        from bits_helpers.cleanup import mark_published_from, published_marker_path
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        arch = "x86_64-el9-gcc14-opt"
+        rec = os.path.join(work, "cvmfs-status.json")
+        with open(rec, "w") as fh:
+            json.dump({"packages": [
+                {"package": "zlib", "version": "", "platform": "x86_64-el9",
+                 "pkg_id": "zlib-1.3-2-" + arch, "architecture": arch, "version_dir": "1.3-2"},
+                {"package": "..", "version_dir": "x", "architecture": arch}]}, fh)
+        with self.assertLogs("bits", level="WARNING"):
+            mark_published_from(work, rec)
+        self.assertTrue(os.path.exists(published_marker_path(work, arch, "zlib", "1.3-2")))
+        self.assertEqual(os.listdir(os.path.join(work, ".published")), [arch])
+        self.assertEqual(os.listdir(os.path.join(work, ".published", arch)), ["zlib"])
+
+
 class FamilySentinelTest(unittest.TestCase):
     """A sentinel stands beside its install tree: a family's, a shared one."""
 
