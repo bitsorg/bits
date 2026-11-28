@@ -198,7 +198,8 @@ class TestPublishFromManifest(unittest.TestCase):
         top = bom["packages"][0]
         self.assertEqual((top["view"], top["requires"]), ({"exclude": ["share/doc"]}, ["zlib"]))
         index = json.loads(w.s3.texts["BUILDS/by-pipeline/4242/%s.json" % bom["build_id"]])
-        self.assertEqual(index, {"build_id": bom["build_id"], "keys": [key]})
+        self.assertEqual(index, {"build_id": bom["build_id"], "keys": [key],
+                                 "compliance_files": True})
 
     def test_release_compliance_files_uploaded(self):
         # NOTICE + LICENSE-SOURCE-OFFER.txt land next to the release's BOMs;

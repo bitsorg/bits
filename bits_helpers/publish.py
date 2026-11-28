@@ -667,10 +667,11 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                     x.get("hash") in _stored
                     or "binaries" not in _forms(x.get("redistributable", "all")))])
             from bits_helpers.notice import upload_release_compliance
-            upload_release_compliance(getattr(w, "s3", None), w.writeStore, build_id, entries,
-                                      store_url=store_url, manifest=_sbom_manifest,
-                                      put=(lambda k, b: _put_object(w, k, b)), prefix=_pre,
-                                      archived=_archived(w))
+            _compliance = upload_release_compliance(getattr(w, "s3", None), w.writeStore,
+                                                    build_id, entries,
+                                                    store_url=store_url, manifest=_sbom_manifest,
+                                                    put=(lambda k, b: _put_object(w, k, b)),
+                                                    prefix=_pre, archived=_archived(w))
             # Found again by the pipeline that made it: bits cvmfs release --pipeline.
             # One file per build (a pipeline may build several platforms), outside
             # MANIFESTS/ so the tools that read every BOM there do not see it.
@@ -679,6 +680,7 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                 try:
                     if not _put_object(w, _index, _json.dumps({
                             "build_id": build_id,
+                            "compliance_files": bool(_compliance),   # NOTICE, offer, SBOMs
                             "keys": ["MANIFESTS/%s/%s.%s.json" % (build_id, _stem, _a)
                                      for _a, _d in bom]}, indent=1).encode()):
                         # another publish of this pipeline recorded it first: take its BOMs

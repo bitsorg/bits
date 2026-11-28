@@ -69,6 +69,14 @@ class FindAndMergeTest(unittest.TestCase):
         with self.assertRaises(rel.ReleaseError):
             rel.find_boms(s3, "bkt", pipeline="4242")
 
+    def test_a_build_published_without_its_compliance_files_is_named(self):
+        s3 = _S3({"BUILDS/by-pipeline/4242/b.json": {"build_id": "b", "keys": ["k1"],
+                                                     "compliance_files": False},
+                  "k1": _bom(ARCH, [_pkg("ROOT", "r1")], build_id="b")})
+        with self.assertLogs("bits", level="WARNING") as logs:
+            rel.find_boms(s3, "bkt", pipeline="4242")
+        self.assertIn("without its NOTICE", "\n".join(logs.output))
+
     def test_a_pipeline_with_several_builds_needs_the_build_id(self):
         a = _bom(ARCH, [_pkg("ROOT", "r1")], build_id="b-opt")
         b = _bom("x86_64-el9-gcc15-dbg", [_pkg("ROOT", "r2", arch="x86_64-el9-gcc15-dbg")],

@@ -68,6 +68,9 @@ def find_boms(s3, bucket, pipeline=None, build_id=None):
             except Exception as exc:
                 raise ReleaseError("unreadable %s: %s" % (key, exc))
             builds[index.get("build_id", "")] = index.get("keys") or []
+            if index.get("compliance_files") is False:
+                warning("build %s was published without its NOTICE, source offer or SBOMs "
+                        "(see its publish log)", index.get("build_id"))
         if build_id:
             builds = {b: k for b, k in builds.items() if b == build_id}
         if len(builds) > 1:
