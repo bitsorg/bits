@@ -202,11 +202,15 @@ class Console:
     def settle(self, action, timeout=60):
         """Wait up to *timeout* seconds for *action* to finish; returns it as last seen."""
         deadline = time.monotonic() + timeout
+        try:
+            aid = int(action.get("id"))
+        except (TypeError, ValueError):   # without an id it cannot be asked again
+            return action
         while action.get("state") not in ("done", "failed", "rejected") \
                 and time.monotonic() < deadline:
             time.sleep(2)
             try:
-                action = self._json("/ops/actions/%s" % int(action["id"]))
+                action = self._json("/ops/actions/%s" % aid)
             except RequestError:
                 break
         return action

@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits compliance --enforce` and the other orchestrator actions report an action the console answers without an id as it is, instead of a traceback (KeyError).
 - **[Fix]** Two builds of one target started in the same second write their own build manifests (`bits-manifest-<target>-<time>-2.json`, ...) instead of the same file, and two bits processes in one work dir no longer race on the `latest` link's temporary name.
 - **[Fix]** `bits sign --require-approval` takes the certifier only from `--certifier`, not from `$GITLAB_USER_LOGIN`: every pipeline has that variable and a pipeline variable overrides it, so whoever could set one named an admin, and the merge-request check behind it was never reached. The manifests CI passes `--certifier` (the merged merge request's author).
 - **[Fix]** The merge request whose approvals `bits sign --require-approval` reads is the one that merged the commit (its merge, squash or head commit) into the pipeline's branch: the first merged one containing the commit counted, which could be an older one, or one into another branch.

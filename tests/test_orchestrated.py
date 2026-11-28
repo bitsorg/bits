@@ -110,6 +110,10 @@ class ConsoleTest(unittest.TestCase):
         with self.assertRaisesRegex(orchestrated.RequestError, "403.*not an admin"):
             self.console.decertify("lcg", "b1")
 
+    def test_settle_without_an_id_returns_the_action(self):
+        for action in ({"state": "approved"}, {"id": None, "state": "approved"}):
+            self.assertEqual(self.console.settle(action), action)
+
     def test_settle_follows_the_action(self):
         self.answers = [(200, {"id": 7, "state": "running"}), (200, {"id": 7, "state": "done"})]
         with patch("bits_helpers.orchestrated.time.sleep"):
